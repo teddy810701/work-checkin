@@ -250,7 +250,7 @@ ${message}
     return () => clearInterval(timer);
   }, []);
 
-  const todayKey = useMemo(() => formatTaipeiDateKey(), [XXX]);
+  const todayKey = useMemo(() => formatTaipeiDateKey(), [nowTime]);
 
   const storeGroups = useMemo(() => {
     const groups = {};
