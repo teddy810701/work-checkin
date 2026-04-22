@@ -1,0 +1,35 @@
+name: 員工打卡提醒
+
+on:
+  schedule:
+    # 每 5 分鐘執行一次，UTC 22:00~06:00 = 台北 06:00~14:00
+    - cron: "*/5 22,23,0,1,2,3,4,5,6 * * *"
+  workflow_dispatch:
+
+jobs:
+  check-attendance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: scripts
+
+      - name: Run attendance check
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
+          LINE_OWNER_ID: ${{ secrets.LINE_OWNER_ID }}
+          LINE_GROUP_XILUO: ${{ secrets.LINE_GROUP_XILUO }}
+          LINE_GROUP_DOUNAN: ${{ secrets.LINE_GROUP_DOUNAN }}
+        run: node check-attendance.js
+        working-directory: scripts
