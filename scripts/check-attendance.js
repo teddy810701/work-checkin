@@ -56,19 +56,53 @@ async function sendLine(to, text) {
   }
 }
 
-async function main() {
-  const todayKey = getTodayKey();
+async function handleScheduleNotify(todayKey) {
+  const flagSnap = await db.ref(`schedule_notify/${todayKey}`).get();
+  const flag = flagSnap.val();
+  if (!flag?.pending) return;
+
+  const schedSnap = await db.ref(`schedules/${todayKey}`).get();
+  const schedules = schedSnap.val() || {};
+
+  const byStore = {};
+  Object.values(schedules).forEach((emp) => {
+    if (!emp.working) return;
+    const store = emp.store || "未知店面";
+    if (!byStore[store]) byStore[store] = [];
+    byStore[store].push(emp);
+  });
+
+  const today = getTaipeiTime().toLocaleDateString("zh-TW");
+
+  for (const [store, emps] of Object.entries(byStore)) {
+    const groupId = STORE_GROUP_MAP[store];
+    if (!groupId) continue;
+
+    const lines = emps
+      .sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""))
+      .map((e) => `${e.name}　${e.startTime} 上班`)
+      .join("\n");
+
+    const msg = `📋 ${store} 今日班表\n${today}\n${"─".repeat(14)}\n${lines}`;
+    await sendLine(groupId, msg);
+    console.log(`班表已傳送至 ${store}`);
+  }
+
+  await db.ref(`schedule_notify/${todayKey}`).set({
+    pending: false,
+    sentAt: Date.now(),
+  });
+}
+
+async function handleAttendanceCheck(todayKey) {
   const now = getTaipeiTime();
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
-  const timeStr = now.toLocaleTimeString("zh-TW", { hour12: false });
-
-  console.log(`[${todayKey} ${timeStr}] 開始檢查打卡狀況`);
 
   const schedSnap = await db.ref(`schedules/${todayKey}`).get();
   const schedules = schedSnap.val() || {};
 
   if (Object.keys(schedules).length === 0) {
-    console.log("今日無排班資料，結束。");
+    console.log("今日無排班資料。");
     return;
   }
 
@@ -77,9 +111,7 @@ async function main() {
 
   const clockedIn = new Set();
   Object.values(allRecords).forEach((r) => {
-    if (r.dateKey === todayKey && r.type === "上班") {
-      clockedIn.add(r.empId);
-    }
+    if (r.dateKey === todayKey && r.type === "上班") clockedIn.add(r.empId);
   });
 
   const notifiedSnap = await db.ref(`notified/${todayKey}`).get();
@@ -118,12 +150,21 @@ async function main() {
     const msg = `⚠️ ${store} 打卡提醒\n\n尚未打卡：\n${nameList}\n\n請確認是否正常出勤`;
 
     await sendLine(OWNER_ID, msg);
-
     const groupId = STORE_GROUP_MAP[store];
     await sendLine(groupId, msg);
 
     console.log(`已通知 ${store}：`, emps.map((e) => e.name).join("、"));
   }
+}
+
+async function main() {
+  const todayKey = getTodayKey();
+  const now = getTaipeiTime();
+  const timeStr = now.toLocaleTimeString("zh-TW", { hour12: false });
+  console.log(`[${todayKey} ${timeStr}] 執行中`);
+
+  await handleScheduleNotify(todayKey);
+  await handleAttendanceCheck(todayKey);
 }
 
 main()

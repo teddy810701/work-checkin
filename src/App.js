@@ -391,15 +391,10 @@ ${message}
         Object.keys(finalSchedule).length > 0 ? finalSchedule : null
       );
 
-      const resp = await fetch("/api/notify-schedule", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ schedules: finalSchedule }),
+      await set(ref(db, `schedule_notify/${today}`), {
+        pending: true,
+        createdAt: Date.now(),
       });
-
-      if (!resp.ok && resp.status !== 207) {
-        throw new Error("LINE 通知失敗，班表已儲存");
-      }
 
       setScheduleSent(true);
       setTimeout(() => setScheduleSent(false), 4000);
