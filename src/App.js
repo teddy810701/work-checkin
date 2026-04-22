@@ -158,6 +158,10 @@ export default function App() {
 
   const myDevice = getDeviceId();
 
+  const [scheduleItems, setScheduleItems] = useState({});
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [scheduleSent, setScheduleSent] = useState(false);
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (user) {
@@ -248,6 +252,49 @@ ${message}
 
   const todayKey = useMemo(() => formatTaipeiDateKey(), [nowTime]);
 
+  const storeGroups = useMemo(() => {
+    const groups = {};
+    employees.forEach((emp) => {
+      const store = emp.store || "未填店名";
+      if (!groups[store]) groups[store] = [];
+      groups[store].push(emp);
+    });
+    return groups;
+  }, [employees]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    setScheduleItems((prev) => {
+      const next = { ...prev };
+      employees.forEach((emp) => {
+        const key = emp.empId || emp.id;
+        if (!next[key]) {
+          next[key] = { working: false, startTime: "06:00" };
+        }
+      });
+      return next;
+    });
+  }, [employees, isAdmin]);
+
+  useEffect(() => {
+    if (!authReady || !isAdmin) return;
+    const today = formatTaipeiDateKey();
+    const schedRef = ref(db, `schedules/${today}`);
+    return onValue(schedRef, (snap) => {
+      const data = snap.val() || {};
+      setScheduleItems((prev) => {
+        const next = { ...prev };
+        Object.entries(data).forEach(([empId, schedData]) => {
+          next[empId] = {
+            working: schedData.working || false,
+            startTime: schedData.startTime || "06:00",
+          };
+        });
+        return next;
+      });
+    });
+  }, [authReady, isAdmin]);
+
   const todayRecords = useMemo(() => {
     return records.filter((r) => {
       if (r.dateKey) return r.dateKey === todayKey;
@@ -305,6 +352,63 @@ ${message}
       return (a.empId || "").localeCompare(b.empId || "");
     });
   }, [employees, todayRecords]);
+
+  const toggleScheduleWorking = (empId) => {
+    setScheduleItems((prev) => ({
+      ...prev,
+      [empId]: { ...prev[empId], working: !prev[empId]?.working },
+    }));
+  };
+
+  const setScheduleTime = (empId, time) => {
+    setScheduleItems((prev) => ({
+      ...prev,
+      [empId]: { ...prev[empId], startTime: time },
+    }));
+  };
+
+  const saveAndSendSchedule = async () => {
+    setScheduleSaving(true);
+    try {
+      const today = formatTaipeiDateKey();
+      const finalSchedule = {};
+
+      employees.forEach((emp) => {
+        const key = emp.empId || emp.id;
+        const item = scheduleItems[key];
+        if (item?.working) {
+          finalSchedule[key] = {
+            name: emp.name,
+            store: emp.store || "",
+            startTime: item.startTime || "06:00",
+            working: true,
+          };
+        }
+      });
+
+      await set(
+        ref(db, `schedules/${today}`),
+        Object.keys(finalSchedule).length > 0 ? finalSchedule : null
+      );
+
+      const resp = await fetch("/api/notify-schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ schedules: finalSchedule }),
+      });
+
+      if (!resp.ok && resp.status !== 207) {
+        throw new Error("LINE 通知失敗，班表已儲存");
+      }
+
+      setScheduleSent(true);
+      setTimeout(() => setScheduleSent(false), 4000);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setScheduleSaving(false);
+    }
+  };
 
   const login = () => {
     if (password === ADMIN_PASSWORD) {
@@ -1038,6 +1142,67 @@ ${message}
       <div style={styles.adminGrid}>
         <div style={styles.leftCol}>
           <div style={styles.panelCard}>
+            <div style={styles.panelTitle}>今日排班</div>
+
+            {Object.keys(storeGroups).length === 0 ? (
+              <div style={styles.emptyText}>尚無員工資料</div>
+            ) : (
+              Object.entries(storeGroups).map(([storeName, storeEmps]) => (
+                <div key={storeName}>
+                  <div style={styles.storeLabel}>{storeName}</div>
+                  {storeEmps.map((emp) => {
+                    const key = emp.empId || emp.id;
+                    const item = scheduleItems[key] || {
+                      working: false,
+                      startTime: "06:00",
+                    };
+                    return (
+                      <div key={key} style={styles.scheduleRow}>
+                        <input
+                          type="checkbox"
+                          checked={!!item.working}
+                          onChange={() => toggleScheduleWorking(key)}
+                          style={{ width: 18, height: 18, cursor: "pointer", flexShrink: 0 }}
+                        />
+                        <span style={styles.scheduleEmpName}>{emp.name}</span>
+                        <input
+                          type="time"
+                          value={item.startTime || "06:00"}
+                          onChange={(e) => setScheduleTime(key, e.target.value)}
+                          disabled={!item.working}
+                          style={{
+                            ...styles.timeInput,
+                            opacity: item.working ? 1 : 0.35,
+                          }}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              ))
+            )}
+
+            <button
+              style={{
+                ...styles.fullMainBtn,
+                marginTop: 16,
+                background: scheduleSent
+                  ? "linear-gradient(135deg, #10b981, #22c55e)"
+                  : "linear-gradient(135deg, #2563eb, #3b82f6)",
+                opacity: scheduleSaving ? 0.7 : 1,
+              }}
+              onClick={saveAndSendSchedule}
+              disabled={scheduleSaving}
+            >
+              {scheduleSaving
+                ? "傳送中…"
+                : scheduleSent
+                ? "✓ 班表已傳送"
+                : "儲存並傳送班表"}
+            </button>
+          </div>
+
+          <div style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div style={styles.panelTitle}>員工管理</div>
             </div>
@@ -1760,5 +1925,37 @@ const styles = {
     color: "#94a3b8",
     padding: "12px 0",
     fontWeight: 700,
+  },
+  storeLabel: {
+    fontSize: 13,
+    fontWeight: 800,
+    color: "#475569",
+    marginTop: 12,
+    marginBottom: 6,
+    paddingBottom: 4,
+    borderBottom: "1px solid #e2e8f0",
+  },
+  scheduleRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "7px 0",
+    borderBottom: "1px solid #f1f5f9",
+  },
+  scheduleEmpName: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: 700,
+    color: "#0f172a",
+  },
+  timeInput: {
+    padding: "6px 8px",
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    fontSize: 14,
+    fontWeight: 700,
+    outline: "none",
+    background: "#fff",
+    width: 108,
   },
 };
