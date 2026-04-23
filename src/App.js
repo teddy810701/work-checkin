@@ -958,6 +958,50 @@ ${message}
   }, [lineStatus, scheduleNotifyHistory]);
 
 
+  const adminFilteredRecords = useMemo(() => {
+    return records.filter((r) => {
+      const matchDate = !recordFilterDate || r.date === recordFilterDate;
+      const keyword = recordSearch.trim().toLowerCase();
+      const matchKeyword =
+        !keyword ||
+        String(r.name || "").toLowerCase().includes(keyword) ||
+        String(r.empId || "").toLowerCase().includes(keyword);
+      return matchDate && matchKeyword;
+    });
+  }, [records, recordFilterDate, recordSearch]);
+
+  const getLastMonthKey = () => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 1);
+    return getMonthValue(d.getTime());
+  };
+
+  const deleteLastMonthRecords = async () => {
+    const monthKey = getLastMonthKey();
+    const ok = window.confirm(`確定要刪除 ${monthKey} 的全部打卡紀錄嗎？此動作無法復原。`);
+    if (!ok) return;
+
+    try {
+      const snap = await get(ref(db, "records"));
+      const data = snap.val() || {};
+      const targets = Object.entries(data).filter(([_, value]) => {
+        const key = value?.monthKey || getMonthValue(value?.createdAt || Date.now());
+        return key === monthKey;
+      });
+
+      if (!targets.length) {
+        alert(`${monthKey} 沒有可刪除的打卡紀錄`);
+        return;
+      }
+
+      await Promise.all(targets.map(([id]) => remove(ref(db, `records/${id}`))));
+      alert(`已刪除 ${monthKey} 的 ${targets.length} 筆打卡紀錄`);
+    } catch (error) {
+      console.error(error);
+      alert("刪除上個月打卡紀錄失敗");
+    }
+  };
+
   const recentRecords = records.slice(0, 8);
 
   if (!authReady) {
