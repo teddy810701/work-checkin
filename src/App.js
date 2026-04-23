@@ -82,6 +82,13 @@ const formatDate = (timestamp) => {
   return new Date(timestamp).toLocaleDateString("zh-TW");
 };
 
+const formatDateTime = (timestamp) => {
+  if (!timestamp) return "";
+  return new Date(timestamp).toLocaleString("zh-TW", {
+    hour12: false,
+  });
+};
+
 const formatDateTimeLocalValue = (timestamp) => {
   if (!timestamp) return "";
   const d = new Date(timestamp);
@@ -178,6 +185,15 @@ export default function App() {
   const [scheduleSent, setScheduleSent] = useState(false);
   const [publishStore, setPublishStore] = useState("西螺文昌店");
   const [lateNoticeTesting, setLateNoticeTesting] = useState(false);
+  const [lateChecking, setLateChecking] = useState(false);
+  const [scheduleHistory, setScheduleHistory] = useState({});
+  const [scheduleNotifyHistory, setScheduleNotifyHistory] = useState({});
+  const [lineStatus, setLineStatus] = useState({});
+  const [adminPanels, setAdminPanels] = useState({
+    scheduleHistory: false,
+    lateCheck: false,
+    lineQuery: false,
+  });
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -309,6 +325,30 @@ ${message}
         });
         return next;
       });
+    });
+  }, [authReady, isAdmin]);
+
+  useEffect(() => {
+    if (!authReady || !isAdmin) return;
+    const historyRef = ref(db, "schedules");
+    return onValue(historyRef, (snap) => {
+      setScheduleHistory(snap.val() || {});
+    });
+  }, [authReady, isAdmin]);
+
+  useEffect(() => {
+    if (!authReady || !isAdmin) return;
+    const notifyRef = ref(db, "schedule_notify");
+    return onValue(notifyRef, (snap) => {
+      setScheduleNotifyHistory(snap.val() || {});
+    });
+  }, [authReady, isAdmin]);
+
+  useEffect(() => {
+    if (!authReady || !isAdmin) return;
+    const lineStatusRef = ref(db, "line_status");
+    return onValue(lineStatusRef, (snap) => {
+      setLineStatus(snap.val() || {});
     });
   }, [authReady, isAdmin]);
 
@@ -859,6 +899,147 @@ ${message}
     URL.revokeObjectURL(link.href);
   };
 
+  const toggleAdminPanel = (key) => {
+    setAdminPanels((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
+
+  const historyScheduleDates = useMemo(() => {
+    return Object.keys(scheduleHistory || {}).sort((a, b) => b.localeCompare(a));
+  }, [scheduleHistory]);
+
+  const lateNoticeEntries = useMemo(() => {
+    const attendanceSent = lineStatus?.attendance_sent || {};
+    const manualChecks = lineStatus?.manual_late_checks || {};
+
+    return [
+      ...Object.entries(attendanceSent).map(([key, value]) => ({
+        id: `attendance-${key}`,
+        dateKey: key,
+        type: "自動遲到通知",
+        ...value,
+      })),
+      ...Object.entries(manualChecks).map(([key, value]) => ({
+        id: `manual-${key}`,
+        dateKey: value?.dateKey || key,
+        type: "手動遲到檢查",
+        ...value,
+      })),
+    ].sort((a, b) => (b.sentAt || b.checkedAt || 0) - (a.sentAt || a.checkedAt || 0));
+  }, [lineStatus]);
+
+  const lineQueryEntries = useMemo(() => {
+    const scheduleSent = lineStatus?.schedule_sent || {};
+    const scheduleNotify = scheduleNotifyHistory || {};
+
+    return [
+      ...Object.entries(scheduleSent).map(([key, value]) => ({
+        id: `staff-${key}`,
+        dateKey: key,
+        type: "班表推播",
+        ...value,
+      })),
+      ...Object.entries(scheduleNotify).map(([key, value]) => ({
+        id: `notify-${key}`,
+        dateKey: key,
+        type: "發布紀錄",
+        ...value,
+      })),
+    ].sort((a, b) => (b.sentAt || b.createdAt || 0) - (a.sentAt || a.createdAt || 0));
+  }, [lineStatus, scheduleNotifyHistory]);
+
+  const runLateCheckNow = async () => {
+    setLateChecking(true);
+    try {
+      const today = formatTaipeiDateKey();
+      const todaySchedule = scheduleHistory?.[today] || {};
+      const targetList = Object.entries(todaySchedule)
+        .map(([empId, item]) => ({ empId, ...item }))
+        .filter((item) => item?.working && (item?.store || "") === publishStore);
+
+      if (!targetList.length) {
+        alert(`${publishStore} 今日沒有班表可檢查`);
+        return;
+      }
+
+      const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Taipei" }));
+      const lateEmployees = targetList.filter((item) => {
+        if (!item?.startTime || !String(item.startTime).includes(":")) return false;
+        const [h, m] = String(item.startTime).split(":").map(Number);
+        const workTime = new Date(now);
+        workTime.setHours(h, m, 0, 0);
+
+        const isOverFiveMinutes = now.getTime() - workTime.getTime() > 5 * 60 * 1000;
+        if (!isOverFiveMinutes) return false;
+
+        const hasCheckin = records.some((r) => {
+          const recordKey = r.dateKey || (r.createdAt ? formatTaipeiDateKey(r.createdAt) : "");
+          return recordKey === today && r.empId === item.empId && r.type === "上班";
+        });
+
+        return !hasCheckin;
+      });
+
+      const checkedAt = Date.now();
+      const logRef = ref(db, `line_status/manual_late_checks/${checkedAt}`);
+
+      if (!lateEmployees.length) {
+        await set(logRef, {
+          checkedAt,
+          dateKey: today,
+          store: publishStore,
+          sent: false,
+          result: "目前沒有遲到名單",
+        });
+        alert(`${publishStore} 目前沒有遲到名單`);
+        return;
+      }
+
+      const message = [
+        `【遲到檢查通知】`,
+        `日期：${today}`,
+        `店別：${publishStore}`,
+        "",
+        ...lateEmployees.map((item) => `${item.name}｜上班時間 ${item.startTime}`),
+      ].join("\n");
+
+      const res = await fetch("/api/send-late-notice", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          store: publishStore,
+          message,
+        }),
+      });
+
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok || !result?.success) {
+        throw new Error(result?.error || result?.message || "遲到通知發送失敗");
+      }
+
+      await set(logRef, {
+        checkedAt,
+        sentAt: checkedAt,
+        dateKey: today,
+        store: publishStore,
+        sent: true,
+        result: `${lateEmployees.length} 人`,
+        names: lateEmployees.map((item) => item.name),
+        message,
+      });
+
+      alert(`${publishStore} 遲到通知已送出（${lateEmployees.length} 人）`);
+    } catch (err) {
+      alert(`遲到檢查失敗：${err.message}`);
+    } finally {
+      setLateChecking(false);
+    }
+  };
+
   const recentRecords = records.slice(0, 8);
 
   if (!authReady) {
@@ -1379,6 +1560,111 @@ ${message}
             <button style={styles.fullOrangeBtn} onClick={exportMonthlyCSV}>
               匯出月報表 Excel
             </button>
+          </div>
+
+          <div style={styles.panelCard}>
+            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("scheduleHistory")}>
+              歷史班表 {adminPanels.scheduleHistory ? "－" : "＋"}
+            </button>
+            {adminPanels.scheduleHistory ? (
+              <div style={styles.collapseContent}>
+                {historyScheduleDates.length === 0 ? (
+                  <div style={styles.emptyText}>目前沒有歷史班表</div>
+                ) : (
+                  historyScheduleDates.slice(0, 14).map((dateKey) => {
+                    const dayData = scheduleHistory[dateKey] || {};
+                    const storeMap = {};
+                    Object.entries(dayData).forEach(([empId, item]) => {
+                      if (!item?.working) return;
+                      const storeName = item.store || "未填店名";
+                      if (!storeMap[storeName]) storeMap[storeName] = [];
+                      storeMap[storeName].push({ empId, ...item });
+                    });
+
+                    return (
+                      <div key={dateKey} style={styles.historyBlock}>
+                        <div style={styles.historyDate}>{dateKey}</div>
+                        {Object.keys(storeMap).length === 0 ? (
+                          <div style={styles.historyItem}>無排班資料</div>
+                        ) : (
+                          Object.entries(storeMap).map(([storeName, list]) => (
+                            <div key={storeName} style={{ marginTop: 8 }}>
+                              <div style={styles.storeLabel}>{storeName}</div>
+                              {list
+                                .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")))
+                                .map((item) => (
+                                  <div key={`${dateKey}-${storeName}-${item.empId}`} style={styles.historyItem}>
+                                    {item.name}｜{item.startTime || "未填時間"}
+                                  </div>
+                                ))}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          <div style={styles.panelCard}>
+            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("lateCheck")}>
+              自動抓遲到 {adminPanels.lateCheck ? "－" : "＋"}
+            </button>
+            {adminPanels.lateCheck ? (
+              <div style={styles.collapseContent}>
+                <div style={styles.deviceLabel}>目前檢查店別</div>
+                <div style={styles.historyItem}>{publishStore}</div>
+                <button
+                  style={{ ...styles.fullOrangeBtn, marginTop: 10, opacity: lateChecking ? 0.7 : 1 }}
+                  onClick={runLateCheckNow}
+                  disabled={lateChecking}
+                >
+                  {lateChecking ? "檢查中…" : `立即檢查 ${publishStore} 遲到`}
+                </button>
+
+                <div style={{ ...styles.deviceLabel, marginTop: 14 }}>遲到通知紀錄</div>
+                {lateNoticeEntries.length === 0 ? (
+                  <div style={styles.emptyText}>目前沒有遲到通知紀錄</div>
+                ) : (
+                  lateNoticeEntries.slice(0, 12).map((item) => (
+                    <div key={item.id} style={styles.historyBlock}>
+                      <div style={styles.historyDate}>
+                        {item.type}｜{item.store || item.dateKey || "未分類"}
+                      </div>
+                      <div style={styles.historyItem}>時間：{formatDateTime(item.sentAt || item.checkedAt)}</div>
+                      <div style={styles.historyItem}>結果：{item.result || (item.sent ? "已發送" : "未發送")}</div>
+                      {Array.isArray(item.names) && item.names.length ? (
+                        <div style={styles.historyItem}>名單：{item.names.join("、")}</div>
+                      ) : null}
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          <div style={styles.panelCard}>
+            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("lineQuery")}>
+              LINE 查詢頁 {adminPanels.lineQuery ? "－" : "＋"}
+            </button>
+            {adminPanels.lineQuery ? (
+              <div style={styles.collapseContent}>
+                {lineQueryEntries.length === 0 ? (
+                  <div style={styles.emptyText}>目前沒有 LINE 發送紀錄</div>
+                ) : (
+                  lineQueryEntries.slice(0, 14).map((item) => (
+                    <div key={item.id} style={styles.historyBlock}>
+                      <div style={styles.historyDate}>{item.type}｜{item.targetStore || item.store || item.dateKey}</div>
+                      <div style={styles.historyItem}>時間：{formatDateTime(item.sentAt || item.createdAt)}</div>
+                      <div style={styles.historyItem}>狀態：{item.pending ? "待處理" : item.sent === false ? "未發送" : "已發送"}</div>
+                      {item.lastError ? <div style={styles.errorMini}>錯誤：{item.lastError}</div> : null}
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -1912,6 +2198,47 @@ const styles = {
     fontWeight: 900,
     cursor: "pointer",
     marginTop: 12,
+  },
+  collapseBtn: {
+    width: "100%",
+    border: "1px solid #dbeafe",
+    background: "#eff6ff",
+    color: "#1d4ed8",
+    padding: "14px 16px",
+    borderRadius: 14,
+    fontWeight: 900,
+    cursor: "pointer",
+    textAlign: "left",
+  },
+  collapseContent: {
+    marginTop: 12,
+    display: "grid",
+    gap: 10,
+  },
+  historyBlock: {
+    border: "1px solid #e5e7eb",
+    borderRadius: 14,
+    padding: 12,
+    background: "#fafafa",
+  },
+  historyDate: {
+    fontSize: 14,
+    fontWeight: 800,
+    color: "#111827",
+    marginBottom: 6,
+  },
+  historyItem: {
+    fontSize: 13,
+    color: "#4b5563",
+    lineHeight: 1.7,
+  },
+  errorMini: {
+    marginTop: 6,
+    fontSize: 12,
+    color: "#b91c1c",
+    background: "#fee2e2",
+    borderRadius: 10,
+    padding: "8px 10px",
   },
   monthInput: {
     width: "100%",
