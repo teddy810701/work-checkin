@@ -976,6 +976,13 @@ ${message}
 
   const deleteLastMonthRecords = async () => {
     const monthKey = getLastMonthKey();
+    const password = window.prompt("請輸入刪除密碼");
+
+    if (password !== "8888") {
+      alert("密碼錯誤，已取消刪除");
+      return;
+    }
+
     const ok = window.confirm(`確定要刪除 ${monthKey} 的全部打卡紀錄嗎？此動作無法復原。`);
     if (!ok) return;
 
@@ -2479,13 +2486,16 @@ const styles = {
   },
   recordDangerBtn: {
     border: "none",
-    borderRadius: 12,
-    background: "linear-gradient(135deg, #ef4444, #dc2626)",
-    color: "#fff",
+    borderRadius: 10,
+    background: "#fee2e2",
+    color: "#b91c1c",
     fontWeight: 800,
-    padding: "12px 14px",
+    fontSize: 12,
+    padding: "8px 12px",
     cursor: "pointer",
-    boxShadow: "0 10px 20px rgba(239,68,68,0.2)",
+    boxShadow: "inset 0 0 0 1px #fecaca",
+    justifySelf: "start",
+    width: "fit-content",
   },
   recordAdminRow: {
     display: "flex",
