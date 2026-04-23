@@ -1573,10 +1573,11 @@ ${message}
                 <div style={styles.panelTitle}>員工名單</div>
                 <div style={styles.badge}>{employees.length}</div>
               </div>
-              <button style={styles.addEmployeeBtn} onClick={() => setShowAddModal(true)}>
-                ＋ 新增
-              </button>
             </div>
+
+            <button style={styles.addEmployeeFullBtn} onClick={() => setShowAddModal(true)}>
+              ＋ 新增員工
+            </button>
 
             <div style={styles.storeSwitchWrap}>
               {["全部", "西螺文昌店", "斗南站前店"].map((storeName) => (
@@ -2203,7 +2204,6 @@ const styles = {
     flexWrap: "wrap",
   },
 
-
   storeSwitchWrap: {
     display: "flex",
     flexWrap: "wrap",
@@ -2227,18 +2227,19 @@ const styles = {
     color: "#fff",
     boxShadow: "0 10px 24px rgba(59,130,246,0.28)",
   },
-  addEmployeeBtn: {
+  addEmployeeFullBtn: {
+    width: "100%",
     border: "none",
     background: "linear-gradient(135deg, #10b981, #22c55e)",
     color: "#fff",
-    padding: "10px 16px",
-    borderRadius: 999,
-    fontWeight: 800,
+    padding: "12px 16px",
+    borderRadius: 16,
+    fontWeight: 900,
     cursor: "pointer",
-    fontSize: 14,
-    boxShadow: "0 10px 24px rgba(34,197,94,0.24)",
+    fontSize: 15,
+    boxShadow: "0 12px 24px rgba(34,197,94,0.22)",
     transition: "all 0.2s ease",
-    flexShrink: 0,
+    marginBottom: 14,
   },
   badge: {
     minWidth: 32,
