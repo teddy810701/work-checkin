@@ -177,7 +177,6 @@ export default function App() {
   const [authorizedDevice, setAuthorizedDevice] = useState("");
   const [nowTime, setNowTime] = useState("");
   const [selectedMonth, setSelectedMonth] = useState(getMonthValue());
-  const [recordFilterDate, setRecordFilterDate] = useState("");
   const [recordSearch, setRecordSearch] = useState("");
 
   const myDevice = getDeviceId();
@@ -960,15 +959,14 @@ ${message}
 
   const adminFilteredRecords = useMemo(() => {
     return records.filter((r) => {
-      const matchDate = !recordFilterDate || r.date === recordFilterDate;
       const keyword = recordSearch.trim().toLowerCase();
-      const matchKeyword =
+      return (
         !keyword ||
         String(r.name || "").toLowerCase().includes(keyword) ||
-        String(r.empId || "").toLowerCase().includes(keyword);
-      return matchDate && matchKeyword;
+        String(r.empId || "").toLowerCase().includes(keyword)
+      );
     });
-  }, [records, recordFilterDate, recordSearch]);
+  }, [records, recordSearch]);
 
   const getLastMonthKey = () => {
     const d = new Date();
@@ -1721,12 +1719,6 @@ ${message}
             </div>
 
             <div style={styles.recordToolbar}>
-              <input
-                type="date"
-                value={recordFilterDate}
-                onChange={(e) => setRecordFilterDate(e.target.value)}
-                style={styles.recordFilterInput}
-              />
               <input
                 type="text"
                 placeholder="搜尋員工姓名或工號"
