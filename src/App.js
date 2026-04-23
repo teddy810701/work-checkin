@@ -184,7 +184,12 @@ export default function App() {
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleSent, setScheduleSent] = useState(false);
   const [publishStore, setPublishStore] = useState("西螺文昌店");
+<<<<<<< HEAD
   const [adminStoreTab, setAdminStoreTab] = useState("全部");
+=======
+  const [lateNoticeTesting, setLateNoticeTesting] = useState(false);
+  const [lateChecking, setLateChecking] = useState(false);
+>>>>>>> 7554d821c52c0e75c509ff4a12e8db3a4a29e5ac
   const [scheduleHistory, setScheduleHistory] = useState({});
   const [scheduleNotifyHistory, setScheduleNotifyHistory] = useState({});
   const [lineStatus, setLineStatus] = useState({});
@@ -352,11 +357,14 @@ ${message}
     });
   }, [authReady, isAdmin]);
 
+<<<<<<< HEAD
   useEffect(() => {
     if (!authReady) return;
     triggerAutoLateCheck("app-open");
   }, [authReady]);
 
+=======
+>>>>>>> 7554d821c52c0e75c509ff4a12e8db3a4a29e5ac
   const todayRecords = useMemo(() => {
     return records.filter((r) => {
       if (r.dateKey) return r.dateKey === todayKey;
@@ -892,6 +900,7 @@ ${message}
     }));
   };
 
+<<<<<<< HEAD
   const triggerAutoLateCheck = async (reason = "") => {
     try {
       await fetch("/api/auto-check-late", {
@@ -906,6 +915,8 @@ ${message}
     }
   };
 
+=======
+>>>>>>> 7554d821c52c0e75c509ff4a12e8db3a4a29e5ac
   const historyScheduleDates = useMemo(() => {
     return Object.keys(scheduleHistory || {}).sort((a, b) => b.localeCompare(a));
   }, [scheduleHistory]);
@@ -950,6 +961,98 @@ ${message}
     ].sort((a, b) => (b.sentAt || b.createdAt || 0) - (a.sentAt || a.createdAt || 0));
   }, [lineStatus, scheduleNotifyHistory]);
 
+<<<<<<< HEAD
+=======
+  const runLateCheckNow = async () => {
+    setLateChecking(true);
+    try {
+      const today = formatTaipeiDateKey();
+      const todaySchedule = scheduleHistory?.[today] || {};
+      const targetList = Object.entries(todaySchedule)
+        .map(([empId, item]) => ({ empId, ...item }))
+        .filter((item) => item?.working && (item?.store || "") === publishStore);
+
+      if (!targetList.length) {
+        alert(`${publishStore} 今日沒有班表可檢查`);
+        return;
+      }
+
+      const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Taipei" }));
+      const lateEmployees = targetList.filter((item) => {
+        if (!item?.startTime || !String(item.startTime).includes(":")) return false;
+        const [h, m] = String(item.startTime).split(":").map(Number);
+        const workTime = new Date(now);
+        workTime.setHours(h, m, 0, 0);
+
+        const isOverFiveMinutes = now.getTime() - workTime.getTime() > 5 * 60 * 1000;
+        if (!isOverFiveMinutes) return false;
+
+        const hasCheckin = records.some((r) => {
+          const recordKey = r.dateKey || (r.createdAt ? formatTaipeiDateKey(r.createdAt) : "");
+          return recordKey === today && r.empId === item.empId && r.type === "上班";
+        });
+
+        return !hasCheckin;
+      });
+
+      const checkedAt = Date.now();
+      const logRef = ref(db, `line_status/manual_late_checks/${checkedAt}`);
+
+      if (!lateEmployees.length) {
+        await set(logRef, {
+          checkedAt,
+          dateKey: today,
+          store: publishStore,
+          sent: false,
+          result: "目前沒有遲到名單",
+        });
+        alert(`${publishStore} 目前沒有遲到名單`);
+        return;
+      }
+
+      const message = [
+        `【遲到檢查通知】`,
+        `日期：${today}`,
+        `店別：${publishStore}`,
+        "",
+        ...lateEmployees.map((item) => `${item.name}｜上班時間 ${item.startTime}`),
+      ].join("\n");
+
+      const res = await fetch("/api/send-late-notice", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          store: publishStore,
+          message,
+        }),
+      });
+
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok || !result?.success) {
+        throw new Error(result?.error || result?.message || "遲到通知發送失敗");
+      }
+
+      await set(logRef, {
+        checkedAt,
+        sentAt: checkedAt,
+        dateKey: today,
+        store: publishStore,
+        sent: true,
+        result: `${lateEmployees.length} 人`,
+        names: lateEmployees.map((item) => item.name),
+        message,
+      });
+
+      alert(`${publishStore} 遲到通知已送出（${lateEmployees.length} 人）`);
+    } catch (err) {
+      alert(`遲到檢查失敗：${err.message}`);
+    } finally {
+      setLateChecking(false);
+    }
+  };
+>>>>>>> 7554d821c52c0e75c509ff4a12e8db3a4a29e5ac
 
   const recentRecords = records.slice(0, 8);
 
@@ -1525,7 +1628,11 @@ ${message}
                                 .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")))
                                 .map((item) => (
                                   <div key={`${dateKey}-${storeName}-${item.empId}`} style={styles.historyItem}>
+<<<<<<< HEAD
                                     {item.name}｜{item.startTime || "未填"} - {item.endTime || "未填"}
+=======
+                                    {item.name}｜{item.startTime || "未填時間"}
+>>>>>>> 7554d821c52c0e75c509ff4a12e8db3a4a29e5ac
                                   </div>
                                 ))}
                             </div>
@@ -1545,7 +1652,20 @@ ${message}
             </button>
             {adminPanels.lateCheck ? (
               <div style={styles.collapseContent}>
+<<<<<<< HEAD
                 <div style={styles.historyItem}>系統會依班表自動抓遲到，超過 1 分鐘未打上班卡就通知對應店長群組。</div>
+=======
+                <div style={styles.deviceLabel}>目前檢查店別</div>
+                <div style={styles.historyItem}>{publishStore}</div>
+                <button
+                  style={{ ...styles.fullOrangeBtn, marginTop: 10, opacity: lateChecking ? 0.7 : 1 }}
+                  onClick={runLateCheckNow}
+                  disabled={lateChecking}
+                >
+                  {lateChecking ? "檢查中…" : `立即檢查 ${publishStore} 遲到`}
+                </button>
+
+>>>>>>> 7554d821c52c0e75c509ff4a12e8db3a4a29e5ac
                 <div style={{ ...styles.deviceLabel, marginTop: 14 }}>遲到通知紀錄</div>
                 {lateNoticeEntries.length === 0 ? (
                   <div style={styles.emptyText}>目前沒有遲到通知紀錄</div>
