@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { db, auth } from "./firebase";
-import { ref, set, onValue, update, remove } from "firebase/database";
+import { ref, set, onValue, update, remove, get, query, orderByChild, limitToLast } from "firebase/database";
 import { signInAnonymously, onAuthStateChanged } from "firebase/auth";
 
 const ADMIN_PASSWORD = "8888";
@@ -177,6 +177,8 @@ export default function App() {
   const [authorizedDevice, setAuthorizedDevice] = useState("");
   const [nowTime, setNowTime] = useState("");
   const [selectedMonth, setSelectedMonth] = useState(getMonthValue());
+  const [recordFilterDate, setRecordFilterDate] = useState("");
+  const [recordSearch, setRecordSearch] = useState("");
 
   const myDevice = getDeviceId();
 
@@ -252,7 +254,7 @@ ${message}
   useEffect(() => {
     if (!authReady) return;
 
-    const recordsRef = ref(db, "records");
+    const recordsRef = query(ref(db, "records"), orderByChild("createdAt"), limitToLast(50));
     return onValue(recordsRef, (snap) => {
       const data = snap.val() || {};
       const list = Object.keys(data).map((key) => ({
@@ -1671,13 +1673,32 @@ ${message}
           <div style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div style={styles.panelTitle}>打卡紀錄</div>
-              <div style={styles.badge}>{records.length}</div>
+              <div style={styles.badge}>最新 {records.length} 筆</div>
             </div>
 
-            {records.length === 0 ? (
-              <div style={styles.emptyText}>目前沒有打卡紀錄</div>
+            <div style={styles.recordToolbar}>
+              <input
+                type="date"
+                value={recordFilterDate}
+                onChange={(e) => setRecordFilterDate(e.target.value)}
+                style={styles.recordFilterInput}
+              />
+              <input
+                type="text"
+                placeholder="搜尋員工姓名或工號"
+                value={recordSearch}
+                onChange={(e) => setRecordSearch(e.target.value)}
+                style={styles.recordFilterInput}
+              />
+              <button style={styles.recordDangerBtn} onClick={deleteLastMonthRecords}>
+                刪除上個月打卡紀錄
+              </button>
+            </div>
+
+            {adminFilteredRecords.length === 0 ? (
+              <div style={styles.emptyText}>目前沒有符合條件的打卡紀錄</div>
             ) : (
-              records.map((r) => (
+              adminFilteredRecords.map((r) => (
                 <div key={r.id} style={styles.recordAdminRow}>
                   <div>
                     <div style={styles.employeeName}>{r.name}</div>
@@ -2404,6 +2425,31 @@ const styles = {
     fontWeight: 800,
     cursor: "pointer",
     flexShrink: 0,
+  },
+  recordToolbar: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gap: 10,
+    marginBottom: 14,
+  },
+  recordFilterInput: {
+    width: "100%",
+    borderRadius: 12,
+    border: "1px solid #d1d5db",
+    padding: "12px 14px",
+    fontSize: 14,
+    outline: "none",
+    background: "#fff",
+  },
+  recordDangerBtn: {
+    border: "none",
+    borderRadius: 12,
+    background: "linear-gradient(135deg, #ef4444, #dc2626)",
+    color: "#fff",
+    fontWeight: 800,
+    padding: "12px 14px",
+    cursor: "pointer",
+    boxShadow: "0 10px 20px rgba(239,68,68,0.2)",
   },
   recordAdminRow: {
     display: "flex",
