@@ -135,8 +135,7 @@ const buildLineScheduleMessage = (storeName, scheduleList, dateKey) => {
   return [
     title,
     ...scheduleList.map((item) => `• ${item.name} ${item.startTime}`),
-  ].join("
-");
+  ].join("\n");
 };
 
 
