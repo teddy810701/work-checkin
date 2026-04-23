@@ -117,10 +117,11 @@ const isValidTransition = (currentStatus, type) => {
   if (type === "休息結束") return status === "休息中";
   return false;
 };
-
 const getStatusFromTypeHistory = (records = []) => {
   if (!records.length) return "未打卡";
-  const latest = [...records].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+  const latest = [...records].sort(
+    (a, b) => (b.createdAt || 0) - (a.createdAt || 0)
+  )[0];
   return getNextStatus(latest?.type);
 };
 
@@ -128,17 +129,14 @@ const buildLineScheduleMessage = (storeName, scheduleList, dateKey) => {
   const title = `📢 ${dateKey} ${storeName} 班表通知`;
 
   if (!scheduleList.length) {
-    return `${title}
-今日未安排上班人員`;
+    return `${title}\n今日未安排上班人員`;
   }
 
   return [
     title,
     ...scheduleList.map((item) => `• ${item.name} ${item.startTime}`),
-  ].join("
-");
+  ].join("\n");
 };
-
 
 export default function App() {
   const [authReady, setAuthReady] = useState(false);
