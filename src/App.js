@@ -1449,7 +1449,10 @@ ${message}
           <div style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div style={styles.panelTitle}>員工管理</div>
-              <div style={styles.mutedNote}>新增按鈕已移到右上角</div>
+              <button style={styles.addEmployeeSecondaryBtn} onClick={() => setShowAddModal(true)}>
+                <span style={styles.addEmployeeSecondaryBtnIcon}>＋</span>
+                新增員工
+              </button>
             </div>
           </div>
 
