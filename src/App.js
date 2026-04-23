@@ -124,6 +124,22 @@ const getStatusFromTypeHistory = (records = []) => {
   return getNextStatus(latest?.type);
 };
 
+const buildLineScheduleMessage = (storeName, scheduleList, dateKey) => {
+  const title = `📢 ${dateKey} ${storeName} 班表通知`;
+
+  if (!scheduleList.length) {
+    return `${title}
+今日未安排上班人員`;
+  }
+
+  return [
+    title,
+    ...scheduleList.map((item) => `• ${item.name} ${item.startTime}`),
+  ].join("
+");
+};
+
+
 export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [authError, setAuthError] = useState("");
@@ -387,45 +403,66 @@ ${message}
         }
       });
 
-      const scheduleList = Object.values(finalSchedule).sort((a, b) =>
-        String(a.startTime || "").localeCompare(String(b.startTime || ""))
-      );
-
       await set(
         ref(db, `schedules/${today}`),
         Object.keys(finalSchedule).length > 0 ? finalSchedule : null
       );
 
-      const response = await fetch("/api/send-schedule", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          dateKey: today,
-          schedule: scheduleList,
-        }),
-      });
+      const scheduleList = Object.values(finalSchedule).sort((a, b) =>
+        String(a.startTime || "").localeCompare(String(b.startTime || ""))
+      );
 
-      const result = await response.json().catch(() => ({}));
+      const groupedByStore = scheduleList.reduce((acc, item) => {
+        const storeName = item.store || "未填店名";
+        if (!acc[storeName]) acc[storeName] = [];
+        acc[storeName].push(item);
+        return acc;
+      }, {});
 
-      if (!response.ok || !result?.success) {
-        await set(ref(db, `schedule_notify/${today}`), {
-          pending: true,
-          createdAt: Date.now(),
-          lastError: result?.error || "LINE 發送失敗",
+      const storeNames = Object.keys(groupedByStore);
+
+      for (const storeName of storeNames) {
+        const message = buildLineScheduleMessage(
+          storeName,
+          groupedByStore[storeName],
+          today
+        );
+
+        const response = await fetch("/api/send-schedule", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            store: storeName,
+            message,
+            dateKey: today,
+            schedule: groupedByStore[storeName],
+          }),
         });
-        throw new Error(result?.error || "LINE 發送失敗");
+
+        const result = await response.json().catch(() => ({}));
+
+        if (!response.ok || !result?.success) {
+          await set(ref(db, `schedule_notify/${today}`), {
+            pending: true,
+            createdAt: Date.now(),
+            lastError: `${storeName}：${result?.error || result?.message || "LINE 發送失敗"}`,
+          });
+          throw new Error(`${storeName}：${result?.error || result?.message || "LINE 發送失敗"}`);
+        }
       }
 
       await set(ref(db, `schedule_notify/${today}`), {
         pending: false,
         sentAt: Date.now(),
         source: "saveAndSendSchedule",
+        stores: storeNames,
       });
 
       setScheduleSent(true);
       setTimeout(() => setScheduleSent(false), 4000);
+      alert(storeNames.length ? `班表已成功傳送：${storeNames.join("、")}` : "今日沒有排班，已完成儲存");
     } catch (err) {
       alert(`班表已儲存，但 LINE 發送失敗：${err.message}`);
     } finally {
