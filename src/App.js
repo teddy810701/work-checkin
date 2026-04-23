@@ -117,11 +117,10 @@ const isValidTransition = (currentStatus, type) => {
   if (type === "休息結束") return status === "休息中";
   return false;
 };
+
 const getStatusFromTypeHistory = (records = []) => {
   if (!records.length) return "未打卡";
-  const latest = [...records].sort(
-    (a, b) => (b.createdAt || 0) - (a.createdAt || 0)
-  )[0];
+  const latest = [...records].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
   return getNextStatus(latest?.type);
 };
 
@@ -129,14 +128,17 @@ const buildLineScheduleMessage = (storeName, scheduleList, dateKey) => {
   const title = `📢 ${dateKey} ${storeName} 班表通知`;
 
   if (!scheduleList.length) {
-    return `${title}\n今日未安排上班人員`;
+    return `${title}
+今日未安排上班人員`;
   }
 
   return [
     title,
     ...scheduleList.map((item) => `• ${item.name} ${item.startTime}`),
-  ].join("\n");
+  ].join("
+");
 };
+
 
 export default function App() {
   const [authReady, setAuthReady] = useState(false);
@@ -175,6 +177,8 @@ export default function App() {
   const [scheduleItems, setScheduleItems] = useState({});
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleSent, setScheduleSent] = useState(false);
+  const [publishStore, setPublishStore] = useState("西螺文昌店");
+  const [lateNoticeTesting, setLateNoticeTesting] = useState(false);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -381,6 +385,37 @@ ${message}
     }));
   };
 
+  const testLateNotice = async () => {
+    setLateNoticeTesting(true);
+    try {
+      const now = new Date();
+      const hh = String(now.getHours()).padStart(2, "0");
+      const mm = String(now.getMinutes()).padStart(2, "0");
+      const res = await fetch("/api/send-late-notice", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: `【測試通知】${publishStore} 遲到通知功能正常\n測試時間：${hh}:${mm}`,
+          store: publishStore,
+          test: true,
+        }),
+      });
+
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok || !result?.success) {
+        throw new Error(result?.error || result?.message || "遲到通知測試失敗");
+      }
+
+      alert(`遲到通知測試成功：${publishStore}`);
+    } catch (err) {
+      alert(`遲到通知測試失敗：${err.message}`);
+    } finally {
+      setLateNoticeTesting(false);
+    }
+  };
+
   const saveAndSendSchedule = async () => {
     setScheduleSaving(true);
     try {
@@ -417,66 +452,59 @@ ${message}
         return acc;
       }, {});
 
-      const storeNames = Object.keys(groupedByStore);
+      const targetStoreName = publishStore;
+      const targetScheduleList = groupedByStore[targetStoreName] || [];
 
-      for (const rawStoreName of storeNames) {
-        const storeName = String(rawStoreName || "").trim();
-        const message = buildLineScheduleMessage(
-          storeName,
-          groupedByStore[rawStoreName],
-          today
-        );
+      if (!targetScheduleList.length) {
+        alert(`${targetStoreName} 今日沒有排班，已完成儲存`);
+        return;
+      }
 
-        const response = await fetch("/api/send-schedule", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            store: storeName,
-            message,
-            dateKey: today,
-            schedule: groupedByStore[rawStoreName],
-          }),
+      const message = buildLineScheduleMessage(
+        targetStoreName,
+        targetScheduleList,
+        today
+      );
+
+      const response = await fetch("/api/send-schedule", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          store: targetStoreName,
+          message,
+          dateKey: today,
+          schedule: targetScheduleList,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok || !result?.success) {
+        const errorText = `${targetStoreName}：${result?.error || result?.message || "LINE 發送失敗"}`;
+        const detailText = result?.detail ? `｜${result.detail}` : "";
+        await set(ref(db, `schedule_notify/${today}`), {
+          pending: true,
+          createdAt: Date.now(),
+          lastError: `${errorText}${detailText}`,
+          targetStore: targetStoreName,
         });
-
-        let result = {};
-        try {
-          result = await response.json();
-        } catch (jsonError) {
-          result = {
-            success: false,
-            error: `API 回傳不是 JSON（HTTP ${response.status}）`,
-          };
-        }
-
-        if (!response.ok || !result?.success) {
-          const errorText = `${storeName}：${result?.error || result?.message || "LINE 發送失敗"}`;
-          const detailText = result?.detail ? `｜${result.detail}` : "";
-          await set(ref(db, `schedule_notify/${today}`), {
-            pending: true,
-            createdAt: Date.now(),
-            lastError: `${errorText}${detailText}`,
-          });
-          console.error("send-schedule failed", {
-            storeName,
-            status: response.status,
-            result,
-          });
-          throw new Error(`${errorText}${detailText}`);
-        }
+        console.error("send-schedule failed", result);
+        throw new Error(`${errorText}${detailText}`);
       }
 
       await set(ref(db, `schedule_notify/${today}`), {
         pending: false,
         sentAt: Date.now(),
         source: "saveAndSendSchedule",
-        stores: storeNames,
+        stores: [targetStoreName],
+        targetStore: targetStoreName,
       });
 
       setScheduleSent(true);
       setTimeout(() => setScheduleSent(false), 4000);
-      alert(storeNames.length ? `班表已成功傳送：${storeNames.join("、")}` : "今日沒有排班，已完成儲存");
+      alert(`班表已成功傳送：${targetStoreName}`);
     } catch (err) {
       alert(`班表已儲存，但 LINE 發送失敗：${err.message}`);
     } finally {
@@ -1256,24 +1284,55 @@ ${message}
               ))
             )}
 
-            <button
-              style={{
-                ...styles.fullMainBtn,
-                marginTop: 16,
-                background: scheduleSent
-                  ? "linear-gradient(135deg, #10b981, #22c55e)"
-                  : "linear-gradient(135deg, #2563eb, #3b82f6)",
-                opacity: scheduleSaving ? 0.7 : 1,
-              }}
-              onClick={saveAndSendSchedule}
-              disabled={scheduleSaving}
-            >
-              {scheduleSaving
-                ? "傳送中…"
-                : scheduleSent
-                ? "✓ 班表已傳送"
-                : "儲存並傳送班表"}
-            </button>
+            <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
+              <select
+                value={publishStore}
+                onChange={(e) => setPublishStore(e.target.value)}
+                style={{
+                  width: "100%",
+                  borderRadius: 12,
+                  border: "1px solid #d1d5db",
+                  padding: "12px 14px",
+                  fontSize: 15,
+                  outline: "none",
+                }}
+              >
+                <option value="西螺文昌店">西螺文昌店</option>
+                <option value="斗南站前店">斗南站前店</option>
+              </select>
+
+              <button
+                style={{
+                  ...styles.fullMainBtn,
+                  background: scheduleSent
+                    ? "linear-gradient(135deg, #10b981, #22c55e)"
+                    : "linear-gradient(135deg, #2563eb, #3b82f6)",
+                  opacity: scheduleSaving ? 0.7 : 1,
+                }}
+                onClick={saveAndSendSchedule}
+                disabled={scheduleSaving}
+              >
+                {scheduleSaving
+                  ? "傳送中…"
+                  : scheduleSent
+                  ? `✓ ${publishStore} 已傳送`
+                  : `儲存並傳送 ${publishStore}`}
+              </button>
+
+              <button
+                style={{
+                  ...styles.fullMainBtn,
+                  background: "linear-gradient(135deg, #f59e0b, #f97316)",
+                  opacity: lateNoticeTesting ? 0.7 : 1,
+                }}
+                onClick={testLateNotice}
+                disabled={lateNoticeTesting}
+              >
+                {lateNoticeTesting
+                  ? "測試中…"
+                  : `測試 ${publishStore} 遲到通知`}
+              </button>
+            </div>
           </div>
 
           <div style={styles.panelCard}>
