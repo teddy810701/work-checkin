@@ -1341,63 +1341,13 @@ ${message}
         <div style={styles.leftCol}>
           <div style={styles.panelCard}>
             <div style={styles.listHeader}>
-              <div style={styles.panelTitle}>排班設定</div>
-              <div style={styles.badge}>{adminStoreTab === "全部" ? "全部" : adminStoreTab}</div>
+              <div style={styles.panelTitle}>班表發布</div>
+              <div style={styles.badge}>{adminStoreTab === "全部" ? publishStore : adminStoreTab}</div>
             </div>
 
-            {Object.keys(storeGroups).length === 0 ? (
-              <div style={styles.emptyText}>尚無員工資料</div>
-            ) : (
-              Object.entries(storeGroups)
-                .filter(([storeName]) => adminStoreTab === "全部" || storeName === adminStoreTab)
-                .map(([storeName, storeEmps]) => (
-                <div key={storeName}>
-                  <div style={styles.storeLabel}>{storeName}</div>
-                  {storeEmps.map((emp) => {
-                    const key = emp.empId || emp.id;
-                    const item = scheduleItems[key] || {
-                      working: false,
-                      startTime: "06:00",
-                      endTime: "14:00",
-                    };
-                    return (
-                      <div key={key} style={styles.scheduleRow}>
-                        <input
-                          type="checkbox"
-                          checked={!!item.working}
-                          onChange={() => toggleScheduleWorking(key)}
-                          style={{ width: 18, height: 18, cursor: "pointer", flexShrink: 0 }}
-                        />
-                        <span style={styles.scheduleEmpName}>{emp.name}</span>
-                        <div style={styles.timeInputsWrap}>
-                          <input
-                            type="time"
-                            value={item.startTime || "06:00"}
-                            onChange={(e) => setScheduleTime(key, e.target.value)}
-                            disabled={!item.working}
-                            style={{
-                              ...styles.timeInput,
-                              opacity: item.working ? 1 : 0.35,
-                            }}
-                          />
-                          <span style={styles.timeDash}>~</span>
-                          <input
-                            type="time"
-                            value={item.endTime || "14:00"}
-                            onChange={(e) => setScheduleEndTime(key, e.target.value)}
-                            disabled={!item.working}
-                            style={{
-                              ...styles.timeInput,
-                              opacity: item.working ? 1 : 0.35,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ))
-            )}
+            <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, marginTop: 6 }}>
+              排班設定已整合進員工名單，直接在右側員工卡上勾選上班與調整上下班時間。
+            </div>
 
             <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
               <div style={{
@@ -1603,7 +1553,7 @@ ${message}
           <div style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={styles.panelTitle}>員工名單</div>
+                <div style={styles.panelTitle}>排班設定＋員工名單</div>
                 <div style={styles.badge}>{employees.length}</div>
               </div>
             </div>
@@ -1633,43 +1583,88 @@ ${message}
               employees
                 .filter((emp) => adminStoreTab === "全部" || emp.store === adminStoreTab)
                 .map((emp) => {
-                const statusStyle = getStatusStyle(emp.status || "未打卡");
-                return (
-                  <div key={emp.id} style={styles.employeeRow}>
-                    <div>
-                      <div style={styles.employeeTopRow}>
-                        <div style={styles.employeeName}>{emp.name}</div>
-                        <span
-                          style={{
-                            ...styles.statusBadge,
-                            background: statusStyle.background,
-                            color: statusStyle.color,
-                          }}
-                        >
-                          {emp.status || "未打卡"}
-                        </span>
+                  const statusStyle = getStatusStyle(emp.status || "未打卡");
+                  const key = emp.empId || emp.id;
+                  const item = scheduleItems[key] || {
+                    working: false,
+                    startTime: "06:00",
+                    endTime: "14:00",
+                  };
+
+                  return (
+                    <div key={emp.id} style={styles.integratedEmployeeCard}>
+                      <div style={styles.integratedTopRow}>
+                        <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                          <label style={styles.scheduleCheckWrap}>
+                            <input
+                              type="checkbox"
+                              checked={!!item.working}
+                              onChange={() => toggleScheduleWorking(key)}
+                              style={{ width: 18, height: 18, cursor: "pointer" }}
+                            />
+                          </label>
+
+                          <div>
+                            <div style={styles.employeeTopRow}>
+                              <div style={styles.employeeName}>{emp.name}</div>
+                              <span
+                                style={{
+                                  ...styles.statusBadge,
+                                  background: statusStyle.background,
+                                  color: statusStyle.color,
+                                }}
+                              >
+                                {emp.status || "未打卡"}
+                              </span>
+                            </div>
+                            <div style={styles.employeeId}>
+                              工號：{emp.empId || emp.id} ・ {emp.store || "未填店名"} ・ {emp.role || "未設定"}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div style={styles.actionBtns}>
+                          <button style={styles.editBtn} onClick={() => openEdit(emp)}>
+                            編輯
+                          </button>
+                          <button style={styles.deleteBtn} onClick={() => deleteEmployee(emp)}>
+                            停用
+                          </button>
+                        </div>
                       </div>
-                      <div style={styles.employeeId}>
-                        工號：{emp.empId || emp.id} ・ {emp.store || "未填店名"} ・ {emp.role || "未設定"}
+
+                      <div style={styles.integratedSchedulePanel}>
+                        <div style={styles.integratedScheduleLabel}>
+                          {item.working ? "今日已排班" : "未排班"}
+                        </div>
+
+                        <div style={styles.integratedTimeRow}>
+                          <div style={{ ...styles.integratedTimeBox, opacity: item.working ? 1 : 0.45 }}>
+                            <div style={styles.integratedTimeTitle}>上班</div>
+                            <input
+                              type="time"
+                              value={item.startTime || "06:00"}
+                              onChange={(e) => setScheduleTime(key, e.target.value)}
+                              disabled={!item.working}
+                              style={styles.integratedTimeInput}
+                            />
+                          </div>
+
+                          <div style={{ ...styles.integratedTimeBox, opacity: item.working ? 1 : 0.45 }}>
+                            <div style={styles.integratedTimeTitle}>下班</div>
+                            <input
+                              type="time"
+                              value={item.endTime || "14:00"}
+                              onChange={(e) => setScheduleEndTime(key, e.target.value)}
+                              disabled={!item.working}
+                              style={styles.integratedTimeInput}
+                            />
+                          </div>
+                        </div>
                       </div>
                     </div>
-                    <div style={styles.actionBtns}>
-                      <button
-                        style={styles.editBtn}
-                        onClick={() => openEdit(emp)}
-                      >
-                        編輯
-                      </button>
-                      <button
-                        style={styles.deleteBtn}
-                        onClick={() => deleteEmployee(emp)}
-                      >
-                        停用
-                      </button>
-                    </div>
-                  </div>
-                );
-              })
+                  );
+                })
             )}
           </div>
 
@@ -2273,6 +2268,73 @@ const styles = {
     boxShadow: "0 12px 24px rgba(34,197,94,0.22)",
     transition: "all 0.2s ease",
     marginBottom: 14,
+  },
+  integratedEmployeeCard: {
+    border: "1px solid #e5e7eb",
+    borderRadius: 22,
+    padding: 18,
+    background: "linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)",
+    boxShadow: "0 10px 24px rgba(15,23,42,0.04)",
+    marginBottom: 14,
+  },
+  integratedTopRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  scheduleCheckWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    background: "#ecfdf5",
+    border: "1px solid #bbf7d0",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 2,
+    flexShrink: 0,
+  },
+  integratedSchedulePanel: {
+    marginTop: 14,
+    padding: 14,
+    borderRadius: 18,
+    background: "#ffffff",
+    border: "1px solid #e2e8f0",
+  },
+  integratedScheduleLabel: {
+    fontSize: 13,
+    fontWeight: 800,
+    color: "#475569",
+    marginBottom: 10,
+  },
+  integratedTimeRow: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gap: 12,
+  },
+  integratedTimeBox: {
+    borderRadius: 16,
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+    padding: 12,
+  },
+  integratedTimeTitle: {
+    fontSize: 12,
+    fontWeight: 800,
+    color: "#64748b",
+    marginBottom: 6,
+  },
+  integratedTimeInput: {
+    width: "100%",
+    border: "none",
+    outline: "none",
+    background: "transparent",
+    fontSize: 24,
+    fontWeight: 900,
+    color: "#0f172a",
+    letterSpacing: 1,
   },
   badge: {
     minWidth: 32,
