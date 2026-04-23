@@ -1449,10 +1449,8 @@ ${message}
           <div style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div style={styles.panelTitle}>員工管理</div>
+              <div style={styles.mutedNote}>新增按鈕已移到右上角</div>
             </div>
-            <button style={styles.fullMainBtn} onClick={() => setShowAddModal(true)}>
-              ＋ 新增員工
-            </button>
           </div>
 
           <div style={styles.panelCard}>
