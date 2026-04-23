@@ -378,6 +378,7 @@ ${message}
         const item = scheduleItems[key];
         if (item?.working) {
           finalSchedule[key] = {
+            empId: key,
             name: emp.name,
             store: emp.store || "",
             startTime: item.startTime || "06:00",
@@ -386,20 +387,47 @@ ${message}
         }
       });
 
+      const scheduleList = Object.values(finalSchedule).sort((a, b) =>
+        String(a.startTime || "").localeCompare(String(b.startTime || ""))
+      );
+
       await set(
         ref(db, `schedules/${today}`),
         Object.keys(finalSchedule).length > 0 ? finalSchedule : null
       );
 
+      const response = await fetch("/api/send-schedule", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          dateKey: today,
+          schedule: scheduleList,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok || !result?.success) {
+        await set(ref(db, `schedule_notify/${today}`), {
+          pending: true,
+          createdAt: Date.now(),
+          lastError: result?.error || "LINE 發送失敗",
+        });
+        throw new Error(result?.error || "LINE 發送失敗");
+      }
+
       await set(ref(db, `schedule_notify/${today}`), {
-        pending: true,
-        createdAt: Date.now(),
+        pending: false,
+        sentAt: Date.now(),
+        source: "saveAndSendSchedule",
       });
 
       setScheduleSent(true);
       setTimeout(() => setScheduleSent(false), 4000);
     } catch (err) {
-      alert(err.message);
+      alert(`班表已儲存，但 LINE 發送失敗：${err.message}`);
     } finally {
       setScheduleSaving(false);
     }
