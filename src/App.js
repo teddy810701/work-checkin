@@ -444,12 +444,15 @@ ${message}
         const result = await response.json().catch(() => ({}));
 
         if (!response.ok || !result?.success) {
+          const errorText = `${storeName}：${result?.error || result?.message || "LINE 發送失敗"}`;
+          const detailText = result?.detail ? `｜${result.detail}` : "";
           await set(ref(db, `schedule_notify/${today}`), {
             pending: true,
             createdAt: Date.now(),
-            lastError: `${storeName}：${result?.error || result?.message || "LINE 發送失敗"}`,
+            lastError: `${errorText}${detailText}`,
           });
-          throw new Error(`${storeName}：${result?.error || result?.message || "LINE 發送失敗"}`);
+          console.error("send-schedule failed", result);
+          throw new Error(`${errorText}${detailText}`);
         }
       }
 
