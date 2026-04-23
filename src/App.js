@@ -82,6 +82,13 @@ const formatDate = (timestamp) => {
   return new Date(timestamp).toLocaleDateString("zh-TW");
 };
 
+const formatDateTime = (timestamp) => {
+  if (!timestamp) return "";
+  return new Date(timestamp).toLocaleString("zh-TW", {
+    hour12: false,
+  });
+};
+
 const formatDateTimeLocalValue = (timestamp) => {
   if (!timestamp) return "";
   const d = new Date(timestamp);
@@ -134,7 +141,7 @@ const buildLineScheduleMessage = (storeName, scheduleList, dateKey) => {
 
   return [
     title,
-    ...scheduleList.map((item) => `• ${item.name} ${item.startTime}`),
+    ...scheduleList.map((item) => `• ${item.name} ${item.startTime} - ${item.endTime || "未填"}`),
   ].join("\n");
 };
 
@@ -177,7 +184,15 @@ export default function App() {
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleSent, setScheduleSent] = useState(false);
   const [publishStore, setPublishStore] = useState("西螺文昌店");
-  const [lateNoticeTesting, setLateNoticeTesting] = useState(false);
+  const [adminStoreTab, setAdminStoreTab] = useState("全部");
+  const [scheduleHistory, setScheduleHistory] = useState({});
+  const [scheduleNotifyHistory, setScheduleNotifyHistory] = useState({});
+  const [lineStatus, setLineStatus] = useState({});
+  const [adminPanels, setAdminPanels] = useState({
+    scheduleHistory: false,
+    lateCheck: false,
+    lineQuery: false,
+  });
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -286,7 +301,7 @@ ${message}
       employees.forEach((emp) => {
         const key = emp.empId || emp.id;
         if (!next[key]) {
-          next[key] = { working: false, startTime: "06:00" };
+          next[key] = { working: false, startTime: "06:00", endTime: "14:00" };
         }
       });
       return next;
@@ -305,12 +320,42 @@ ${message}
           next[empId] = {
             working: schedData.working || false,
             startTime: schedData.startTime || "06:00",
+            endTime: schedData.endTime || "14:00",
           };
         });
         return next;
       });
     });
   }, [authReady, isAdmin]);
+
+  useEffect(() => {
+    if (!authReady || !isAdmin) return;
+    const historyRef = ref(db, "schedules");
+    return onValue(historyRef, (snap) => {
+      setScheduleHistory(snap.val() || {});
+    });
+  }, [authReady, isAdmin]);
+
+  useEffect(() => {
+    if (!authReady || !isAdmin) return;
+    const notifyRef = ref(db, "schedule_notify");
+    return onValue(notifyRef, (snap) => {
+      setScheduleNotifyHistory(snap.val() || {});
+    });
+  }, [authReady, isAdmin]);
+
+  useEffect(() => {
+    if (!authReady || !isAdmin) return;
+    const lineStatusRef = ref(db, "line_status");
+    return onValue(lineStatusRef, (snap) => {
+      setLineStatus(snap.val() || {});
+    });
+  }, [authReady, isAdmin]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    triggerAutoLateCheck("app-open");
+  }, [authReady]);
 
   const todayRecords = useMemo(() => {
     return records.filter((r) => {
@@ -384,36 +429,13 @@ ${message}
     }));
   };
 
-  const testLateNotice = async () => {
-    setLateNoticeTesting(true);
-    try {
-      const now = new Date();
-      const hh = String(now.getHours()).padStart(2, "0");
-      const mm = String(now.getMinutes()).padStart(2, "0");
-      const res = await fetch("/api/send-late-notice", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          message: `【測試通知】${publishStore} 遲到通知功能正常\n測試時間：${hh}:${mm}`,
-          store: publishStore,
-          test: true,
-        }),
-      });
-
-      const result = await res.json().catch(() => ({}));
-      if (!res.ok || !result?.success) {
-        throw new Error(result?.error || result?.message || "遲到通知測試失敗");
-      }
-
-      alert(`遲到通知測試成功：${publishStore}`);
-    } catch (err) {
-      alert(`遲到通知測試失敗：${err.message}`);
-    } finally {
-      setLateNoticeTesting(false);
-    }
+  const setScheduleEndTime = (empId, time) => {
+    setScheduleItems((prev) => ({
+      ...prev,
+      [empId]: { ...prev[empId], endTime: time },
+    }));
   };
+
 
   const saveAndSendSchedule = async () => {
     setScheduleSaving(true);
@@ -430,6 +452,7 @@ ${message}
             name: emp.name,
             store: emp.store || "",
             startTime: item.startTime || "06:00",
+            endTime: item.endTime || "14:00",
             working: true,
           };
         }
@@ -678,6 +701,9 @@ ${message}
     });
 
     setEmployeeId("");
+    if (type === "上班") {
+      triggerAutoLateCheck("checkin");
+    }
     alert(`${emp.name} ${type}成功`);
   };
 
@@ -858,6 +884,72 @@ ${message}
     link.click();
     URL.revokeObjectURL(link.href);
   };
+
+  const toggleAdminPanel = (key) => {
+    setAdminPanels((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
+
+  const triggerAutoLateCheck = async (reason = "") => {
+    try {
+      await fetch("/api/auto-check-late", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ reason }),
+      });
+    } catch (error) {
+      console.error("auto-check-late failed:", error);
+    }
+  };
+
+  const historyScheduleDates = useMemo(() => {
+    return Object.keys(scheduleHistory || {}).sort((a, b) => b.localeCompare(a));
+  }, [scheduleHistory]);
+
+  const lateNoticeEntries = useMemo(() => {
+    const attendanceSent = lineStatus?.attendance_sent || {};
+    const manualChecks = lineStatus?.manual_late_checks || {};
+
+    return [
+      ...Object.entries(attendanceSent).map(([key, value]) => ({
+        id: `attendance-${key}`,
+        dateKey: key,
+        type: "自動遲到通知",
+        ...value,
+      })),
+      ...Object.entries(manualChecks).map(([key, value]) => ({
+        id: `manual-${key}`,
+        dateKey: value?.dateKey || key,
+        type: "手動遲到檢查",
+        ...value,
+      })),
+    ].sort((a, b) => (b.sentAt || b.checkedAt || 0) - (a.sentAt || a.checkedAt || 0));
+  }, [lineStatus]);
+
+  const lineQueryEntries = useMemo(() => {
+    const scheduleSent = lineStatus?.schedule_sent || {};
+    const scheduleNotify = scheduleNotifyHistory || {};
+
+    return [
+      ...Object.entries(scheduleSent).map(([key, value]) => ({
+        id: `staff-${key}`,
+        dateKey: key,
+        type: "班表推播",
+        ...value,
+      })),
+      ...Object.entries(scheduleNotify).map(([key, value]) => ({
+        id: `notify-${key}`,
+        dateKey: key,
+        type: "發布紀錄",
+        ...value,
+      })),
+    ].sort((a, b) => (b.sentAt || b.createdAt || 0) - (a.sentAt || a.createdAt || 0));
+  }, [lineStatus, scheduleNotifyHistory]);
+
 
   const recentRecords = records.slice(0, 8);
 
@@ -1243,12 +1335,32 @@ ${message}
       <div style={styles.adminGrid}>
         <div style={styles.leftCol}>
           <div style={styles.panelCard}>
-            <div style={styles.panelTitle}>今日排班</div>
+            <div style={styles.listHeader}>
+              <div style={styles.panelTitle}>今日排班</div>
+              <div style={styles.badge}>{adminStoreTab === "全部" ? "全部" : adminStoreTab}</div>
+            </div>
+
+            <div style={styles.storeSwitchWrap}>
+              {["全部", "西螺文昌店", "斗南站前店"].map((storeName) => (
+                <button
+                  key={storeName}
+                  style={{
+                    ...styles.storeSwitchBtn,
+                    ...(adminStoreTab === storeName ? styles.storeSwitchBtnActive : {}),
+                  }}
+                  onClick={() => setAdminStoreTab(storeName)}
+                >
+                  {storeName}
+                </button>
+              ))}
+            </div>
 
             {Object.keys(storeGroups).length === 0 ? (
               <div style={styles.emptyText}>尚無員工資料</div>
             ) : (
-              Object.entries(storeGroups).map(([storeName, storeEmps]) => (
+              Object.entries(storeGroups)
+                .filter(([storeName]) => adminStoreTab === "全部" || storeName === adminStoreTab)
+                .map(([storeName, storeEmps]) => (
                 <div key={storeName}>
                   <div style={styles.storeLabel}>{storeName}</div>
                   {storeEmps.map((emp) => {
@@ -1256,6 +1368,7 @@ ${message}
                     const item = scheduleItems[key] || {
                       working: false,
                       startTime: "06:00",
+                      endTime: "14:00",
                     };
                     return (
                       <div key={key} style={styles.scheduleRow}>
@@ -1266,16 +1379,29 @@ ${message}
                           style={{ width: 18, height: 18, cursor: "pointer", flexShrink: 0 }}
                         />
                         <span style={styles.scheduleEmpName}>{emp.name}</span>
-                        <input
-                          type="time"
-                          value={item.startTime || "06:00"}
-                          onChange={(e) => setScheduleTime(key, e.target.value)}
-                          disabled={!item.working}
-                          style={{
-                            ...styles.timeInput,
-                            opacity: item.working ? 1 : 0.35,
-                          }}
-                        />
+                        <div style={styles.timeInputsWrap}>
+                          <input
+                            type="time"
+                            value={item.startTime || "06:00"}
+                            onChange={(e) => setScheduleTime(key, e.target.value)}
+                            disabled={!item.working}
+                            style={{
+                              ...styles.timeInput,
+                              opacity: item.working ? 1 : 0.35,
+                            }}
+                          />
+                          <span style={styles.timeDash}>~</span>
+                          <input
+                            type="time"
+                            value={item.endTime || "14:00"}
+                            onChange={(e) => setScheduleEndTime(key, e.target.value)}
+                            disabled={!item.working}
+                            style={{
+                              ...styles.timeInput,
+                              opacity: item.working ? 1 : 0.35,
+                            }}
+                          />
+                        </div>
                       </div>
                     );
                   })}
@@ -1316,20 +1442,6 @@ ${message}
                   : scheduleSent
                   ? `✓ ${publishStore} 已傳送`
                   : `儲存並傳送 ${publishStore}`}
-              </button>
-
-              <button
-                style={{
-                  ...styles.fullMainBtn,
-                  background: "linear-gradient(135deg, #f59e0b, #f97316)",
-                  opacity: lateNoticeTesting ? 0.7 : 1,
-                }}
-                onClick={testLateNotice}
-                disabled={lateNoticeTesting}
-              >
-                {lateNoticeTesting
-                  ? "測試中…"
-                  : `測試 ${publishStore} 遲到通知`}
               </button>
             </div>
           </div>
@@ -1380,6 +1492,102 @@ ${message}
               匯出月報表 Excel
             </button>
           </div>
+
+          <div style={styles.panelCard}>
+            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("scheduleHistory")}>
+              歷史班表 {adminPanels.scheduleHistory ? "－" : "＋"}
+            </button>
+            {adminPanels.scheduleHistory ? (
+              <div style={styles.collapseContent}>
+                {historyScheduleDates.length === 0 ? (
+                  <div style={styles.emptyText}>目前沒有歷史班表</div>
+                ) : (
+                  historyScheduleDates.slice(0, 14).map((dateKey) => {
+                    const dayData = scheduleHistory[dateKey] || {};
+                    const storeMap = {};
+                    Object.entries(dayData).forEach(([empId, item]) => {
+                      if (!item?.working) return;
+                      const storeName = item.store || "未填店名";
+                      if (!storeMap[storeName]) storeMap[storeName] = [];
+                      storeMap[storeName].push({ empId, ...item });
+                    });
+
+                    return (
+                      <div key={dateKey} style={styles.historyBlock}>
+                        <div style={styles.historyDate}>{dateKey}</div>
+                        {Object.keys(storeMap).length === 0 ? (
+                          <div style={styles.historyItem}>無排班資料</div>
+                        ) : (
+                          Object.entries(storeMap).map(([storeName, list]) => (
+                            <div key={storeName} style={{ marginTop: 8 }}>
+                              <div style={styles.storeLabel}>{storeName}</div>
+                              {list
+                                .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")))
+                                .map((item) => (
+                                  <div key={`${dateKey}-${storeName}-${item.empId}`} style={styles.historyItem}>
+                                    {item.name}｜{item.startTime || "未填"} - {item.endTime || "未填"}
+                                  </div>
+                                ))}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          <div style={styles.panelCard}>
+            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("lateCheck")}>
+              自動抓遲到 {adminPanels.lateCheck ? "－" : "＋"}
+            </button>
+            {adminPanels.lateCheck ? (
+              <div style={styles.collapseContent}>
+                <div style={styles.historyItem}>系統會依班表自動抓遲到，超過 1 分鐘未打上班卡就通知對應店長群組。</div>
+                <div style={{ ...styles.deviceLabel, marginTop: 14 }}>遲到通知紀錄</div>
+                {lateNoticeEntries.length === 0 ? (
+                  <div style={styles.emptyText}>目前沒有遲到通知紀錄</div>
+                ) : (
+                  lateNoticeEntries.slice(0, 12).map((item) => (
+                    <div key={item.id} style={styles.historyBlock}>
+                      <div style={styles.historyDate}>
+                        {item.type}｜{item.store || item.dateKey || "未分類"}
+                      </div>
+                      <div style={styles.historyItem}>時間：{formatDateTime(item.sentAt || item.checkedAt)}</div>
+                      <div style={styles.historyItem}>結果：{item.result || (item.sent ? "已發送" : "未發送")}</div>
+                      {Array.isArray(item.names) && item.names.length ? (
+                        <div style={styles.historyItem}>名單：{item.names.join("、")}</div>
+                      ) : null}
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          <div style={styles.panelCard}>
+            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("lineQuery")}>
+              LINE 查詢頁 {adminPanels.lineQuery ? "－" : "＋"}
+            </button>
+            {adminPanels.lineQuery ? (
+              <div style={styles.collapseContent}>
+                {lineQueryEntries.length === 0 ? (
+                  <div style={styles.emptyText}>目前沒有 LINE 發送紀錄</div>
+                ) : (
+                  lineQueryEntries.slice(0, 14).map((item) => (
+                    <div key={item.id} style={styles.historyBlock}>
+                      <div style={styles.historyDate}>{item.type}｜{item.targetStore || item.store || item.dateKey}</div>
+                      <div style={styles.historyItem}>時間：{formatDateTime(item.sentAt || item.createdAt)}</div>
+                      <div style={styles.historyItem}>狀態：{item.pending ? "待處理" : item.sent === false ? "未發送" : "已發送"}</div>
+                      {item.lastError ? <div style={styles.errorMini}>錯誤：{item.lastError}</div> : null}
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : null}
+          </div>
         </div>
 
         <div style={styles.rightCol}>
@@ -1389,10 +1597,27 @@ ${message}
               <div style={styles.badge}>{employees.length}</div>
             </div>
 
+            <div style={styles.storeSwitchWrap}>
+              {["全部", "西螺文昌店", "斗南站前店"].map((storeName) => (
+                <button
+                  key={storeName}
+                  style={{
+                    ...styles.storeSwitchBtn,
+                    ...(adminStoreTab === storeName ? styles.storeSwitchBtnActive : {}),
+                  }}
+                  onClick={() => setAdminStoreTab(storeName)}
+                >
+                  {storeName}
+                </button>
+              ))}
+            </div>
+
             {employees.length === 0 ? (
               <div style={styles.emptyText}>目前沒有員工資料</div>
             ) : (
-              employees.map((emp) => {
+              employees
+                .filter((emp) => adminStoreTab === "全部" || emp.store === adminStoreTab)
+                .map((emp) => {
                 const statusStyle = getStatusStyle(emp.status || "未打卡");
                 return (
                   <div key={emp.id} style={styles.employeeRow}>
@@ -1912,6 +2137,47 @@ const styles = {
     fontWeight: 900,
     cursor: "pointer",
     marginTop: 12,
+  },
+  collapseBtn: {
+    width: "100%",
+    border: "1px solid #dbeafe",
+    background: "#eff6ff",
+    color: "#1d4ed8",
+    padding: "14px 16px",
+    borderRadius: 14,
+    fontWeight: 900,
+    cursor: "pointer",
+    textAlign: "left",
+  },
+  collapseContent: {
+    marginTop: 12,
+    display: "grid",
+    gap: 10,
+  },
+  historyBlock: {
+    border: "1px solid #e5e7eb",
+    borderRadius: 14,
+    padding: 12,
+    background: "#fafafa",
+  },
+  historyDate: {
+    fontSize: 14,
+    fontWeight: 800,
+    color: "#111827",
+    marginBottom: 6,
+  },
+  historyItem: {
+    fontSize: 13,
+    color: "#4b5563",
+    lineHeight: 1.7,
+  },
+  errorMini: {
+    marginTop: 6,
+    fontSize: 12,
+    color: "#b91c1c",
+    background: "#fee2e2",
+    borderRadius: 10,
+    padding: "8px 10px",
   },
   monthInput: {
     width: "100%",
