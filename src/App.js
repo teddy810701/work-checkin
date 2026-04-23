@@ -183,6 +183,7 @@ export default function App() {
   const [scheduleItems, setScheduleItems] = useState({});
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleSent, setScheduleSent] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState(formatTaipeiDateKey());
   const [publishStore, setPublishStore] = useState("西螺文昌店");
   const [adminStoreTab, setAdminStoreTab] = useState("全部");
   const [scheduleHistory, setScheduleHistory] = useState({});
@@ -310,12 +311,16 @@ ${message}
 
   useEffect(() => {
     if (!authReady || !isAdmin) return;
-    const today = formatTaipeiDateKey();
-    const schedRef = ref(db, `schedules/${today}`);
+    const targetDate = scheduleDate || formatTaipeiDateKey();
+    const schedRef = ref(db, `schedules/${targetDate}`);
     return onValue(schedRef, (snap) => {
       const data = snap.val() || {};
-      setScheduleItems((prev) => {
-        const next = { ...prev };
+      setScheduleItems(() => {
+        const next = {};
+        employees.forEach((emp) => {
+          const key = emp.empId || emp.id;
+          next[key] = { working: false, startTime: "06:00", endTime: "14:00" };
+        });
         Object.entries(data).forEach(([empId, schedData]) => {
           next[empId] = {
             working: schedData.working || false,
@@ -326,7 +331,7 @@ ${message}
         return next;
       });
     });
-  }, [authReady, isAdmin]);
+  }, [authReady, isAdmin, scheduleDate, employees]);
 
   useEffect(() => {
     if (!authReady || !isAdmin) return;
@@ -440,7 +445,7 @@ ${message}
   const saveAndSendSchedule = async () => {
     setScheduleSaving(true);
     try {
-      const today = formatTaipeiDateKey();
+      const targetDate = scheduleDate || formatTaipeiDateKey();
       const finalSchedule = {};
 
       employees.forEach((emp) => {
@@ -459,7 +464,7 @@ ${message}
       });
 
       await set(
-        ref(db, `schedules/${today}`),
+        ref(db, `schedules/${targetDate}`),
         Object.keys(finalSchedule).length > 0 ? finalSchedule : null
       );
 
@@ -478,14 +483,14 @@ ${message}
       const targetScheduleList = groupedByStore[targetStoreName] || [];
 
       if (!targetScheduleList.length) {
-        alert(`${targetStoreName} 今日沒有排班，已完成儲存`);
+        alert(`${targetStoreName} 在 ${targetDate} 沒有排班，已完成儲存`);
         return;
       }
 
       const message = buildLineScheduleMessage(
         targetStoreName,
         targetScheduleList,
-        today
+        targetDate
       );
 
       const response = await fetch("/api/send-schedule", {
@@ -496,7 +501,7 @@ ${message}
         body: JSON.stringify({
           store: targetStoreName,
           message,
-          dateKey: today,
+          dateKey: targetDate,
           schedule: targetScheduleList,
         }),
       });
@@ -506,7 +511,7 @@ ${message}
       if (!response.ok || !result?.success) {
         const errorText = `${targetStoreName}：${result?.error || result?.message || "LINE 發送失敗"}`;
         const detailText = result?.detail ? `｜${result.detail}` : "";
-        await set(ref(db, `schedule_notify/${today}`), {
+        await set(ref(db, `schedule_notify/${targetDate}`), {
           pending: true,
           createdAt: Date.now(),
           lastError: `${errorText}${detailText}`,
@@ -516,7 +521,7 @@ ${message}
         throw new Error(`${errorText}${detailText}`);
       }
 
-      await set(ref(db, `schedule_notify/${today}`), {
+      await set(ref(db, `schedule_notify/${targetDate}`), {
         pending: false,
         sentAt: Date.now(),
         source: "saveAndSendSchedule",
@@ -526,7 +531,7 @@ ${message}
 
       setScheduleSent(true);
       setTimeout(() => setScheduleSent(false), 4000);
-      alert(`班表已成功傳送：${targetStoreName}`);
+      alert(`班表已成功傳送：${targetStoreName}（${targetDate}）`);
     } catch (err) {
       alert(`班表已儲存，但 LINE 發送失敗：${err.message}`);
     } finally {
@@ -1336,7 +1341,7 @@ ${message}
         <div style={styles.leftCol}>
           <div style={styles.panelCard}>
             <div style={styles.listHeader}>
-              <div style={styles.panelTitle}>今日排班</div>
+              <div style={styles.panelTitle}>排班設定</div>
               <div style={styles.badge}>{adminStoreTab === "全部" ? "全部" : adminStoreTab}</div>
             </div>
 
@@ -1395,6 +1400,34 @@ ${message}
             )}
 
             <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
+              <div style={{
+                display: "grid",
+                gap: 8,
+                padding: "12px",
+                borderRadius: 14,
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>發布班表日期</div>
+                <input
+                  type="date"
+                  value={scheduleDate}
+                  onChange={(e) => setScheduleDate(e.target.value)}
+                  style={{
+                    width: "100%",
+                    borderRadius: 12,
+                    border: "1px solid #cbd5e1",
+                    padding: "12px 14px",
+                    fontSize: 15,
+                    outline: "none",
+                    background: "#fff",
+                  }}
+                />
+                <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5 }}>
+                  例如今天先發布明天早班，就把日期改成明天再傳送。
+                </div>
+              </div>
+
               <select
                 value={publishStore}
                 onChange={(e) => setPublishStore(e.target.value)}
@@ -1425,8 +1458,8 @@ ${message}
                 {scheduleSaving
                   ? "傳送中…"
                   : scheduleSent
-                  ? `✓ ${publishStore} 已傳送`
-                  : `儲存並傳送 ${publishStore}`}
+                  ? `✓ ${publishStore} ${scheduleDate} 已傳送`
+                  : `儲存並傳送 ${publishStore} ${scheduleDate}`}
               </button>
             </div>
           </div>
