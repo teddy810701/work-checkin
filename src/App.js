@@ -421,10 +421,11 @@ ${message}
 
       const storeNames = Object.keys(groupedByStore);
 
-      for (const storeName of storeNames) {
+      for (const rawStoreName of storeNames) {
+        const storeName = String(rawStoreName || "").trim();
         const message = buildLineScheduleMessage(
           storeName,
-          groupedByStore[storeName],
+          groupedByStore[rawStoreName],
           today
         );
 
@@ -437,11 +438,19 @@ ${message}
             store: storeName,
             message,
             dateKey: today,
-            schedule: groupedByStore[storeName],
+            schedule: groupedByStore[rawStoreName],
           }),
         });
 
-        const result = await response.json().catch(() => ({}));
+        let result = {};
+        try {
+          result = await response.json();
+        } catch (jsonError) {
+          result = {
+            success: false,
+            error: `API 回傳不是 JSON（HTTP ${response.status}）`,
+          };
+        }
 
         if (!response.ok || !result?.success) {
           const errorText = `${storeName}：${result?.error || result?.message || "LINE 發送失敗"}`;
@@ -451,7 +460,11 @@ ${message}
             createdAt: Date.now(),
             lastError: `${errorText}${detailText}`,
           });
-          console.error("send-schedule failed", result);
+          console.error("send-schedule failed", {
+            storeName,
+            status: response.status,
+            result,
+          });
           throw new Error(`${errorText}${detailText}`);
         }
       }
