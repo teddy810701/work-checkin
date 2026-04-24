@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { db, auth } from "./firebase";
 import { ref, set, onValue, update, remove, get, query, orderByChild, limitToLast } from "firebase/database";
 import { signInAnonymously, onAuthStateChanged } from "firebase/auth";
@@ -146,6 +146,42 @@ const buildLineScheduleMessage = (storeName, scheduleList, dateKey) => {
 };
 
 
+const getTaipeiTimestampFromDateTime = (dateKey, timeValue) => {
+  if (!dateKey || !timeValue) return 0;
+  const [year, month, day] = String(dateKey).split("-").map(Number);
+  const [hour, minute] = String(timeValue).split(":").map(Number);
+
+  if (!year || !month || !day || Number.isNaN(hour) || Number.isNaN(minute)) {
+    return 0;
+  }
+
+  // 台灣全年 UTC+8，這裡直接換算成 UTC 時間戳，避免手機/瀏覽器時區誤差。
+  return Date.UTC(year, month - 1, day, hour - 8, minute, 0, 0);
+};
+
+const safeFirebaseKey = (value) => {
+  return String(value || "")
+    .replace(/[.#$\[\]/]/g, "_")
+    .replace(/\s+/g, "_");
+};
+
+const buildLateLineMessage = (storeName, lateList, dateKey, reason = "") => {
+  const title = `⚠️ ${dateKey} ${storeName} 遲到提醒`;
+  const reasonText = reason ? `觸發來源：${reason}` : "";
+
+  return [
+    title,
+    reasonText,
+    ...lateList.map((item) => {
+      const statusText = item.status === "not_checked"
+        ? "超過 1 分鐘尚未打上班卡"
+        : `上班打卡 ${item.actualTime}，已超過排班時間`;
+      return `• ${item.name}（${item.empId}）排班 ${item.startTime}｜${statusText}`;
+    }),
+  ].filter(Boolean).join("\n");
+};
+
+
 export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [authError, setAuthError] = useState("");
@@ -180,6 +216,7 @@ export default function App() {
   const [recordSearch, setRecordSearch] = useState("");
 
   const myDevice = getDeviceId();
+  const lateCheckRunningRef = useRef(false);
 
   const [scheduleItems, setScheduleItems] = useState({});
   const [scheduleSaving, setScheduleSaving] = useState(false);
@@ -361,6 +398,16 @@ ${message}
   useEffect(() => {
     if (!authReady) return;
     triggerAutoLateCheck("app-open");
+  }, [authReady]);
+
+  useEffect(() => {
+    if (!authReady) return;
+
+    const timer = setInterval(() => {
+      triggerAutoLateCheck("auto-timer");
+    }, 60000);
+
+    return () => clearInterval(timer);
   }, [authReady]);
 
   const todayRecords = useMemo(() => {
@@ -648,98 +695,6 @@ ${message}
     });
   };
 
-  const checkLateAndNotify = async (emp, checkInTimestamp) => {
-    try {
-      const dateKey = formatTaipeiDateKey(checkInTimestamp);
-      const empKey = emp.empId || emp.id;
-
-      if (!empKey) return;
-
-      const scheduleSnap = await get(ref(db, `schedules/${dateKey}`));
-      const scheduleData = scheduleSnap.val() || {};
-
-      const scheduleItem =
-        scheduleData[empKey] ||
-        Object.values(scheduleData).find(
-          (item) =>
-            item &&
-            (item.empId === empKey || item.name === emp.name) &&
-            (item.store || "") === (emp.store || "")
-        );
-
-      if (!scheduleItem?.working || !scheduleItem?.startTime) return;
-
-      const [year, month, day] = dateKey.split("-").map(Number);
-      const [hour, minute] = String(scheduleItem.startTime || "00:00")
-        .split(":")
-        .map(Number);
-
-      const scheduledAt = new Date(year, month - 1, day, hour || 0, minute || 0, 0, 0).getTime();
-      const lateMinutes = Math.floor((checkInTimestamp - scheduledAt) / 60000);
-
-      if (lateMinutes < 1) return;
-
-      const notifiedRef = ref(db, `late_notify/${dateKey}/${empKey}`);
-      const notifiedSnap = await get(notifiedRef);
-      if (notifiedSnap.exists()) return;
-
-      const actualTime = new Date(checkInTimestamp).toLocaleTimeString("zh-TW", {
-        hour12: false,
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-
-      const storeName = emp.store || scheduleItem.store || "未填店名";
-      const message = [
-        "⚠️ 遲到通知",
-        `${storeName}｜${emp.name}`,
-        `應上班：${scheduleItem.startTime}`,
-        `實際打卡：${actualTime}`,
-        `遲到：${lateMinutes} 分鐘`,
-      ].join("\n");
-
-      await set(notifiedRef, {
-        empId: empKey,
-        name: emp.name,
-        store: storeName,
-        dateKey,
-        scheduleStartTime: scheduleItem.startTime,
-        actualTime,
-        lateMinutes,
-        message,
-        createdAt: Date.now(),
-        status: "pending",
-      });
-
-      const response = await fetch("/api/send-late", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          store: storeName,
-          dateKey,
-          empId: empKey,
-          name: emp.name,
-          scheduleStartTime: scheduleItem.startTime,
-          actualTime,
-          lateMinutes,
-          message,
-        }),
-      });
-
-      const result = await response.json().catch(() => ({}));
-
-      await update(notifiedRef, {
-        status: response.ok && result?.success ? "sent" : "failed",
-        sentAt: response.ok && result?.success ? Date.now() : 0,
-        error: response.ok && result?.success ? "" : result?.error || result?.message || "LINE 發送失敗",
-      });
-    } catch (error) {
-      console.error("遲到通知失敗：", error);
-    }
-  };
-
   const checkIn = async (type) => {
     if (myDevice !== authorizedDevice) {
       alert("此設備未授權");
@@ -798,12 +753,10 @@ ${message}
       updatedAt: createdAt,
     });
 
+    setEmployeeId("");
     if (type === "上班") {
-      await checkLateAndNotify(emp, createdAt);
       triggerAutoLateCheck("checkin");
     }
-
-    setEmployeeId("");
     alert(`${emp.name} ${type}成功`);
   };
 
@@ -992,6 +945,143 @@ ${message}
     }));
   };
 
+  const runClientLateCheck = async (reason = "") => {
+    if (lateCheckRunningRef.current) return;
+
+    lateCheckRunningRef.current = true;
+
+    try {
+      const dateKey = formatTaipeiDateKey();
+      const nowTs = Date.now();
+      const graceMs = 60 * 1000;
+
+      const [scheduleSnap, recordsSnap, sentSnap] = await Promise.all([
+        get(ref(db, `schedules/${dateKey}`)),
+        get(ref(db, "records")),
+        get(ref(db, `line_status/attendance_sent/${dateKey}`)),
+      ]);
+
+      const scheduleData = scheduleSnap.val() || {};
+      const recordsData = recordsSnap.val() || {};
+      const sentData = sentSnap.val() || {};
+
+      const todayWorkInRecords = Object.values(recordsData)
+        .filter((record) => {
+          const recordDateKey = record?.dateKey || (record?.createdAt ? formatTaipeiDateKey(record.createdAt) : "");
+          return recordDateKey === dateKey && record?.type === "上班";
+        })
+        .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+      const firstWorkInByEmp = {};
+      todayWorkInRecords.forEach((record) => {
+        const empId = record?.empId || "";
+        if (!empId) return;
+        if (!firstWorkInByEmp[empId]) {
+          firstWorkInByEmp[empId] = record;
+        }
+      });
+
+      const lateByStore = {};
+
+      Object.entries(scheduleData).forEach(([empIdFromKey, item]) => {
+        if (!item?.working) return;
+
+        const empId = item.empId || empIdFromKey;
+        const startTime = item.startTime || "06:00";
+        const startTs = getTaipeiTimestampFromDateTime(dateKey, startTime);
+        if (!startTs) return;
+
+        const shouldCheckTs = startTs + graceMs;
+        if (nowTs < shouldCheckTs) return;
+
+        const storeName = item.store || "未填店名";
+        const sentStoreKey = safeFirebaseKey(storeName);
+        const sentEmpKey = safeFirebaseKey(empId);
+        if (sentData?.[sentStoreKey]?.[sentEmpKey]?.sent) return;
+
+        const workInRecord = firstWorkInByEmp[empId];
+        const actualTs = workInRecord?.createdAt || 0;
+        const isNotChecked = !workInRecord;
+        const isLateCheckedIn = actualTs > shouldCheckTs;
+
+        if (!isNotChecked && !isLateCheckedIn) return;
+
+        if (!lateByStore[storeName]) lateByStore[storeName] = [];
+        lateByStore[storeName].push({
+          empId,
+          name: item.name || empId,
+          store: storeName,
+          startTime,
+          actualTime: workInRecord?.time || "未打卡",
+          status: isNotChecked ? "not_checked" : "late_checked_in",
+        });
+      });
+
+      const entries = Object.entries(lateByStore);
+      if (!entries.length) return;
+
+      for (const [storeName, lateList] of entries) {
+        const message = buildLateLineMessage(storeName, lateList, dateKey, reason);
+
+        const response = await fetch("/api/send-schedule", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            store: storeName,
+            message,
+            dateKey,
+            type: "late_notice",
+            lateList,
+          }),
+        });
+
+        const result = await response.json().catch(() => ({}));
+        const sent = response.ok && result?.success;
+        const sentAt = Date.now();
+        const sentStoreKey = safeFirebaseKey(storeName);
+        const updatePayload = {};
+
+        lateList.forEach((item) => {
+          const sentEmpKey = safeFirebaseKey(item.empId);
+          updatePayload[`line_status/attendance_sent/${dateKey}/${sentStoreKey}/${sentEmpKey}`] = {
+            sent,
+            sentAt,
+            dateKey,
+            store: storeName,
+            empId: item.empId,
+            name: item.name,
+            startTime: item.startTime,
+            actualTime: item.actualTime,
+            status: item.status,
+            reason,
+            result: sent ? "已發送" : "發送失敗",
+            error: sent ? "" : (result?.error || result?.message || "LINE 發送失敗"),
+          };
+        });
+
+        updatePayload[`line_status/manual_late_checks/${dateKey}_${safeFirebaseKey(reason || "auto")}_${sentStoreKey}_${sentAt}`] = {
+          checkedAt: sentAt,
+          sentAt,
+          sent,
+          dateKey,
+          store: storeName,
+          names: lateList.map((item) => item.name),
+          result: sent ? "已發送" : "發送失敗",
+          reason,
+          error: sent ? "" : (result?.error || result?.message || "LINE 發送失敗"),
+        };
+
+        await update(ref(db), updatePayload);
+      }
+    } catch (error) {
+      console.error("client late check failed:", error);
+    } finally {
+      lateCheckRunningRef.current = false;
+    }
+  };
+
   const triggerAutoLateCheck = async (reason = "") => {
     try {
       await fetch("/api/auto-check-late", {
@@ -1002,8 +1092,12 @@ ${message}
         body: JSON.stringify({ reason }),
       });
     } catch (error) {
-      console.error("auto-check-late failed:", error);
+      console.error("auto-check-late api failed:", error);
     }
+
+    // 前端補強：即使 Vercel /api/auto-check-late 尚未建立或沒有排程，
+    // 只要有人打開打卡頁或有人上班打卡，就會立即檢查當天班表並發送遲到通知。
+    await runClientLateCheck(reason);
   };
 
   const historyScheduleDates = useMemo(() => {
