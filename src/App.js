@@ -36,6 +36,11 @@ const formatTaipeiDateKey = (ts = Date.now()) => {
   return `${year}-${month}-${day}`;
 };
 
+const getTomorrowTaipeiDateKey = () => {
+  const tomorrow = Date.now() + 24 * 60 * 60 * 1000;
+  return formatTaipeiDateKey(tomorrow);
+};
+
 const getMonthValue = (ts = Date.now()) => {
   const d = new Date(ts);
   const year = d.getFullYear();
@@ -238,7 +243,7 @@ export default function App() {
     urlParams.get("view") === "schedule" ? "schedule" : "checkin"
   );
   const [publicScheduleDate, setPublicScheduleDate] = useState(
-    urlParams.get("date") || formatTaipeiDateKey()
+    urlParams.get("date") || getTomorrowTaipeiDateKey()
   );
   const [publicScheduleStore, setPublicScheduleStore] = useState(
     urlParams.get("store") || "全部"
@@ -550,7 +555,7 @@ ${url}`);
     if (ok) {
       setScheduleLinkCopied(true);
       setTimeout(() => setScheduleLinkCopied(false), 2500);
-      alert("班表上傳成功");
+      alert("班表連結已複製，可直接貼到 LINE 群組");
     } else {
       alert(`複製失敗，請手動複製：
 ${url}`);
@@ -607,15 +612,11 @@ ${url}`);
       setTimeout(() => setScheduleSent(false), 4000);
 
       if (!targetScheduleList.length) {
-        alert(`${targetStoreName} 在 ${targetDate} 沒有排班，已完成儲存。
-班表連結：${shareUrl}`);
+        alert("班表發送成功");
         return;
       }
 
-      alert(`班表上傳成功。
-
-可把這個連結貼到 LINE 群組：
-${shareUrl}`);
+      alert("班表發送成功");
     } catch (err) {
       alert(`班表儲存失敗：${err.message}`);
     } finally {
@@ -1203,7 +1204,7 @@ ${shareUrl}`);
       .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")));
   }, [publicScheduleData, publicScheduleStore, publicEmployeeKeyword]);
 
-  const openPublicSchedule = (storeName = "全部", dateKey = formatTaipeiDateKey()) => {
+  const openPublicSchedule = (storeName = "全部", dateKey = getTomorrowTaipeiDateKey()) => {
     setPublicScheduleStore(storeName);
     setPublicScheduleDate(dateKey);
     setPublicViewMode("schedule");
@@ -1350,7 +1351,7 @@ ${shareUrl}`);
             <div style={styles.schedulePublicHeader}>
               <div>
                 <h1 style={styles.kioskTitle}>📅 班表查詢</h1>
-                <p style={styles.kioskDesc}>選擇日期與店別即可查看排班，不需要 LINE 推播。</p>
+                <p style={styles.kioskDesc}>預設顯示明日班表，可手動切換日期與店別。</p>
               </div>
               <button style={styles.backBtn} onClick={closePublicSchedule}>
                 ← 返回打卡
@@ -1487,9 +1488,9 @@ ${shareUrl}`);
               <p style={styles.kioskDesc}>請輸入員工工號後打卡</p>
               <button
                 style={styles.scheduleEntryBtn}
-                onClick={() => openPublicSchedule("全部", formatTaipeiDateKey())}
+                onClick={() => openPublicSchedule("全部", getTomorrowTaipeiDateKey())}
               >
-                📅 查看今日班表
+                📅 查看明日班表
               </button>
             </div>
 
