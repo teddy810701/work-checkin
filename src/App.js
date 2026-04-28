@@ -233,6 +233,20 @@ export default function App() {
     lineQuery: false,
   });
 
+  const urlParams = new URLSearchParams(window.location.search);
+  const [publicViewMode, setPublicViewMode] = useState(
+    urlParams.get("view") === "schedule" ? "schedule" : "checkin"
+  );
+  const [publicScheduleDate, setPublicScheduleDate] = useState(
+    urlParams.get("date") || formatTaipeiDateKey()
+  );
+  const [publicScheduleStore, setPublicScheduleStore] = useState(
+    urlParams.get("store") || "全部"
+  );
+  const [publicEmployeeKeyword, setPublicEmployeeKeyword] = useState("");
+  const [publicScheduleData, setPublicScheduleData] = useState({});
+  const [scheduleLinkCopied, setScheduleLinkCopied] = useState(false);
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (user) {
@@ -397,6 +411,14 @@ ${message}
 
   useEffect(() => {
     if (!authReady) return;
+    const schedRef = ref(db, `schedules/${publicScheduleDate || formatTaipeiDateKey()}`);
+    return onValue(schedRef, (snap) => {
+      setPublicScheduleData(snap.val() || {});
+    });
+  }, [authReady, publicScheduleDate]);
+
+  useEffect(() => {
+    if (!authReady) return;
     triggerAutoLateCheck("app-open");
   }, [authReady]);
 
@@ -490,6 +512,51 @@ ${message}
   };
 
 
+  const getScheduleShareUrl = (targetDate = scheduleDate, storeName = publishStore) => {
+    const baseUrl = window.location.origin + window.location.pathname;
+    const params = new URLSearchParams();
+    params.set("view", "schedule");
+    params.set("date", targetDate || formatTaipeiDateKey());
+    if (storeName && storeName !== "全部") params.set("store", storeName);
+    return `${baseUrl}?${params.toString()}`;
+  };
+
+  const copyTextToClipboard = async (text) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      return true;
+    } catch (error) {
+      console.error("copy failed", error);
+      return false;
+    }
+  };
+
+  const copyScheduleLink = async () => {
+    const url = getScheduleShareUrl(scheduleDate, publishStore);
+    const ok = await copyTextToClipboard(`📅 ${scheduleDate} ${publishStore} 班表
+${url}`);
+    if (ok) {
+      setScheduleLinkCopied(true);
+      setTimeout(() => setScheduleLinkCopied(false), 2500);
+      alert("班表連結已複製，可直接貼到 LINE 群組");
+    } else {
+      alert(`複製失敗，請手動複製：
+${url}`);
+    }
+  };
+
   const saveAndSendSchedule = async () => {
     setScheduleSaving(true);
     try {
@@ -520,68 +587,37 @@ ${message}
         String(a.startTime || "").localeCompare(String(b.startTime || ""))
       );
 
-      const groupedByStore = scheduleList.reduce((acc, item) => {
-        const storeName = item.store || "未填店名";
-        if (!acc[storeName]) acc[storeName] = [];
-        acc[storeName].push(item);
-        return acc;
-      }, {});
-
       const targetStoreName = publishStore;
-      const targetScheduleList = groupedByStore[targetStoreName] || [];
-
-      if (!targetScheduleList.length) {
-        alert(`${targetStoreName} 在 ${targetDate} 沒有排班，已完成儲存`);
-        return;
-      }
-
-      const message = buildLineScheduleMessage(
-        targetStoreName,
-        targetScheduleList,
-        targetDate
+      const targetScheduleList = scheduleList.filter(
+        (item) => (item.store || "未填店名") === targetStoreName
       );
-
-      const response = await fetch("/api/send-schedule", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          store: targetStoreName,
-          message,
-          dateKey: targetDate,
-          schedule: targetScheduleList,
-        }),
-      });
-
-      const result = await response.json().catch(() => ({}));
-
-      if (!response.ok || !result?.success) {
-        const errorText = `${targetStoreName}：${result?.error || result?.message || "LINE 發送失敗"}`;
-        const detailText = result?.detail ? `｜${result.detail}` : "";
-        await set(ref(db, `schedule_notify/${targetDate}`), {
-          pending: true,
-          createdAt: Date.now(),
-          lastError: `${errorText}${detailText}`,
-          targetStore: targetStoreName,
-        });
-        console.error("send-schedule failed", result);
-        throw new Error(`${errorText}${detailText}`);
-      }
+      const shareUrl = getScheduleShareUrl(targetDate, targetStoreName);
 
       await set(ref(db, `schedule_notify/${targetDate}`), {
         pending: false,
-        sentAt: Date.now(),
-        source: "saveAndSendSchedule",
-        stores: [targetStoreName],
+        savedAt: Date.now(),
+        source: "saveScheduleOnly",
+        mode: "web_link_only",
         targetStore: targetStoreName,
+        shareUrl,
+        count: targetScheduleList.length,
       });
 
       setScheduleSent(true);
       setTimeout(() => setScheduleSent(false), 4000);
-      alert(`班表已成功傳送：${targetStoreName}（${targetDate}）`);
+
+      if (!targetScheduleList.length) {
+        alert(`${targetStoreName} 在 ${targetDate} 沒有排班，已完成儲存。
+班表連結：${shareUrl}`);
+        return;
+      }
+
+      alert(`班表已儲存，不會自動 LINE 推播。
+
+可把這個連結貼到 LINE 群組：
+${shareUrl}`);
     } catch (err) {
-      alert(`班表已儲存，但 LINE 發送失敗：${err.message}`);
+      alert(`班表儲存失敗：${err.message}`);
     } finally {
       setScheduleSaving(false);
     }
@@ -1145,6 +1181,44 @@ ${message}
   }, [lineStatus, scheduleNotifyHistory]);
 
 
+  const publicStoreOptions = useMemo(() => {
+    const stores = Object.values(publicScheduleData || {})
+      .filter((item) => item?.working)
+      .map((item) => item.store || "未填店名");
+    return ["全部", ...Array.from(new Set(stores))];
+  }, [publicScheduleData]);
+
+  const publicScheduleList = useMemo(() => {
+    const keyword = publicEmployeeKeyword.trim().toLowerCase();
+    return Object.values(publicScheduleData || {})
+      .filter((item) => item?.working)
+      .filter((item) => publicScheduleStore === "全部" || (item.store || "未填店名") === publicScheduleStore)
+      .filter((item) => {
+        if (!keyword) return true;
+        return (
+          String(item.name || "").toLowerCase().includes(keyword) ||
+          String(item.empId || "").toLowerCase().includes(keyword)
+        );
+      })
+      .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")));
+  }, [publicScheduleData, publicScheduleStore, publicEmployeeKeyword]);
+
+  const openPublicSchedule = (storeName = "全部", dateKey = formatTaipeiDateKey()) => {
+    setPublicScheduleStore(storeName);
+    setPublicScheduleDate(dateKey);
+    setPublicViewMode("schedule");
+    const params = new URLSearchParams();
+    params.set("view", "schedule");
+    params.set("date", dateKey);
+    if (storeName && storeName !== "全部") params.set("store", storeName);
+    window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
+  };
+
+  const closePublicSchedule = () => {
+    setPublicViewMode("checkin");
+    window.history.replaceState(null, "", window.location.pathname);
+  };
+
   const adminFilteredRecords = useMemo(() => {
     return records.filter((r) => {
       const keyword = recordSearch.trim().toLowerCase();
@@ -1217,6 +1291,141 @@ ${message}
     );
   }
 
+  if (!isAdmin && publicViewMode === "schedule") {
+    return (
+      <div style={styles.page}>
+        <div style={styles.overlay} />
+
+        <div style={styles.topRightBar}>
+          <button
+            style={styles.adminTopBtn}
+            onClick={() => setShowLoginModal(true)}
+          >
+            管理員
+          </button>
+        </div>
+
+        {showLoginModal && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.modalCard}>
+              <div style={styles.modalTitle}>管理員登入</div>
+              <input
+                style={styles.modalInput}
+                type="password"
+                placeholder="請輸入密碼"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") login();
+                }}
+              />
+              <div style={styles.modalActions}>
+                <button
+                  style={styles.modalCancelBtn}
+                  onClick={() => {
+                    setShowLoginModal(false);
+                    setPassword("");
+                  }}
+                >
+                  取消
+                </button>
+                <button style={styles.modalLoginBtn} onClick={login}>
+                  進入後台
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div style={styles.mainWrap}>
+          <div style={styles.brandBar}>
+            <div style={styles.brandDot} />
+            <div>
+              <div style={styles.brandTitle}>店面班表查詢</div>
+              <div style={styles.brandSub}>Schedule Viewer</div>
+            </div>
+          </div>
+
+          <div style={styles.schedulePublicCard}>
+            <div style={styles.schedulePublicHeader}>
+              <div>
+                <h1 style={styles.kioskTitle}>📅 班表查詢</h1>
+                <p style={styles.kioskDesc}>選擇日期與店別即可查看排班，不需要 LINE 推播。</p>
+              </div>
+              <button style={styles.backBtn} onClick={closePublicSchedule}>
+                ← 返回打卡
+              </button>
+            </div>
+
+            <div style={styles.scheduleFilterGrid}>
+              <div>
+                <div style={styles.filterLabel}>班表日期</div>
+                <input
+                  type="date"
+                  value={publicScheduleDate}
+                  onChange={(e) => {
+                    const nextDate = e.target.value;
+                    setPublicScheduleDate(nextDate);
+                    openPublicSchedule(publicScheduleStore, nextDate);
+                  }}
+                  style={styles.scheduleInput}
+                />
+              </div>
+
+              <div>
+                <div style={styles.filterLabel}>店別</div>
+                <select
+                  value={publicScheduleStore}
+                  onChange={(e) => openPublicSchedule(e.target.value, publicScheduleDate)}
+                  style={styles.scheduleInput}
+                >
+                  {publicStoreOptions.map((storeName) => (
+                    <option key={storeName} value={storeName}>{storeName}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <div style={styles.filterLabel}>查自己班表</div>
+                <input
+                  type="text"
+                  placeholder="輸入姓名或工號"
+                  value={publicEmployeeKeyword}
+                  onChange={(e) => setPublicEmployeeKeyword(e.target.value)}
+                  style={styles.scheduleInput}
+                />
+              </div>
+            </div>
+
+            <div style={styles.scheduleSummaryBar}>
+              <div>日期：{publicScheduleDate}</div>
+              <div>店別：{publicScheduleStore}</div>
+              <div>排班：{publicScheduleList.length} 人</div>
+            </div>
+
+            {publicScheduleList.length === 0 ? (
+              <div style={styles.emptyScheduleBox}>目前沒有符合條件的排班</div>
+            ) : (
+              <div style={styles.publicScheduleList}>
+                {publicScheduleList.map((item) => (
+                  <div key={`${item.empId}-${item.startTime}`} style={styles.publicScheduleRow}>
+                    <div>
+                      <div style={styles.publicScheduleName}>{item.name}</div>
+                      <div style={styles.publicScheduleMeta}>{item.empId} ・ {item.store || "未填店名"}</div>
+                    </div>
+                    <div style={styles.publicScheduleTime}>
+                      {item.startTime || "未填"} - {item.endTime || "未填"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!isAdmin) {
     return (
       <div style={styles.page}>
@@ -1276,6 +1485,12 @@ ${message}
             <div style={styles.kioskHeader}>
               <h1 style={styles.kioskTitle}>員工打卡入口</h1>
               <p style={styles.kioskDesc}>請輸入員工工號後打卡</p>
+              <button
+                style={styles.scheduleEntryBtn}
+                onClick={() => openPublicSchedule("全部", formatTaipeiDateKey())}
+              >
+                📅 查看今日班表
+              </button>
             </div>
 
             <div style={styles.timeBox}>台北標準時間：{nowTime}</div>
@@ -1585,7 +1800,7 @@ ${message}
             </div>
 
             <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, marginTop: 6 }}>
-              排班設定已整合進員工名單，直接在右側員工卡上勾選上班與調整上下班時間。
+              排班設定已整合進員工名單。現在改為「儲存班表＋複製班表連結」，不再自動 LINE 推播完整班表。
             </div>
 
             <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
@@ -1645,11 +1860,25 @@ ${message}
                 disabled={scheduleSaving}
               >
                 {scheduleSaving
-                  ? "傳送中…"
+                  ? "儲存中…"
                   : scheduleSent
-                  ? `✓ ${publishStore} ${scheduleDate} 已傳送`
-                  : `儲存並傳送 ${publishStore} ${scheduleDate}`}
+                  ? `✓ ${publishStore} ${scheduleDate} 已儲存`
+                  : `儲存班表 ${publishStore} ${scheduleDate}`}
               </button>
+              <button
+                style={{
+                  ...styles.fullGreenBtn,
+                  marginTop: 0,
+                }}
+                onClick={copyScheduleLink}
+              >
+                {scheduleLinkCopied ? "✓ 已複製 LINE 分享文字" : "複製班表連結給 LINE 群組"}
+              </button>
+
+              <div style={styles.shareLinkBox}>
+                {getScheduleShareUrl(scheduleDate, publishStore)}
+              </div>
+
             </div>
           </div>
 
@@ -2750,5 +2979,128 @@ const styles = {
     outline: "none",
     background: "#fff",
     width: 108,
+  },
+  scheduleEntryBtn: {
+    marginTop: 14,
+    border: "1px solid rgba(255,255,255,0.28)",
+    background: "linear-gradient(135deg, #0ea5e9, #2563eb)",
+    color: "#fff",
+    padding: "12px 18px",
+    borderRadius: 999,
+    fontWeight: 900,
+    cursor: "pointer",
+    boxShadow: "0 10px 24px rgba(37,99,235,0.25)",
+  },
+  schedulePublicCard: {
+    background: "rgba(255,255,255,0.96)",
+    borderRadius: 28,
+    padding: 24,
+    boxShadow: "0 20px 60px rgba(15,23,42,0.18)",
+    border: "1px solid rgba(255,255,255,0.65)",
+  },
+  schedulePublicHeader: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 14,
+    marginBottom: 18,
+  },
+  backBtn: {
+    border: "none",
+    background: "#0f172a",
+    color: "#fff",
+    padding: "12px 16px",
+    borderRadius: 999,
+    fontWeight: 900,
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  },
+  scheduleFilterGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gap: 12,
+    marginBottom: 16,
+  },
+  filterLabel: {
+    fontSize: 13,
+    fontWeight: 900,
+    color: "#334155",
+    marginBottom: 6,
+  },
+  scheduleInput: {
+    width: "100%",
+    boxSizing: "border-box",
+    border: "1px solid #cbd5e1",
+    borderRadius: 14,
+    padding: "13px 14px",
+    fontSize: 15,
+    outline: "none",
+    background: "#fff",
+  },
+  scheduleSummaryBar: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 10,
+    background: "#eff6ff",
+    color: "#1d4ed8",
+    border: "1px solid #bfdbfe",
+    borderRadius: 16,
+    padding: "12px 14px",
+    fontWeight: 900,
+    marginBottom: 16,
+  },
+  emptyScheduleBox: {
+    border: "1px dashed #cbd5e1",
+    background: "#f8fafc",
+    color: "#64748b",
+    borderRadius: 18,
+    padding: 28,
+    textAlign: "center",
+    fontWeight: 800,
+  },
+  publicScheduleList: {
+    display: "grid",
+    gap: 10,
+  },
+  publicScheduleRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: "16px",
+    borderRadius: 18,
+    background: "#ffffff",
+    border: "1px solid #e2e8f0",
+    boxShadow: "0 8px 22px rgba(15,23,42,0.05)",
+  },
+  publicScheduleName: {
+    fontSize: 18,
+    fontWeight: 950,
+    color: "#0f172a",
+  },
+  publicScheduleMeta: {
+    marginTop: 4,
+    color: "#64748b",
+    fontSize: 13,
+    fontWeight: 700,
+  },
+  publicScheduleTime: {
+    background: "linear-gradient(135deg, #dbeafe, #eff6ff)",
+    color: "#1d4ed8",
+    borderRadius: 999,
+    padding: "10px 14px",
+    fontWeight: 950,
+    whiteSpace: "nowrap",
+  },
+  shareLinkBox: {
+    marginTop: 0,
+    padding: "12px 14px",
+    borderRadius: 14,
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+    color: "#475569",
+    fontSize: 12,
+    lineHeight: 1.5,
+    wordBreak: "break-all",
   },
 };
