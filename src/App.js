@@ -550,7 +550,7 @@ ${url}`);
     if (ok) {
       setScheduleLinkCopied(true);
       setTimeout(() => setScheduleLinkCopied(false), 2500);
-      alert("班表連結已複製，可直接貼到 LINE 群組");
+      alert("班表上傳成功");
     } else {
       alert(`複製失敗，請手動複製：
 ${url}`);
@@ -612,7 +612,7 @@ ${url}`);
         return;
       }
 
-      alert(`班表已儲存，不會自動 LINE 推播。
+      alert(`班表上傳成功。
 
 可把這個連結貼到 LINE 群組：
 ${shareUrl}`);
