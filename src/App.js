@@ -215,12 +215,22 @@ export default function App() {
   const [editRecordType, setEditRecordType] = useState("上班");
   const [editRecordTime, setEditRecordTime] = useState("");
 
-  const [authorizedDevice, setAuthorizedDevice] = useState("");
+  const [authorizedDevices, setAuthorizedDevices] = useState({});
+  const [bindStore, setBindStore] = useState("西螺文昌店");
   const [nowTime, setNowTime] = useState("");
   const [selectedMonth, setSelectedMonth] = useState(getMonthValue());
   const [recordSearch, setRecordSearch] = useState("");
 
   const myDevice = getDeviceId();
+  const isAuthorizedDevice = useMemo(() => {
+    return Object.values(authorizedDevices || {}).some((item) => item?.id === myDevice);
+  }, [authorizedDevices, myDevice]);
+
+  const currentDeviceStoreName = useMemo(() => {
+    const matched = Object.entries(authorizedDevices || {}).find(([, item]) => item?.id === myDevice);
+    return matched?.[0] || "";
+  }, [authorizedDevices, myDevice]);
+
   const lateCheckRunningRef = useRef(false);
 
   const [scheduleItems, setScheduleItems] = useState({});
@@ -326,8 +336,19 @@ ${message}
 
     const configRef = ref(db, "config/device");
     return onValue(configRef, (snap) => {
-      const data = snap.val();
-      setAuthorizedDevice(data?.id || "");
+      const data = snap.val() || {};
+
+      // 新版：config/device/devices 可綁定多台設備。
+      // 舊版：config/device/id 只有單台設備，這裡保留相容，避免更新後原本設備失效。
+      const nextDevices = data.devices || {};
+      if (data.id && !Object.values(nextDevices).some((item) => item?.id === data.id)) {
+        nextDevices["原本已綁定設備"] = {
+          id: data.id,
+          boundAt: data.boundAt || 0,
+        };
+      }
+
+      setAuthorizedDevices(nextDevices);
     });
   }, [authReady]);
 
@@ -733,7 +754,7 @@ ${url}`);
   };
 
   const checkIn = async (type) => {
-    if (myDevice !== authorizedDevice) {
+    if (!isAuthorizedDevice) {
       alert("此設備未授權");
       return;
     }
@@ -798,11 +819,22 @@ ${url}`);
   };
 
   const bindDevice = async () => {
-    await set(ref(db, "config/device"), {
-      id: myDevice,
-      boundAt: Date.now(),
+    const storeName = bindStore || "西螺文昌店";
+    await update(ref(db, "config/device"), {
+      [`devices/${storeName}`]: {
+        id: myDevice,
+        store: storeName,
+        boundAt: Date.now(),
+      },
+      updatedAt: Date.now(),
     });
-    alert("此設備已綁定成功");
+    alert(`${storeName} 設備已綁定成功`);
+  };
+
+  const unbindDevice = async (storeName) => {
+    if (!window.confirm(`確定解除 ${storeName} 的設備綁定嗎？`)) return;
+    await remove(ref(db, `config/device/devices/${storeName}`));
+    alert(`${storeName} 設備已解除綁定`);
   };
 
   const openRecordEdit = (record) => {
@@ -1496,9 +1528,9 @@ ${url}`);
 
             <div style={styles.timeBox}>台北標準時間：{nowTime}</div>
 
-            {myDevice !== authorizedDevice && (
+            {!isAuthorizedDevice && (
               <div style={styles.warningBox}>
-                此設備尚未授權，請先由管理員進入後台綁定設備。
+                此設備尚未授權，請先由管理員進入後台綁定西螺或斗南設備。
               </div>
             )}
 
@@ -1517,7 +1549,7 @@ ${url}`);
                 style={{
                   ...styles.actionBtn,
                   ...styles.primaryBtn,
-                  opacity: myDevice !== authorizedDevice ? 0.5 : 1,
+                  opacity: !isAuthorizedDevice ? 0.5 : 1,
                 }}
                 onClick={() => checkIn("上班")}
               >
@@ -1528,7 +1560,7 @@ ${url}`);
                 style={{
                   ...styles.actionBtn,
                   ...styles.darkBtn,
-                  opacity: myDevice !== authorizedDevice ? 0.5 : 1,
+                  opacity: !isAuthorizedDevice ? 0.5 : 1,
                 }}
                 onClick={() => checkIn("下班")}
               >
@@ -1539,7 +1571,7 @@ ${url}`);
                 style={{
                   ...styles.actionBtn,
                   ...styles.orangeBtn,
-                  opacity: myDevice !== authorizedDevice ? 0.5 : 1,
+                  opacity: !isAuthorizedDevice ? 0.5 : 1,
                 }}
                 onClick={() => checkIn("休息開始")}
               >
@@ -1550,7 +1582,7 @@ ${url}`);
                 style={{
                   ...styles.actionBtn,
                   ...styles.greenBtn,
-                  opacity: myDevice !== authorizedDevice ? 0.5 : 1,
+                  opacity: !isAuthorizedDevice ? 0.5 : 1,
                 }}
                 onClick={() => checkIn("休息結束")}
               >
@@ -1888,16 +1920,68 @@ ${url}`);
             <div style={styles.deviceBox}>
               <div style={styles.deviceLabel}>目前設備 ID</div>
               <div style={styles.deviceId}>{myDevice}</div>
-            </div>
-            <div style={styles.deviceBox}>
-              <div style={styles.deviceLabel}>已授權設備</div>
-              <div style={styles.deviceId}>
-                {authorizedDevice || "尚未綁定"}
+              <div style={{ marginTop: 6, fontSize: 12, color: isAuthorizedDevice ? "#16a34a" : "#dc2626", fontWeight: 800 }}>
+                {isAuthorizedDevice ? `此設備已授權：${currentDeviceStoreName}` : "此設備尚未授權"}
               </div>
             </div>
+
+            <div style={styles.deviceBox}>
+              <div style={styles.deviceLabel}>選擇要綁定的店別</div>
+              <select
+                value={bindStore}
+                onChange={(e) => setBindStore(e.target.value)}
+                style={{
+                  width: "100%",
+                  borderRadius: 12,
+                  border: "1px solid #cbd5e1",
+                  padding: "10px 12px",
+                  fontSize: 14,
+                  outline: "none",
+                  marginTop: 8,
+                  background: "#fff",
+                }}
+              >
+                <option value="西螺文昌店">西螺文昌店</option>
+                <option value="斗南站前店">斗南站前店</option>
+              </select>
+            </div>
+
             <button style={styles.fullDarkBtn} onClick={bindDevice}>
-              綁定這台設備
+              綁定這台設備到 {bindStore}
             </button>
+
+            <div style={{ marginTop: 14 }}>
+              <div style={styles.deviceLabel}>已授權設備列表</div>
+              {Object.keys(authorizedDevices || {}).length === 0 ? (
+                <div style={styles.emptyText}>尚未綁定任何設備</div>
+              ) : (
+                Object.entries(authorizedDevices || {}).map(([storeName, item]) => (
+                  <div key={storeName} style={{ ...styles.deviceBox, marginTop: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={styles.deviceLabel}>{storeName}</div>
+                        <div style={styles.deviceId}>{item?.id || "未設定"}</div>
+                      </div>
+                      <button
+                        style={{
+                          border: "none",
+                          borderRadius: 10,
+                          padding: "8px 10px",
+                          background: "#fee2e2",
+                          color: "#b91c1c",
+                          fontWeight: 900,
+                          cursor: "pointer",
+                          whiteSpace: "nowrap",
+                        }}
+                        onClick={() => unbindDevice(storeName)}
+                      >
+                        解除
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
 
           <div style={styles.panelCard}>
