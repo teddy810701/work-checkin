@@ -1,10 +1,33 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { db, auth } from "./firebase";
 import { ref, set, onValue, update, remove, get, query, orderByChild, limitToLast } from "firebase/database";
-import { signInAnonymously, onAuthStateChanged } from "firebase/auth";
+import { initializeApp, getApp, getApps } from "firebase/app";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
+import { getFirestore, collection as fsCollection, getDocs } from "firebase/firestore";
 
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
+
+// ===== 積分系統 Firebase（Firestore） =====
+// 這組是績效考核系統 Firebase，打卡系統會在打卡成功後讀取本月積分。
+const POINTS_FIREBASE_CONFIG = {
+  apiKey: "AIzaSyAfBj728Hs928rZByNebgCkcJoU_MNxFIs",
+  authDomain: "my-warm-day-pro.firebaseapp.com",
+  projectId: "my-warm-day-pro",
+  storageBucket: "my-warm-day-pro.appspot.com",
+  messagingSenderId: "409964225413",
+  appId: "1:409964225413:web:82fad775514edb08735aec",
+};
+
+const POINTS_APP_NAME = "pointsApp";
+const pointsApp = getApps().some((item) => item.name === POINTS_APP_NAME)
+  ? getApp(POINTS_APP_NAME)
+  : initializeApp(POINTS_FIREBASE_CONFIG, POINTS_APP_NAME);
+const pointsDb = getFirestore(pointsApp);
+const pointsAuth = getAuth(pointsApp);
+const MONTHLY_BASE_POINTS = 50;
+const POINTS_STORE_IDS = ["storeA", "storeB"];
+
 
 const getDeviceId = () => {
   let id = localStorage.getItem("device_id");
@@ -47,6 +70,81 @@ const getMonthValue = (ts = Date.now()) => {
   const month = String(d.getMonth() + 1).padStart(2, "0");
   return `${year}-${month}`;
 };
+
+const normalizeEmpId = (value) => String(value || "").trim().toUpperCase();
+
+const getMonthKeyFromAnyDate = (value) => {
+  if (!value) return "";
+  let d = null;
+  if (value?.toDate) d = value.toDate();
+  else if (value?.seconds) d = new Date(value.seconds * 1000);
+  else d = new Date(value);
+  if (!d || Number.isNaN(d.getTime())) return "";
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
+
+const ensurePointsFirebaseAuth = async () => {
+  if (pointsAuth.currentUser) return true;
+  await signInAnonymously(pointsAuth);
+  return true;
+};
+
+const fetchMonthlyPointsFromPerformanceSystem = async (empId) => {
+  const targetId = normalizeEmpId(empId);
+  if (!targetId) {
+    return { found: false, message: "尚無積分資料" };
+  }
+
+  await ensurePointsFirebaseAuth();
+
+  for (const storeId of POINTS_STORE_IDS) {
+    const empSnap = await getDocs(fsCollection(pointsDb, "stores", storeId, "employees"));
+    const matchedDoc = empSnap.docs.find((empDoc) => {
+      const data = empDoc.data() || {};
+      const candidates = [
+        empDoc.id,
+        data.employeeId,
+        data.empId,
+        data.id,
+        data.birthday,
+        data.birthDate,
+      ];
+      return candidates.some((item) => normalizeEmpId(item) === targetId);
+    });
+
+    if (!matchedDoc) continue;
+
+    const logSnap = await getDocs(fsCollection(pointsDb, "stores", storeId, "logs"));
+    const monthKey = getMonthValue();
+    const monthLogs = logSnap.docs
+      .map((item) => ({ id: item.id, ...(item.data() || {}) }))
+      .filter((log) => {
+        if (log.empId !== matchedDoc.id) return false;
+        return getMonthKeyFromAnyDate(log.occurrenceDate || log.timestamp) === monthKey;
+      });
+
+    const monthlyDelta = monthLogs.reduce((sum, log) => sum + (Number(log.amount) || 0), 0);
+    const monthlyPoints = MONTHLY_BASE_POINTS + monthlyDelta;
+    const penaltyCount = monthLogs.filter((log) => Number(log.amount) < 0).length;
+    const bonusCount = monthLogs.filter((log) => Number(log.amount) > 0).length;
+
+    return {
+      found: true,
+      empDocId: matchedDoc.id,
+      storeId,
+      name: matchedDoc.data()?.name || "",
+      monthlyPoints,
+      monthlyDelta,
+      logCount: monthLogs.length,
+      penaltyCount,
+      bonusCount,
+      monthKey,
+    };
+  }
+
+  return { found: false, message: "尚無積分資料" };
+};
+
 
 const getStatusStyle = (status) => {
   switch (status) {
@@ -193,6 +291,7 @@ export default function App() {
   const [employees, setEmployees] = useState([]);
   const [records, setRecords] = useState([]);
   const [employeeId, setEmployeeId] = useState("");
+  const [scoreToast, setScoreToast] = useState(null);
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [password, setPassword] = useState("");
@@ -753,6 +852,16 @@ ${url}`);
     });
   };
 
+
+  const showScoreToast = (payload) => {
+    setScoreToast(payload);
+    setTimeout(() => setScoreToast(null), 7000);
+  };
+
+  const closeScoreToast = () => {
+    setScoreToast(null);
+  };
+
   const checkIn = async (type) => {
     if (!isAuthorizedDevice) {
       alert("此設備未授權");
@@ -815,7 +924,30 @@ ${url}`);
     if (type === "上班") {
       triggerAutoLateCheck("checkin");
     }
-    alert(`${emp.name} ${type}成功`);
+
+    try {
+      const pointsResult = await fetchMonthlyPointsFromPerformanceSystem(emp.empId || emp.id);
+      showScoreToast({
+        success: true,
+        name: emp.name,
+        type,
+        pointsResult,
+        createdAt,
+      });
+    } catch (error) {
+      console.error("讀取本月積分失敗:", error);
+      showScoreToast({
+        success: true,
+        name: emp.name,
+        type,
+        pointsResult: {
+          found: false,
+          message: "積分讀取失敗，但打卡已成功",
+          error: true,
+        },
+        createdAt,
+      });
+    }
   };
 
   const bindDevice = async () => {
@@ -1327,6 +1459,27 @@ ${url}`);
   if (!isAdmin && publicViewMode === "schedule") {
     return (
       <div style={styles.page}>
+        {scoreToast && (
+          <div style={styles.scoreToastOverlay}>
+            <div style={styles.scoreToastCard}>
+              <button style={styles.scoreToastClose} onClick={closeScoreToast}>×</button>
+              <div style={styles.scoreToastIcon}>✓</div>
+              <div style={styles.scoreToastTitle}>{scoreToast.name} {scoreToast.type}成功</div>
+              <div style={styles.scoreToastSub}>{formatDateTime(scoreToast.createdAt)}</div>
+              {scoreToast.pointsResult?.found ? (
+                <div style={styles.scoreToastScoreBox}>
+                  <div style={styles.scoreToastLabel}>本月目前積分</div>
+                  <div style={styles.scoreToastScore}>{scoreToast.pointsResult.monthlyPoints} 分</div>
+                  <div style={styles.scoreToastDetail}>
+                    基本 {MONTHLY_BASE_POINTS} 分｜本月紀錄 {scoreToast.pointsResult.logCount} 筆｜加分 {scoreToast.pointsResult.bonusCount} 筆｜扣分 {scoreToast.pointsResult.penaltyCount} 筆
+                  </div>
+                </div>
+              ) : (
+                <div style={styles.scoreToastNotice}>{scoreToast.pointsResult?.message || "尚無積分資料"}</div>
+              )}
+            </div>
+          </div>
+        )}
         <div style={styles.overlay} />
 
         <div style={styles.topRightBar}>
@@ -1462,6 +1615,27 @@ ${url}`);
   if (!isAdmin) {
     return (
       <div style={styles.page}>
+        {scoreToast && (
+          <div style={styles.scoreToastOverlay}>
+            <div style={styles.scoreToastCard}>
+              <button style={styles.scoreToastClose} onClick={closeScoreToast}>×</button>
+              <div style={styles.scoreToastIcon}>✓</div>
+              <div style={styles.scoreToastTitle}>{scoreToast.name} {scoreToast.type}成功</div>
+              <div style={styles.scoreToastSub}>{formatDateTime(scoreToast.createdAt)}</div>
+              {scoreToast.pointsResult?.found ? (
+                <div style={styles.scoreToastScoreBox}>
+                  <div style={styles.scoreToastLabel}>本月目前積分</div>
+                  <div style={styles.scoreToastScore}>{scoreToast.pointsResult.monthlyPoints} 分</div>
+                  <div style={styles.scoreToastDetail}>
+                    基本 {MONTHLY_BASE_POINTS} 分｜本月紀錄 {scoreToast.pointsResult.logCount} 筆｜加分 {scoreToast.pointsResult.bonusCount} 筆｜扣分 {scoreToast.pointsResult.penaltyCount} 筆
+                  </div>
+                </div>
+              ) : (
+                <div style={styles.scoreToastNotice}>{scoreToast.pointsResult?.message || "尚無積分資料"}</div>
+              )}
+            </div>
+          </div>
+        )}
         <div style={styles.overlay} />
 
         <div style={styles.topRightBar}>
@@ -1665,6 +1839,27 @@ ${url}`);
 
   return (
     <div style={styles.adminPage}>
+      {scoreToast && (
+        <div style={styles.scoreToastOverlay}>
+          <div style={styles.scoreToastCard}>
+            <button style={styles.scoreToastClose} onClick={closeScoreToast}>×</button>
+            <div style={styles.scoreToastIcon}>✓</div>
+            <div style={styles.scoreToastTitle}>{scoreToast.name} {scoreToast.type}成功</div>
+            <div style={styles.scoreToastSub}>{formatDateTime(scoreToast.createdAt)}</div>
+            {scoreToast.pointsResult?.found ? (
+              <div style={styles.scoreToastScoreBox}>
+                <div style={styles.scoreToastLabel}>本月目前積分</div>
+                <div style={styles.scoreToastScore}>{scoreToast.pointsResult.monthlyPoints} 分</div>
+                <div style={styles.scoreToastDetail}>
+                  基本 {MONTHLY_BASE_POINTS} 分｜本月紀錄 {scoreToast.pointsResult.logCount} 筆｜加分 {scoreToast.pointsResult.bonusCount} 筆｜扣分 {scoreToast.pointsResult.penaltyCount} 筆
+                </div>
+              </div>
+            ) : (
+              <div style={styles.scoreToastNotice}>{scoreToast.pointsResult?.message || "尚無積分資料"}</div>
+            )}
+          </div>
+        </div>
+      )}
       {showAddModal && (
         <div style={styles.modalOverlay}>
           <div style={styles.modalCard}>
@@ -3187,5 +3382,106 @@ const styles = {
     fontSize: 12,
     lineHeight: 1.5,
     wordBreak: "break-all",
+  },
+
+  scoreToastOverlay: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 9999,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 18,
+    background: "rgba(15,23,42,0.35)",
+    backdropFilter: "blur(6px)",
+  },
+  scoreToastCard: {
+    position: "relative",
+    width: "min(420px, 100%)",
+    borderRadius: 30,
+    background: "linear-gradient(180deg, #ffffff, #fff7ed)",
+    border: "1px solid rgba(251,146,60,0.35)",
+    boxShadow: "0 28px 80px rgba(15,23,42,0.28)",
+    padding: "34px 24px 24px",
+    textAlign: "center",
+  },
+  scoreToastClose: {
+    position: "absolute",
+    top: 14,
+    right: 16,
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    border: "none",
+    background: "#f1f5f9",
+    color: "#64748b",
+    fontSize: 24,
+    lineHeight: "30px",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  scoreToastIcon: {
+    width: 62,
+    height: 62,
+    borderRadius: 22,
+    margin: "0 auto 14px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "linear-gradient(135deg, #16a34a, #22c55e)",
+    color: "#fff",
+    fontSize: 34,
+    fontWeight: 950,
+    boxShadow: "0 14px 30px rgba(34,197,94,0.28)",
+  },
+  scoreToastTitle: {
+    fontSize: 24,
+    fontWeight: 950,
+    color: "#0f172a",
+    letterSpacing: "-0.02em",
+  },
+  scoreToastSub: {
+    marginTop: 6,
+    color: "#94a3b8",
+    fontSize: 13,
+    fontWeight: 800,
+  },
+  scoreToastScoreBox: {
+    marginTop: 18,
+    padding: 18,
+    borderRadius: 24,
+    background: "#fff",
+    border: "1px solid #fed7aa",
+    boxShadow: "0 12px 30px rgba(251,146,60,0.12)",
+  },
+  scoreToastLabel: {
+    color: "#ea580c",
+    fontSize: 13,
+    fontWeight: 950,
+    letterSpacing: "0.08em",
+  },
+  scoreToastScore: {
+    marginTop: 4,
+    fontSize: 42,
+    lineHeight: 1.1,
+    fontWeight: 950,
+    color: "#c2410c",
+  },
+  scoreToastDetail: {
+    marginTop: 10,
+    color: "#64748b",
+    fontSize: 12,
+    fontWeight: 800,
+    lineHeight: 1.7,
+  },
+  scoreToastNotice: {
+    marginTop: 18,
+    padding: "16px 18px",
+    borderRadius: 20,
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+    color: "#475569",
+    fontSize: 15,
+    fontWeight: 900,
   },
 };
