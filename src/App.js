@@ -1016,26 +1016,20 @@ ${url}`);
     alert("打卡紀錄已刪除");
   };
 
-  const exportAllCSV = () => {
-    if (!records.length) {
-      alert("目前沒有紀錄可匯出");
-      return;
-    }
+  const getAllRecordsForExport = async () => {
+    const snap = await get(ref(db, "records"));
+    const data = snap.val() || {};
+    return Object.keys(data)
+      .map((key) => ({
+        id: key,
+        ...data[key],
+      }))
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  };
 
-    const header = ["員工姓名", "工號", "店名", "身分", "類型", "日期", "時間", "設備"];
-    const rows = records.map((r) => [
-      r.name || "",
-      r.empId || "",
-      r.store || "",
-      r.role || "",
-      r.type || "",
-      r.date || "",
-      r.time || "",
-      r.device || "",
-    ]);
-
+  const downloadCsv = (filename, header, rows) => {
     const csv = [header, ...rows]
-      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+      .map((row) => row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(","))
       .join("\n");
 
     const blob = new Blob(["\uFEFF" + csv], {
@@ -1044,9 +1038,37 @@ ${url}`);
 
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = "打卡紀錄.csv";
+    link.download = filename;
     link.click();
     URL.revokeObjectURL(link.href);
+  };
+
+  const exportAllCSV = async () => {
+    try {
+      const allRecords = await getAllRecordsForExport();
+
+      if (!allRecords.length) {
+        alert("目前沒有紀錄可匯出");
+        return;
+      }
+
+      const header = ["員工姓名", "工號", "店名", "身分", "類型", "日期", "時間", "設備"];
+      const rows = allRecords.map((r) => [
+        r.name || "",
+        r.empId || "",
+        r.store || "",
+        r.role || "",
+        r.type || "",
+        r.date || "",
+        r.time || "",
+        r.device || "",
+      ]);
+
+      downloadCsv("打卡紀錄.csv", header, rows);
+    } catch (error) {
+      console.error("匯出全部打卡紀錄失敗：", error);
+      alert("匯出全部打卡紀錄失敗，請稍後再試");
+    }
   };
 
   const monthRecords = useMemo(() => {
@@ -1056,38 +1078,28 @@ ${url}`);
     });
   }, [records, selectedMonth]);
 
-  const exportMonthlyCSV = () => {
-    if (!monthRecords.length) {
-      alert("本月沒有統計資料可匯出");
-      return;
-    }
+  const exportMonthlyCSV = async () => {
+    try {
+      const allRecords = await getAllRecordsForExport();
+      const targetMonthRecords = allRecords.filter((r) => {
+        const key = r.monthKey || getMonthValue(r.createdAt || Date.now());
+        return key === selectedMonth;
+      });
 
-    const map = {};
+      if (!targetMonthRecords.length) {
+        alert(`${selectedMonth} 沒有統計資料可匯出`);
+        return;
+      }
 
-    employees.forEach((emp) => {
-      const key = emp.empId || emp.id;
-      map[key] = {
-        empId: key,
-        name: emp.name || "",
-        store: emp.store || "",
-        role: emp.role || "",
-        workIn: 0,
-        workOut: 0,
-        breakStart: 0,
-        breakEnd: 0,
-        totalRecords: 0,
-        lastRecordAt: 0,
-      };
-    });
+      const map = {};
 
-    monthRecords.forEach((r) => {
-      const key = r.empId || r.id || "UNKNOWN";
-      if (!map[key]) {
+      employees.forEach((emp) => {
+        const key = emp.empId || emp.id;
         map[key] = {
           empId: key,
-          name: r.name || "",
-          store: r.store || "",
-          role: r.role || "",
+          name: emp.name || "",
+          store: emp.store || "",
+          role: emp.role || "",
           workIn: 0,
           workOut: 0,
           breakStart: 0,
@@ -1095,50 +1107,59 @@ ${url}`);
           totalRecords: 0,
           lastRecordAt: 0,
         };
-      }
+      });
 
-      map[key].totalRecords += 1;
-      map[key].lastRecordAt = Math.max(map[key].lastRecordAt, r.createdAt || 0);
+      targetMonthRecords.forEach((r) => {
+        const key = r.empId || r.id || "UNKNOWN";
+        if (!map[key]) {
+          map[key] = {
+            empId: key,
+            name: r.name || "",
+            store: r.store || "",
+            role: r.role || "",
+            workIn: 0,
+            workOut: 0,
+            breakStart: 0,
+            breakEnd: 0,
+            totalRecords: 0,
+            lastRecordAt: 0,
+          };
+        }
 
-      if (r.type === "上班") map[key].workIn += 1;
-      if (r.type === "下班") map[key].workOut += 1;
-      if (r.type === "休息開始") map[key].breakStart += 1;
-      if (r.type === "休息結束") map[key].breakEnd += 1;
-    });
+        map[key].totalRecords += 1;
+        map[key].lastRecordAt = Math.max(map[key].lastRecordAt, r.createdAt || 0);
 
-    const stats = Object.values(map).sort((a, b) => {
-      if (b.totalRecords !== a.totalRecords) return b.totalRecords - a.totalRecords;
-      return a.empId.localeCompare(b.empId);
-    });
+        if (r.type === "上班") map[key].workIn += 1;
+        if (r.type === "下班") map[key].workOut += 1;
+        if (r.type === "休息開始") map[key].breakStart += 1;
+        if (r.type === "休息結束") map[key].breakEnd += 1;
+      });
 
-    const header = ["月份", "員工姓名", "工號", "店名", "身分", "上班次數", "下班次數", "休息開始", "休息結束", "總筆數", "最後打卡日"];
-    const rows = stats.map((item) => [
-      selectedMonth,
-      item.name,
-      item.empId,
-      item.store,
-      item.role,
-      item.workIn,
-      item.workOut,
-      item.breakStart,
-      item.breakEnd,
-      item.totalRecords,
-      formatDate(item.lastRecordAt),
-    ]);
+      const stats = Object.values(map).sort((a, b) => {
+        if (b.totalRecords !== a.totalRecords) return b.totalRecords - a.totalRecords;
+        return a.empId.localeCompare(b.empId);
+      });
 
-    const csv = [header, ...rows]
-      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
-      .join("\n");
+      const header = ["月份", "員工姓名", "工號", "店名", "身分", "上班次數", "下班次數", "休息開始", "休息結束", "總筆數", "最後打卡日"];
+      const rows = stats.map((item) => [
+        selectedMonth,
+        item.name,
+        item.empId,
+        item.store,
+        item.role,
+        item.workIn,
+        item.workOut,
+        item.breakStart,
+        item.breakEnd,
+        item.totalRecords,
+        formatDate(item.lastRecordAt),
+      ]);
 
-    const blob = new Blob(["\uFEFF" + csv], {
-      type: "text/csv;charset=utf-8;",
-    });
-
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `打卡月報表-${selectedMonth}.csv`;
-    link.click();
-    URL.revokeObjectURL(link.href);
+      downloadCsv(`打卡月報表-${selectedMonth}.csv`, header, rows);
+    } catch (error) {
+      console.error("匯出月報表失敗：", error);
+      alert("匯出月報表失敗，請稍後再試");
+    }
   };
 
   const toggleAdminPanel = (key) => {
