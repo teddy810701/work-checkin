@@ -103,6 +103,8 @@ const fetchMonthlyPointsFromPerformanceSystem = async (empId) => {
       const data = empDoc.data() || {};
       const candidates = [
         empDoc.id,
+        data.birthdayId,
+        data.checkinId,
         data.employeeId,
         data.empId,
         data.id,
