@@ -453,7 +453,7 @@ ${message}
   useEffect(() => {
     if (!authReady) return;
 
-    const recordsRef = query(ref(db, "records"), orderByChild("createdAt"), limitToLast(50));
+    const recordsRef = query(ref(db, "records"), orderByChild("createdAt"), limitToLast(500));
     return onValue(recordsRef, (snap) => {
       const data = snap.val() || {};
       const list = Object.keys(data).map((key) => ({
@@ -593,23 +593,6 @@ ${message}
   }, [authReady]);
 
 
-  const latestWorkInMap = useMemo(() => {
-    const map = {};
-
-    todayRecords.forEach((record) => {
-      if (record?.type !== "上班") return;
-
-      const empId = record?.empId || "";
-      if (!empId) return;
-
-      if (!map[empId] || (record.createdAt || 0) > (map[empId].createdAt || 0)) {
-        map[empId] = record;
-      }
-    });
-
-    return map;
-  }, [todayRecords]);
-
   const todayRecords = useMemo(() => {
     return records.filter((r) => {
       if (r.dateKey) return r.dateKey === todayKey;
@@ -617,6 +600,26 @@ ${message}
       return fallbackKey === todayKey;
     });
   }, [records, todayKey]);
+
+  const latestWorkInMap = useMemo(() => {
+    const map = {};
+
+    todayRecords.forEach((record) => {
+      if (record?.type !== "上班") return;
+
+      const empId = String(record?.empId || "").trim();
+      const name = String(record?.name || "").trim();
+      const keys = [empId, name].filter(Boolean);
+
+      keys.forEach((key) => {
+        if (!map[key] || (record.createdAt || 0) > (map[key].createdAt || 0)) {
+          map[key] = record;
+        }
+      });
+    });
+
+    return map;
+  }, [todayRecords]);
 
   const liveStatusList = useMemo(() => {
     const map = {};
@@ -1430,7 +1433,9 @@ ${url}`);
           const people = Object.values(storeValue)
             .filter((person) => person && typeof person === "object" && (person.name || person.empId))
             .map((person) => {
-              const liveRecord = latestWorkInMap[person.empId];
+              const liveRecord =
+                latestWorkInMap[String(person.empId || "").trim()] ||
+                latestWorkInMap[String(person.name || "").trim()];
 
               let mergedPerson = { ...person };
 
