@@ -923,9 +923,8 @@ ${url}`);
     });
 
     setEmployeeId("");
-    if (type === "上班") {
-      triggerAutoLateCheck("checkin");
-    }
+    // 不在每次上班打卡後立刻觸發遲到通知，避免通知被分批送出、浪費 LINE 額度。
+    // 遲到檢查改由 app-open / auto-timer 統一執行，會把同店遲到人員整理成一則訊息。
 
     try {
       const pointsResult = await fetchMonthlyPointsFromPerformanceSystem(emp.empId || emp.id);
@@ -1177,7 +1176,7 @@ ${url}`);
     try {
       const dateKey = formatTaipeiDateKey();
       const nowTs = Date.now();
-      const graceMs = 60 * 1000;
+      const graceMs = 5 * 60 * 1000;
 
       const [scheduleSnap, recordsSnap, sentSnap] = await Promise.all([
         get(ref(db, `schedules/${dateKey}`)),

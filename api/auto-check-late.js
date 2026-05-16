@@ -137,7 +137,7 @@ export default async function handler(req, res) {
       const workDate = parseWorkDateTime(now, startTime);
       if (!store || !workDate) return;
 
-      const isLate = now.getTime() >= workDate.getTime() + 60 * 1000;
+      const isLate = now.getTime() >= workDate.getTime() + 5 * 60 * 1000;
       if (!isLate) return;
 
       const hasCheckin = todayRecords.some((r) => r?.empId === empId && r?.type === "上班");
