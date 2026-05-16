@@ -592,6 +592,24 @@ ${message}
     return () => clearInterval(timer);
   }, [authReady]);
 
+
+  const latestWorkInMap = useMemo(() => {
+    const map = {};
+
+    todayRecords.forEach((record) => {
+      if (record?.type !== "上班") return;
+
+      const empId = record?.empId || "";
+      if (!empId) return;
+
+      if (!map[empId] || (record.createdAt || 0) > (map[empId].createdAt || 0)) {
+        map[empId] = record;
+      }
+    });
+
+    return map;
+  }, [todayRecords]);
+
   const todayRecords = useMemo(() => {
     return records.filter((r) => {
       if (r.dateKey) return r.dateKey === todayKey;
@@ -1411,10 +1429,27 @@ ${url}`);
 
           const people = Object.values(storeValue)
             .filter((person) => person && typeof person === "object" && (person.name || person.empId))
-            .map((person) => ({
-              ...person,
-              detailText: buildDetailText(person, person.sentAt || 0),
-            }));
+            .map((person) => {
+              const liveRecord = latestWorkInMap[person.empId];
+
+              let mergedPerson = { ...person };
+
+              if (liveRecord) {
+                mergedPerson = {
+                  ...mergedPerson,
+                  actualTime: liveRecord.time || mergedPerson.actualTime,
+                  status: "late_checked_in",
+                };
+              }
+
+              return {
+                ...mergedPerson,
+                detailText: buildDetailText(
+                  mergedPerson,
+                  mergedPerson.sentAt || 0
+                ),
+              };
+            });
 
           if (!people.length) return;
 
@@ -1446,7 +1481,7 @@ ${url}`);
     });
 
     return entries.sort((a, b) => (b.sentAt || b.checkedAt || 0) - (a.sentAt || a.checkedAt || 0));
-  }, [lineStatus]);
+  }, [lineStatus, latestWorkInMap]);
 
   const lineQueryEntries = useMemo(() => {
     const scheduleSent = lineStatus?.schedule_sent || {};
