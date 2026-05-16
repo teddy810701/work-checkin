@@ -7,6 +7,7 @@ import { getFirestore, collection as fsCollection, getDocs } from "firebase/fire
 
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
+const DEVICE_BIND_OPTIONS = ["西螺文昌店", "斗南站前店", "老闆手機"];
 
 // ===== 積分系統 Firebase（Firestore） =====
 // 這組是績效考核系統 Firebase，打卡系統會在打卡成功後讀取本月積分。
@@ -514,7 +515,7 @@ ${message}
       employees.forEach((emp) => {
         const key = emp.empId || emp.id;
         if (!next[key]) {
-          next[key] = { working: false, startTime: "06:00", endTime: "14:00" };
+          next[key] = { working: false, startTime: "05:00", endTime: "14:00" };
         }
       });
       return next;
@@ -531,12 +532,12 @@ ${message}
         const next = {};
         employees.forEach((emp) => {
           const key = emp.empId || emp.id;
-          next[key] = { working: false, startTime: "06:00", endTime: "14:00" };
+          next[key] = { working: false, startTime: "05:00", endTime: "14:00" };
         });
         Object.entries(data).forEach(([empId, schedData]) => {
           next[empId] = {
             working: schedData.working || false,
-            startTime: schedData.startTime || "06:00",
+            startTime: schedData.startTime || "05:00",
             endTime: schedData.endTime || "14:00",
           };
         });
@@ -752,7 +753,7 @@ ${url}`);
             empId: key,
             name: emp.name,
             store: emp.store || "",
-            startTime: item.startTime || "06:00",
+            startTime: item.startTime || "05:00",
             endTime: item.endTime || "14:00",
             working: true,
           };
@@ -1006,6 +1007,14 @@ ${url}`);
 
   const bindDevice = async () => {
     const storeName = bindStore || "西螺文昌店";
+    const currentDeviceNames = Object.keys(authorizedDevices || {});
+    const isUpdatingExistingSlot = Boolean(authorizedDevices?.[storeName]);
+
+    if (currentDeviceNames.length >= 3 && !isUpdatingExistingSlot) {
+      alert("最多只能綁定 3 台設備：西螺店、斗南店、老闆手機");
+      return;
+    }
+
     await update(ref(db, "config/device"), {
       [`devices/${storeName}`]: {
         id: myDevice,
@@ -1263,7 +1272,7 @@ ${url}`);
         if (!item?.working) return;
 
         const empId = item.empId || empIdFromKey;
-        const startTime = item.startTime || "06:00";
+        const startTime = item.startTime || "05:00";
         const startTs = getTaipeiTimestampFromDateTime(dateKey, startTime);
         if (!startTs) return;
 
@@ -2516,7 +2525,7 @@ ${url}`);
                   const key = emp.empId || emp.id;
                   const item = scheduleItems[key] || {
                     working: false,
-                    startTime: "06:00",
+                    startTime: "05:00",
                     endTime: "14:00",
                   };
 
@@ -2572,7 +2581,7 @@ ${url}`);
                             <div style={styles.integratedTimeTitle}>上班</div>
                             <input
                               type="time"
-                              value={item.startTime || "06:00"}
+                              value={item.startTime || "05:00"}
                               onChange={(e) => setScheduleTime(key, e.target.value)}
                               disabled={!item.working}
                               style={styles.integratedTimeInput}
