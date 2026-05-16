@@ -31,8 +31,7 @@ import {
   Settings,
   CheckCircle2,
   Cloud,
-  Clock3,
-  Utensils
+  Clock3
 } from 'lucide-react';
 
 const App = () => {
@@ -1961,13 +1960,17 @@ const App = () => {
             </button>
 
             <button
-              onClick={() => window.open('https://staff-meal-system.vercel.app/', '_blank', 'noopener,noreferrer')}
-              title="前往員工餐系統"
-              className="px-3 py-1.5 rounded-lg text-xs font-black transition flex items-center gap-1 text-gray-400 hover:text-green-600 hover:bg-white"
+              onClick={() =>
+                window.open(
+                  "https://staff-meal-system.vercel.app/",
+                  "_blank",
+                  "noopener,noreferrer"
+                )
+              }
+              className="px-3 py-1.5 rounded-lg text-xs font-black transition text-gray-400 hover:text-green-600 hover:bg-white"
               type="button"
             >
-              <Utensils size={14} />
-              <span className="hidden sm:inline">員工餐</span>
+              員工餐
             </button>
 
             <button
