@@ -271,19 +271,21 @@ const safeFirebaseKey = (value) => {
 };
 
 const buildLateLineMessage = (storeName, lateList, dateKey, reason = "") => {
-  const title = `⚠️ ${dateKey} ${storeName} 遲到提醒`;
-  const reasonText = reason ? `觸發來源：${reason}` : "";
-
   return [
-    title,
-    reasonText,
-    ...lateList.map((item) => {
-      const statusText = item.status === "not_checked"
-        ? "超過 1 分鐘尚未打上班卡"
-        : `上班打卡 ${item.actualTime}，已超過排班時間`;
-      return `• ${item.name}（${item.empId}）排班 ${item.startTime}｜${statusText}`;
+    `⚠️ ${dateKey} ${storeName} 遲到名單`,
+    "",
+    ...lateList.map((item, index) => {
+      const actualText =
+        item.status === "not_checked"
+          ? "尚未打卡"
+          : `打卡 ${item.actualTime}`;
+
+      return `${index + 1}. ${item.name}｜排班 ${item.startTime}｜${actualText}｜遲到 ${item.lateMinutes} 分鐘`;
     }),
-  ].filter(Boolean).join("\n");
+    "",
+    `共 ${lateList.length} 人`,
+  ].join("
+");
 };
 
 
@@ -923,8 +925,7 @@ ${url}`);
     });
 
     setEmployeeId("");
-    // 不在每次上班打卡後立刻觸發遲到通知，避免通知被分批送出、浪費 LINE 額度。
-    // 遲到檢查改由 app-open / auto-timer 統一執行，會把同店遲到人員整理成一則訊息。
+    // 改為由自動排程統一檢查遲到，避免重複 LINE 通知
 
     try {
       const pointsResult = await fetchMonthlyPointsFromPerformanceSystem(emp.empId || emp.id);
@@ -1230,6 +1231,10 @@ ${url}`);
         if (!isNotChecked && !isLateCheckedIn) return;
 
         if (!lateByStore[storeName]) lateByStore[storeName] = [];
+        const lateMinutes = isNotChecked
+          ? Math.floor((nowTs - startTs) / 60000)
+          : Math.floor((actualTs - startTs) / 60000);
+
         lateByStore[storeName].push({
           empId,
           name: item.name || empId,
@@ -1237,6 +1242,7 @@ ${url}`);
           startTime,
           actualTime: workInRecord?.time || "未打卡",
           status: isNotChecked ? "not_checked" : "late_checked_in",
+          lateMinutes,
         });
       });
 
