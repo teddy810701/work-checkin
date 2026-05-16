@@ -8,6 +8,7 @@ import { getFirestore, collection as fsCollection, getDocs } from "firebase/fire
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
 const DEVICE_BIND_OPTIONS = ["西螺文昌店", "斗南站前店", "老闆手機"];
+const MEAL_SYSTEM_URL = "https://staff-meal-system.vercel.app/";
 
 // ===== 積分系統 Firebase（Firestore） =====
 // 這組是績效考核系統 Firebase，打卡系統會在打卡成功後讀取本月積分。
@@ -1655,6 +1656,14 @@ ${url}`);
         <div style={styles.overlay} />
 
         <div style={styles.topRightBar}>
+          <a
+            href={MEAL_SYSTEM_URL}
+            target="_blank"
+            rel="noreferrer"
+            style={styles.mealTopBtn}
+          >
+            員工餐
+          </a>
           <button
             style={styles.adminTopBtn}
             onClick={() => setShowLoginModal(true)}
@@ -1811,6 +1820,14 @@ ${url}`);
         <div style={styles.overlay} />
 
         <div style={styles.topRightBar}>
+          <a
+            href={MEAL_SYSTEM_URL}
+            target="_blank"
+            rel="noreferrer"
+            style={styles.mealTopBtn}
+          >
+            員工餐
+          </a>
           <button
             style={styles.adminTopBtn}
             onClick={() => setShowLoginModal(true)}
@@ -2732,7 +2749,21 @@ const styles = {
     zIndex: 2,
     display: "flex",
     justifyContent: "flex-end",
+    alignItems: "center",
+    gap: 10,
     padding: "20px 20px 0",
+  },
+  mealTopBtn: {
+    border: "1px solid rgba(255,255,255,0.25)",
+    background: "rgba(16,185,129,0.92)",
+    color: "#fff",
+    padding: "12px 18px",
+    borderRadius: 999,
+    fontWeight: 900,
+    cursor: "pointer",
+    textDecoration: "none",
+    boxShadow: "0 10px 22px rgba(15,118,110,0.22)",
+    backdropFilter: "blur(10px)",
   },
   adminTopBtn: {
     border: "1px solid rgba(255,255,255,0.25)",
