@@ -284,8 +284,7 @@ const buildLateLineMessage = (storeName, lateList, dateKey, reason = "") => {
     }),
     "",
     `共 ${lateList.length} 人`,
-  ].join("
-");
+  ].join("\n");
 };
 
 
