@@ -8,7 +8,6 @@ import { getFirestore, collection as fsCollection, getDocs } from "firebase/fire
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
 const DEVICE_BIND_OPTIONS = ["西螺文昌店", "斗南站前店", "老闆手機"];
-const MEAL_SYSTEM_URL = "https://staff-meal-system.vercel.app/";
 
 // ===== 積分系統 Firebase（Firestore） =====
 // 這組是績效考核系統 Firebase，打卡系統會在打卡成功後讀取本月積分。
@@ -149,6 +148,47 @@ const fetchMonthlyPointsFromPerformanceSystem = async (empId) => {
   return { found: false, message: "尚無積分資料" };
 };
 
+
+
+const getCheckInSpeechPrefix = (type, lateMinutes = 0) => {
+  if (type === "上班" && Number(lateMinutes) > 0) {
+    return `你遲到了，遲到${lateMinutes}分鐘`;
+  }
+
+  if (type === "上班") return "上班打卡完成";
+  if (type === "下班") return "下班打卡完成";
+  if (type === "休息開始") return "休息開始打卡完成";
+  if (type === "休息結束") return "休息結束打卡完成";
+  return "打卡完成";
+};
+
+const buildCheckInVoiceMessage = (type, lateMinutes = 0, pointsResult = null) => {
+  const parts = [getCheckInSpeechPrefix(type, lateMinutes)];
+
+  if (pointsResult?.found && pointsResult?.monthlyPoints !== undefined) {
+    parts.push(`本月積分${Math.round(Number(pointsResult.monthlyPoints) || 0)}分`);
+  } else if (pointsResult?.error) {
+    parts.push("積分讀取失敗");
+  }
+
+  return parts.join("，");
+};
+
+const speakCheckInMessage = (text) => {
+  if (!text || typeof window === "undefined" || !window.speechSynthesis) return;
+
+  try {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "zh-TW";
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    utterance.volume = 1;
+    window.speechSynthesis.speak(utterance);
+  } catch (error) {
+    console.warn("播放打卡語音失敗:", error);
+  }
+};
 
 const getStatusStyle = (status) => {
   switch (status) {
@@ -978,6 +1018,35 @@ ${url}`);
       updatedAt: createdAt,
     });
 
+    let lateMinutes = 0;
+
+    if (type === "上班") {
+      try {
+        const dateKey = formatTaipeiDateKey(createdAt);
+        const empKey = emp.empId || emp.id;
+        const graceMs = 5 * 60 * 1000;
+
+        let scheduleSnap = await get(ref(db, `schedules/${dateKey}/${empKey}`));
+
+        if (!scheduleSnap.exists() && emp.id && emp.id !== empKey) {
+          scheduleSnap = await get(ref(db, `schedules/${dateKey}/${emp.id}`));
+        }
+
+        const schedule = scheduleSnap.val() || null;
+
+        if (schedule?.working && schedule?.startTime) {
+          const startTs = getTaipeiTimestampFromDateTime(dateKey, schedule.startTime);
+          const shouldCheckTs = startTs + graceMs;
+
+          if (startTs && createdAt > shouldCheckTs) {
+            lateMinutes = Math.floor((createdAt - startTs) / 60000);
+          }
+        }
+      } catch (error) {
+        console.warn("計算遲到語音失敗:", error);
+      }
+    }
+
     setEmployeeId("");
     // 改為由自動排程統一檢查遲到，避免重複 LINE 通知
 
@@ -990,19 +1059,22 @@ ${url}`);
         pointsResult,
         createdAt,
       });
+      speakCheckInMessage(buildCheckInVoiceMessage(type, lateMinutes, pointsResult));
     } catch (error) {
       console.error("讀取本月積分失敗:", error);
+      const fallbackPointsResult = {
+        found: false,
+        message: "積分讀取失敗，但打卡已成功",
+        error: true,
+      };
       showScoreToast({
         success: true,
         name: emp.name,
         type,
-        pointsResult: {
-          found: false,
-          message: "積分讀取失敗，但打卡已成功",
-          error: true,
-        },
+        pointsResult: fallbackPointsResult,
         createdAt,
       });
+      speakCheckInMessage(buildCheckInVoiceMessage(type, lateMinutes, fallbackPointsResult));
     }
   };
 
@@ -1656,14 +1728,6 @@ ${url}`);
         <div style={styles.overlay} />
 
         <div style={styles.topRightBar}>
-          <a
-            href={MEAL_SYSTEM_URL}
-            target="_blank"
-            rel="noreferrer"
-            style={styles.mealTopBtn}
-          >
-            員工餐
-          </a>
           <button
             style={styles.adminTopBtn}
             onClick={() => setShowLoginModal(true)}
@@ -1820,14 +1884,6 @@ ${url}`);
         <div style={styles.overlay} />
 
         <div style={styles.topRightBar}>
-          <a
-            href={MEAL_SYSTEM_URL}
-            target="_blank"
-            rel="noreferrer"
-            style={styles.mealTopBtn}
-          >
-            員工餐
-          </a>
           <button
             style={styles.adminTopBtn}
             onClick={() => setShowLoginModal(true)}
@@ -2749,21 +2805,7 @@ const styles = {
     zIndex: 2,
     display: "flex",
     justifyContent: "flex-end",
-    alignItems: "center",
-    gap: 10,
     padding: "20px 20px 0",
-  },
-  mealTopBtn: {
-    border: "1px solid rgba(255,255,255,0.25)",
-    background: "rgba(16,185,129,0.92)",
-    color: "#fff",
-    padding: "12px 18px",
-    borderRadius: 999,
-    fontWeight: 900,
-    cursor: "pointer",
-    textDecoration: "none",
-    boxShadow: "0 10px 22px rgba(15,118,110,0.22)",
-    backdropFilter: "blur(10px)",
   },
   adminTopBtn: {
     border: "1px solid rgba(255,255,255,0.25)",
