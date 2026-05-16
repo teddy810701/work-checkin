@@ -149,47 +149,6 @@ const fetchMonthlyPointsFromPerformanceSystem = async (empId) => {
 };
 
 
-
-const getCheckInSpeechPrefix = (type, lateMinutes = 0) => {
-  if (type === "上班" && Number(lateMinutes) > 0) {
-    return `你遲到了，遲到${lateMinutes}分鐘`;
-  }
-
-  if (type === "上班") return "上班打卡完成";
-  if (type === "下班") return "下班打卡完成";
-  if (type === "休息開始") return "休息開始打卡完成";
-  if (type === "休息結束") return "休息結束打卡完成";
-  return "打卡完成";
-};
-
-const buildCheckInVoiceMessage = (type, lateMinutes = 0, pointsResult = null) => {
-  const parts = [getCheckInSpeechPrefix(type, lateMinutes)];
-
-  if (pointsResult?.found && pointsResult?.monthlyPoints !== undefined) {
-    parts.push(`本月積分${Math.round(Number(pointsResult.monthlyPoints) || 0)}分`);
-  } else if (pointsResult?.error) {
-    parts.push("積分讀取失敗");
-  }
-
-  return parts.join("，");
-};
-
-const speakCheckInMessage = (text) => {
-  if (!text || typeof window === "undefined" || !window.speechSynthesis) return;
-
-  try {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "zh-TW";
-    utterance.rate = 1;
-    utterance.pitch = 1;
-    utterance.volume = 1;
-    window.speechSynthesis.speak(utterance);
-  } catch (error) {
-    console.warn("播放打卡語音失敗:", error);
-  }
-};
-
 const getStatusStyle = (status) => {
   switch (status) {
     case "上班中":
@@ -951,6 +910,43 @@ ${url}`);
   };
 
 
+  const speakText = (text) => {
+    try {
+      if (!text || !window?.speechSynthesis) return;
+
+      window.speechSynthesis.cancel();
+
+      const msg = new SpeechSynthesisUtterance(text);
+      msg.lang = "zh-TW";
+      msg.rate = 1;
+      msg.pitch = 1;
+      msg.volume = 1;
+
+      window.speechSynthesis.speak(msg);
+    } catch (error) {
+      console.error("語音播放失敗:", error);
+    }
+  };
+
+  const getCheckInLateMinutes = async (emp, createdAt) => {
+    try {
+      const dateKey = formatTaipeiDateKey(createdAt);
+      const empKey = emp.empId || emp.id;
+      const scheduleSnap = await get(ref(db, `schedules/${dateKey}/${empKey}`));
+      const schedule = scheduleSnap.val();
+
+      if (!schedule?.working || !schedule?.startTime) return 0;
+
+      const startTs = getTaipeiTimestampFromDateTime(dateKey, schedule.startTime);
+      if (!startTs) return 0;
+
+      return Math.max(0, Math.floor((createdAt - startTs) / 60000));
+    } catch (error) {
+      console.error("計算遲到分鐘失敗:", error);
+      return 0;
+    }
+  };
+
   const showScoreToast = (payload) => {
     setScoreToast(payload);
     setTimeout(() => setScoreToast(null), 7000);
@@ -1018,40 +1014,14 @@ ${url}`);
       updatedAt: createdAt,
     });
 
-    let lateMinutes = 0;
-
-    if (type === "上班") {
-      try {
-        const dateKey = formatTaipeiDateKey(createdAt);
-        const empKey = emp.empId || emp.id;
-        const graceMs = 5 * 60 * 1000;
-
-        let scheduleSnap = await get(ref(db, `schedules/${dateKey}/${empKey}`));
-
-        if (!scheduleSnap.exists() && emp.id && emp.id !== empKey) {
-          scheduleSnap = await get(ref(db, `schedules/${dateKey}/${emp.id}`));
-        }
-
-        const schedule = scheduleSnap.val() || null;
-
-        if (schedule?.working && schedule?.startTime) {
-          const startTs = getTaipeiTimestampFromDateTime(dateKey, schedule.startTime);
-          const shouldCheckTs = startTs + graceMs;
-
-          if (startTs && createdAt > shouldCheckTs) {
-            lateMinutes = Math.floor((createdAt - startTs) / 60000);
-          }
-        }
-      } catch (error) {
-        console.warn("計算遲到語音失敗:", error);
-      }
-    }
-
     setEmployeeId("");
     // 改為由自動排程統一檢查遲到，避免重複 LINE 通知
 
     try {
       const pointsResult = await fetchMonthlyPointsFromPerformanceSystem(emp.empId || emp.id);
+      const lateMinutes = type === "上班" ? await getCheckInLateMinutes(emp, createdAt) : 0;
+      const monthlyPointsText = pointsResult?.found ? pointsResult.monthlyPoints : "未知";
+
       showScoreToast({
         success: true,
         name: emp.name,
@@ -1059,22 +1029,27 @@ ${url}`);
         pointsResult,
         createdAt,
       });
-      speakCheckInMessage(buildCheckInVoiceMessage(type, lateMinutes, pointsResult));
+
+      if (lateMinutes > 0) {
+        speakText(`你遲到了，遲到${lateMinutes}分鐘，本月積分${monthlyPointsText}分`);
+      } else {
+        speakText(`${type}打卡完成，本月積分${monthlyPointsText}分`);
+      }
     } catch (error) {
       console.error("讀取本月積分失敗:", error);
-      const fallbackPointsResult = {
-        found: false,
-        message: "積分讀取失敗，但打卡已成功",
-        error: true,
-      };
       showScoreToast({
         success: true,
         name: emp.name,
         type,
-        pointsResult: fallbackPointsResult,
+        pointsResult: {
+          found: false,
+          message: "積分讀取失敗，但打卡已成功",
+          error: true,
+        },
         createdAt,
       });
-      speakCheckInMessage(buildCheckInVoiceMessage(type, lateMinutes, fallbackPointsResult));
+
+      speakText(`${type}打卡完成，積分讀取失敗`);
     }
   };
 
