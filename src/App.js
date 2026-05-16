@@ -287,6 +287,38 @@ const buildLateLineMessage = (storeName, lateList, dateKey, reason = "") => {
   ].join("\n");
 };
 
+const timeTextToMinutes = (value = "") => {
+  const match = String(value || "").match(/(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+};
+
+const calculateLateMinutesFallback = (person = {}, fallbackTimestamp = 0) => {
+  if (person.lateMinutes !== undefined && person.lateMinutes !== null && person.lateMinutes !== "") {
+    return Number(person.lateMinutes);
+  }
+
+  const startMinutes = timeTextToMinutes(person.startTime);
+  if (startMinutes === null) return null;
+
+  if (person.status !== "not_checked" && person.actualTime && person.actualTime !== "未打卡") {
+    const actualMinutes = timeTextToMinutes(person.actualTime);
+    if (actualMinutes !== null) {
+      return Math.max(0, actualMinutes - startMinutes);
+    }
+  }
+
+  if (fallbackTimestamp) {
+    const d = new Date(fallbackTimestamp);
+    if (!Number.isNaN(d.getTime())) {
+      const nowMinutes = d.getHours() * 60 + d.getMinutes();
+      return Math.max(0, nowMinutes - startMinutes);
+    }
+  }
+
+  return null;
+};
+
 
 export default function App() {
   const [authReady, setAuthReady] = useState(false);
@@ -1345,14 +1377,15 @@ ${url}`);
     const manualChecks = lineStatus?.manual_late_checks || {};
     const lateSent = lineStatus?.late_sent || {};
 
-    const buildDetailText = (item = {}) => {
+    const buildDetailText = (item = {}, fallbackTimestamp = 0) => {
       const actualText =
         item.status === "not_checked"
           ? "尚未打卡"
           : `打卡 ${item.actualTime || "未記錄"}`;
-      const minuteText = item.lateMinutes !== undefined && item.lateMinutes !== null
-        ? `｜遲到 ${item.lateMinutes} 分鐘`
-        : "";
+      const lateMinutes = calculateLateMinutesFallback(item, fallbackTimestamp);
+      const minuteText = lateMinutes !== null
+        ? `｜遲到 ${lateMinutes} 分鐘`
+        : "｜遲到分鐘未記錄";
       return `${item.name || item.empId || "未命名"}｜排班 ${item.startTime || "未填"}｜${actualText}${minuteText}`;
     };
 
@@ -1380,7 +1413,7 @@ ${url}`);
             .filter((person) => person && typeof person === "object" && (person.name || person.empId))
             .map((person) => ({
               ...person,
-              detailText: buildDetailText(person),
+              detailText: buildDetailText(person, person.sentAt || 0),
             }));
 
           if (!people.length) return;
@@ -2361,8 +2394,9 @@ ${url}`);
                             const actualText = person.status === "not_checked"
                               ? "尚未打卡"
                               : `打卡 ${person.actualTime || "未記錄"}`;
-                            const lateText = person.lateMinutes !== undefined && person.lateMinutes !== null
-                              ? `遲到 ${person.lateMinutes} 分鐘`
+                            const computedLateMinutes = calculateLateMinutesFallback(person, item.sentAt || item.checkedAt || 0);
+                            const lateText = computedLateMinutes !== null
+                              ? `遲到 ${computedLateMinutes} 分鐘`
                               : "遲到分鐘未記錄";
                             return (
                               <div key={`${person.empId || person.name || index}-${index}`}>
