@@ -2308,8 +2308,9 @@ ${url}`);
                   background: "#fff",
                 }}
               >
-                <option value="西螺文昌店">西螺文昌店</option>
-                <option value="斗南站前店">斗南站前店</option>
+                {DEVICE_BIND_OPTIONS.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
               </select>
             </div>
 
