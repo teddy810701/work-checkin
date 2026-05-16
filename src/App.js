@@ -910,43 +910,6 @@ ${url}`);
   };
 
 
-  const speakText = (text) => {
-    try {
-      if (!text || !window?.speechSynthesis) return;
-
-      window.speechSynthesis.cancel();
-
-      const msg = new SpeechSynthesisUtterance(text);
-      msg.lang = "zh-TW";
-      msg.rate = 1;
-      msg.pitch = 1;
-      msg.volume = 1;
-
-      window.speechSynthesis.speak(msg);
-    } catch (error) {
-      console.error("語音播放失敗:", error);
-    }
-  };
-
-  const getCheckInLateMinutes = async (emp, createdAt) => {
-    try {
-      const dateKey = formatTaipeiDateKey(createdAt);
-      const empKey = emp.empId || emp.id;
-      const scheduleSnap = await get(ref(db, `schedules/${dateKey}/${empKey}`));
-      const schedule = scheduleSnap.val();
-
-      if (!schedule?.working || !schedule?.startTime) return 0;
-
-      const startTs = getTaipeiTimestampFromDateTime(dateKey, schedule.startTime);
-      if (!startTs) return 0;
-
-      return Math.max(0, Math.floor((createdAt - startTs) / 60000));
-    } catch (error) {
-      console.error("計算遲到分鐘失敗:", error);
-      return 0;
-    }
-  };
-
   const showScoreToast = (payload) => {
     setScoreToast(payload);
     setTimeout(() => setScoreToast(null), 7000);
@@ -1019,9 +982,6 @@ ${url}`);
 
     try {
       const pointsResult = await fetchMonthlyPointsFromPerformanceSystem(emp.empId || emp.id);
-      const lateMinutes = type === "上班" ? await getCheckInLateMinutes(emp, createdAt) : 0;
-      const monthlyPointsText = pointsResult?.found ? pointsResult.monthlyPoints : "未知";
-
       showScoreToast({
         success: true,
         name: emp.name,
@@ -1029,12 +989,6 @@ ${url}`);
         pointsResult,
         createdAt,
       });
-
-      if (lateMinutes > 0) {
-        speakText(`你遲到了，遲到${lateMinutes}分鐘，本月積分${monthlyPointsText}分`);
-      } else {
-        speakText(`${type}打卡完成，本月積分${monthlyPointsText}分`);
-      }
     } catch (error) {
       console.error("讀取本月積分失敗:", error);
       showScoreToast({
@@ -1048,8 +1002,6 @@ ${url}`);
         },
         createdAt,
       });
-
-      speakText(`${type}打卡完成，積分讀取失敗`);
     }
   };
 
