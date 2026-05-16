@@ -1,3422 +1,3678 @@
-/* eslint-disable */
-import { db, auth } from './firebase';
-import { onAuthStateChanged, signInAnonymously } from 'firebase/auth';
-import {
-  collection,
-  addDoc,
-  onSnapshot,
-  doc,
-  updateDoc,
-  deleteDoc,
-  getDoc,
-  setDoc
-} from 'firebase/firestore';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  Users,
-  PlusCircle,
-  AlertTriangle,
-  ShieldCheck,
-  History,
-  Calendar,
-  Store,
-  Trash2,
-  Lock,
-  Edit3,
-  X,
-  Search,
-  ArrowRight,
-  RotateCcw,
-  Save,
-  Settings,
-  CheckCircle2,
-  Cloud,
-  Clock3
-} from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { db, auth } from "./firebase";
+import { ref, set, onValue, update, remove, get, query, orderByChild, limitToLast } from "firebase/database";
+import { initializeApp, getApp, getApps } from "firebase/app";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
+import { getFirestore, collection as fsCollection, getDocs } from "firebase/firestore";
 
-const App = () => {
-  const DEFAULT_INITIAL_POINTS = 600;
-  const MONTHLY_BASE_POINTS = 50;
-  const GLOBAL_BASE_BONUS = 600;
+const ADMIN_PASSWORD = "8888";
+const CHECKIN_COOLDOWN = 30000;
+const DEVICE_BIND_OPTIONS = ["西螺文昌店", "斗南站前店", "老闆手機"];
 
-  const STORE_CONFIG = {
-    storeA: { label: '西螺文昌店', managerKey: 'managerA' },
-    storeB: { label: '斗南站前店', managerKey: 'managerB' }
-  };
+// ===== 積分系統 Firebase（Firestore） =====
+// 這組是績效考核系統 Firebase，打卡系統會在打卡成功後讀取本月積分。
+const POINTS_FIREBASE_CONFIG = {
+  apiKey: "AIzaSyAfBj728Hs928rZByNebgCkcJoU_MNxFIs",
+  authDomain: "my-warm-day-pro.firebaseapp.com",
+  projectId: "my-warm-day-pro",
+  storageBucket: "my-warm-day-pro.appspot.com",
+  messagingSenderId: "409964225413",
+  appId: "1:409964225413:web:82fad775514edb08735aec",
+};
 
-  const PERFORMANCE_ITEMS = {
-    penalty: [
-      { label: '遲到 (預設1分/可修改)', val: -1 },
-      { label: '延遲開工 (15分以上)', val: -10 },
-      { label: '工作態度不佳 (不服管教)', val: -5 },
-      { label: '作業失誤-輕 (漏餐具等)', val: -2 },
-      { label: '作業失誤-重 (燒焦/客訴)', val: -5 },
-      { label: '環境責任 (收班不確實)', val: -3 },
-      { label: '服儀不整', val: -2 },
-      { label: '其他扣分事項', val: -1 }
-    ],
-    bonus: [
-      { label: '申請打掃環境', val: 2 },
-      { label: '支援另一間店', val: 1 },
-      { label: '獲得顧客五星評論', val: 2 },
-      { label: '表現優異 (店長推薦)', val: 5 },
-      { label: '其他加分事項', val: 1 }
-    ]
-  };
+const POINTS_APP_NAME = "pointsApp";
+const pointsApp = getApps().some((item) => item.name === POINTS_APP_NAME)
+  ? getApp(POINTS_APP_NAME)
+  : initializeApp(POINTS_FIREBASE_CONFIG, POINTS_APP_NAME);
+const pointsDb = getFirestore(pointsApp);
+const pointsAuth = getAuth(pointsApp);
+const MONTHLY_BASE_POINTS = 50;
+const POINTS_STORE_IDS = ["storeA", "storeB"];
 
-  const [employees, setEmployees] = useState([]);
-  const [logs, setLogs] = useState([]);
 
-  const [activeTab, setActiveTab] = useState('employee');
-  const [selectedEmpId, setSelectedEmpId] = useState(null);
+const getDeviceId = () => {
+  let id = localStorage.getItem("device_id");
+  if (!id) {
+    id = "DEV-" + Math.random().toString(36).slice(2, 10).toUpperCase();
+    localStorage.setItem("device_id", id);
+  }
+  return id;
+};
 
-  const [authMode, setAuthMode] = useState(null);
-  const [passwordInput, setPasswordInput] = useState('');
-  const [managerLoginKey, setManagerLoginKey] = useState('managerA');
-  const [currentManager, setCurrentManager] = useState(null);
-
-  const [selectedItemLabel, setSelectedItemLabel] = useState('');
-  const [customPoints, setCustomPoints] = useState('0');
-  const [occurrenceDate, setOccurrenceDate] = useState(
-    new Date().toISOString().split('T')[0]
-  );
-  const [note, setNote] = useState('');
-  const [systemMessage, setSystemMessage] = useState(null);
-  const [selectedMonth, setSelectedMonth] = useState(
-    new Date().toISOString().substring(0, 7)
-  );
-  const [personalLogCategory, setPersonalLogCategory] = useState('all');
-  const [personalLogSearch, setPersonalLogSearch] = useState('');
-  const [editingEmp, setEditingEmp] = useState(null);
-  const [isAddingNew, setIsAddingNew] = useState(false);
-  const [deletingEmpId, setDeletingEmpId] = useState(null);
-
-  const [authConfig, setAuthConfig] = useState(null);
-  const [authReady, setAuthReady] = useState(false);
-  const [firebaseAuthReady, setFirebaseAuthReady] = useState(false);
-  const [firebaseUser, setFirebaseUser] = useState(null);
-
-  const [passwordPanel, setPasswordPanel] = useState({
-    adminPassword: '',
-    managerAName: '店長A',
-    managerAPassword: '',
-    managerBName: '店長B',
-    managerBPassword: ''
+const formatTaipeiNow = () => {
+  return new Date().toLocaleString("zh-TW", {
+    timeZone: "Asia/Taipei",
+    hour12: false,
   });
-  const [savingPassword, setSavingPassword] = useState(false);
-  const [showAdminSettings, setShowAdminSettings] = useState(false);
-  const [adminSearch, setAdminSearch] = useState('');
-  const [adminStoreFilter, setAdminStoreFilter] = useState('all');
-  const [adminStatusFilter, setAdminStatusFilter] = useState('all');
-
-  const [missedClockForm, setMissedClockForm] = useState({
-    requestDate: new Date().toISOString().split('T')[0],
-    requestTime: '',
-    reason: ''
-  });
-
-  const getStoreLabel = useCallback(
-    (storeId) => STORE_CONFIG[storeId]?.label || storeId || '未設定店鋪',
-    []
-  );
-
-  const currentStoreId = currentManager?.storeId || null;
-
-  const normalizeBirthdayId = (value) => {
-    return String(value || '').replace(/\D/g, '').slice(0, 4);
-  };
-
-  const showMessage = (text, type = 'info') => {
-    setSystemMessage({ text, type });
-    setTimeout(() => setSystemMessage(null), 3000);
-  };
-
-  const formatDate = (value) => {
-    if (!value) return '';
-
-    if (typeof value === 'string') {
-      const d = new Date(value);
-      if (!Number.isNaN(d.getTime())) return d.toLocaleDateString('zh-TW');
-      return value;
-    }
-
-    if (value?.toDate) {
-      return value.toDate().toLocaleDateString('zh-TW');
-    }
-
-    if (value?.seconds) {
-      return new Date(value.seconds * 1000).toLocaleDateString('zh-TW');
-    }
-
-    return String(value);
-  };
-
-
-  const formatDateTime = (value) => {
-    const d = toJsDate(value);
-    if (!d || Number.isNaN(d.getTime())) return value || '';
-    return d.toLocaleString('zh-TW', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
-
-  const toJsDate = (value) => {
-    if (!value) return null;
-    if (value instanceof Date) return value;
-
-    if (typeof value === 'string') {
-      const raw = value.trim();
-
-      // Safari / 手機瀏覽器對 2026/5/9、2026-5-9、2026-05-09T08:30
-      // 的解析有時不穩，統一手動轉成台灣本地時間，排序才不會亂。
-      const match = raw.match(
-        /^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})(?:[T\s](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/
-      );
-
-      if (match) {
-        const [, year, month, day, hour = '0', minute = '0', second = '0'] = match;
-        return new Date(
-          Number(year),
-          Number(month) - 1,
-          Number(day),
-          Number(hour),
-          Number(minute),
-          Number(second)
-        );
-      }
-
-      return new Date(raw);
-    }
-
-    if (value?.toDate) return value.toDate();
-    if (value?.seconds) return new Date(value.seconds * 1000);
-    return new Date(value);
-  };
-
-  const getLogSortTime = (log) => {
-    // 先用實際建立時間排序；如果舊資料沒有 timestamp，再用發生日期。
-    // 同一天多筆資料時，timestamp 可以讓最新新增的紀錄排在前面。
-    const mainTime = toJsDate(
-      log?.timestamp ||
-        log?.requestDateTime ||
-        log?.createdAt ||
-        log?.occurrenceDate
-    )?.getTime();
-
-    if (Number.isFinite(mainTime)) return mainTime;
-
-    const fallbackTime = toJsDate(log?.occurrenceDate)?.getTime();
-    return Number.isFinite(fallbackTime) ? fallbackTime : 0;
-  };
-
-  const sortLogsByNewestFirst = (list) => {
-    return [...list].sort((a, b) => getLogSortTime(b) - getLogSortTime(a));
-  };
-
-  const getPersonalLogCategory = (log) => {
-    const actionType = String(log?.actionType || '');
-    const reason = String(log?.reason || '');
-    const amount = Number(log?.amount) || 0;
-
-    if (actionType.includes('missed_clock') || reason.includes('忘打卡')) {
-      return 'missedClock';
-    }
-
-    if (actionType === 'score_change' || actionType === 'delete_score_change' || amount !== 0) {
-      return 'score';
-    }
-
-    return 'other';
-  };
-
-  const getPersonalLogCategoryLabel = (category) => {
-    if (category === 'score') return '加扣分';
-    if (category === 'missedClock') return '忘打卡';
-    return '其他';
-  };
-
-  const getPersonalLogCategoryClass = (category) => {
-    if (category === 'score') return 'bg-blue-50 text-blue-600 border-blue-100';
-    if (category === 'missedClock') return 'bg-orange-50 text-orange-600 border-orange-100';
-    return 'bg-gray-100 text-gray-500 border-gray-200';
-  };
-
-  const getCurrentYear = () => new Date().getFullYear();
-
-  const getLogDate = (log) => {
-    return toJsDate(log?.occurrenceDate || log?.timestamp);
-  };
-
-  const getLogYear = (log) => {
-    const d = getLogDate(log);
-    if (!d || Number.isNaN(d.getTime())) return null;
-    return d.getFullYear();
-  };
-
-  const getMonthKeyFromDate = (value) => {
-    const d = toJsDate(value);
-    if (!d || Number.isNaN(d.getTime())) return null;
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-  };
-
-  const getCurrentMonthKey = () => {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  };
-
-  const calculateSeniority = (startDate) => {
-    if (!startDate) {
-      return { years: 0, months: 0, isEligible: false, text: '未設定' };
-    }
-
-    const start = toJsDate(startDate);
-    if (!start || Number.isNaN(start.getTime())) {
-      return { years: 0, months: 0, isEligible: false, text: '未設定' };
-    }
-
-    const now = new Date();
-
-    let years = now.getFullYear() - start.getFullYear();
-    const anniversaryThisYear = new Date(start);
-    anniversaryThisYear.setFullYear(now.getFullYear());
-
-    if (now < anniversaryThisYear) years--;
-
-    let months = now.getMonth() - start.getMonth();
-    if (now.getDate() < start.getDate()) months--;
-    if (months < 0) months += 12;
-
-    return {
-      years: Math.max(0, years),
-      months: Math.max(0, months),
-      isEligible: years >= 1,
-      text: `${Math.max(0, years)}年${Math.max(0, months)}個月`
-    };
-  };
-
-  const getEmployeeYearLogs = useCallback(
-    (empId, year) => {
-      return logs.filter(
-        (log) => log.empId === empId && getLogYear(log) === year
-      );
-    },
-    [logs]
-  );
-
-  const getEmployeeYearPoints = useCallback(
-    (emp, year) => {
-      if (!emp) return DEFAULT_INITIAL_POINTS;
-
-      const initial =
-        typeof emp.initialPoints === 'number'
-          ? emp.initialPoints
-          : DEFAULT_INITIAL_POINTS;
-
-      const yearLogs = getEmployeeYearLogs(emp.id, year);
-      const delta = yearLogs.reduce(
-        (sum, log) => sum + (Number(log.amount) || 0),
-        0
-      );
-
-      return initial + delta;
-    },
-    [getEmployeeYearLogs]
-  );
-
-  const calculateResult = (
-    points,
-    lastYearPoints,
-    lastYearLowFallback = false
-  ) => {
-    const lastYearIsLow = lastYearPoints < 499 || lastYearLowFallback;
-
-    if (lastYearIsLow && points < 499) {
-      return {
-        status: 'D (淘汰)',
-        color: 'text-gray-900',
-        bg: 'bg-gray-900 text-white',
-        desc: '連兩年低於499'
-      };
-    }
-    if (points >= 500) {
-      return {
-        status: 'A (合格)',
-        color: 'text-green-600',
-        bg: 'bg-green-100 text-green-800',
-        desc: '年度加級正常發放'
-      };
-    }
-    if (points >= 481) {
-      return {
-        status: 'B (警示)',
-        color: 'text-orange-600',
-        bg: 'bg-yellow-100 text-yellow-800',
-        desc: '金額減半'
-      };
-    }
-    return {
-      status: 'C (重罰)',
-      color: 'text-red-600',
-      bg: 'bg-red-100 text-red-800',
-      desc: '取消年度加級資格'
-    };
-  };
-
-  const getEmployeeAssessment = useCallback(
-    (emp, year = getCurrentYear()) => {
-      const thisYearPoints = getEmployeeYearPoints(emp, year);
-      const lastYearPoints = getEmployeeYearPoints(emp, year - 1);
-      const result = calculateResult(
-        thisYearPoints,
-        lastYearPoints,
-        emp?.lastYearLow || false
-      );
-
-      return {
-        year,
-        thisYearPoints,
-        lastYearPoints,
-        result
-      };
-    },
-    [getEmployeeYearPoints]
-  );
-
-  const calculateFinalPay = useCallback(
-    (emp) => {
-      if (!emp || emp.skillsPassed < 2) return 0;
-
-      const seniority = calculateSeniority(emp.startDate);
-      if (!seniority.isEligible) return 0;
-
-      const { result } = getEmployeeAssessment(emp);
-      const base = GLOBAL_BASE_BONUS * (emp.multiplier || 1);
-
-      if (result.status.includes('A')) return Math.round(base);
-      if (result.status.includes('B')) return Math.round(base / 2);
-      return 0;
-    },
-    [getEmployeeAssessment]
-  );
-  // ===== Firebase 正式版匿名登入 =====
-  // Firestore 正式規則會要求 request.auth != null，
-  // 所以系統載入時先自動匿名登入，再讀取 stores / settings 資料。
-  useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
-      try {
-        if (user) {
-          setFirebaseUser(user);
-          setFirebaseAuthReady(true);
-          return;
-        }
-
-        await signInAnonymously(auth);
-      } catch (error) {
-        console.error('Firebase 匿名登入失敗:', error);
-        setFirebaseAuthReady(true);
-        showMessage('Firebase 登入失敗，請確認 Anonymous 已啟用', 'error');
-      }
-    });
-
-    return () => unsubscribeAuth();
-  }, []);
-
-  // ===== Firebase 初始化（權限設定） =====
-  useEffect(() => {
-    if (!firebaseAuthReady) return;
-
-    const initAuthConfig = async () => {
-      try {
-        const ref = doc(db, 'settings', 'auth');
-        const snap = await getDoc(ref);
-
-        if (!snap.exists()) {
-          const initData = {
-            adminPassword: '9999',
-            managerA: {
-              name: '店長A',
-              password: 'a8888',
-              storeId: 'storeA'
-            },
-            managerB: {
-              name: '店長B',
-              password: 'b8888',
-              storeId: 'storeB'
-            }
-          };
-
-          await setDoc(ref, initData);
-          setAuthConfig(initData);
-          setPasswordPanel({
-            adminPassword: initData.adminPassword,
-            managerAName: initData.managerA.name,
-            managerAPassword: initData.managerA.password,
-            managerBName: initData.managerB.name,
-            managerBPassword: initData.managerB.password
-          });
-        } else {
-          const data = snap.data();
-          setAuthConfig(data);
-          setPasswordPanel({
-            adminPassword: data.adminPassword || '9999',
-            managerAName: data.managerA?.name || '店長A',
-            managerAPassword: data.managerA?.password || 'a8888',
-            managerBName: data.managerB?.name || '店長B',
-            managerBPassword: data.managerB?.password || 'b8888'
-          });
-        }
-      } catch (e) {
-        console.error('讀取 Firebase 權限設定失敗:', e);
-        const fallbackData = {
-          adminPassword: '9999',
-          managerA: { name: '店長A', password: 'a8888', storeId: 'storeA' },
-          managerB: { name: '店長B', password: 'b8888', storeId: 'storeB' }
-        };
-        setAuthConfig(fallbackData);
-        setPasswordPanel({
-          adminPassword: fallbackData.adminPassword,
-          managerAName: fallbackData.managerA.name,
-          managerAPassword: fallbackData.managerA.password,
-          managerBName: fallbackData.managerB.name,
-          managerBPassword: fallbackData.managerB.password
-        });
-        showMessage('讀取權限設定失敗，已暫用預設密碼 9999', 'error');
-      } finally {
-        setAuthReady(true);
-      }
-    };
-
-    initAuthConfig();
-  }, [firebaseAuthReady]);
-
-  // ===== Firebase 即時資料 =====
-  useEffect(() => {
-    if (!authReady || !firebaseUser) return;
-
-    const unsubs = [];
-
-    // 確保分店主文件存在，避免 Firebase Console 顯示「此文件不存在」造成誤判。
-    ['storeA', 'storeB'].forEach((storeId) => {
-      setDoc(
-        doc(db, 'stores', storeId),
-        { name: getStoreLabel(storeId), active: true, updatedAt: new Date().toISOString() },
-        { merge: true }
-      ).catch((error) => console.warn(`建立 ${storeId} 主文件失敗:`, error));
-    });
-
-    ['storeA', 'storeB'].forEach((storeId) => {
-      const unsubEmp = onSnapshot(
-        collection(db, 'stores', storeId, 'employees'),
-        (snap) => {
-          setEmployees((prev) => {
-            const others = prev.filter((e) => e.storeId !== storeId);
-
-            const data = snap.docs.map((d) => ({
-              id: d.id,
-              storeId,
-              ...d.data()
-            }));
-
-            return [...others, ...data];
-          });
-        },
-        (error) => {
-          console.error(`讀取 ${storeId} 員工失敗:`, error);
-          showMessage('讀取員工資料失敗，請檢查 Firestore 規則', 'error');
-        }
-      );
-
-      const unsubLogs = onSnapshot(
-        collection(db, 'stores', storeId, 'logs'),
-        (snap) => {
-          setLogs((prev) => {
-            const others = prev.filter((l) => l.storeId !== storeId);
-
-            const data = snap.docs.map((d) => ({
-              id: d.id,
-              storeId,
-              ...d.data()
-            }));
-
-            return [...others, ...data];
-          });
-        },
-        (error) => {
-          console.error(`讀取 ${storeId} 紀錄失敗:`, error);
-          showMessage('讀取操作紀錄失敗，請檢查 Firestore 規則', 'error');
-        }
-      );
-
-      unsubs.push(unsubEmp, unsubLogs);
-    });
-
-    return () => unsubs.forEach((u) => u && u());
-  }, [authReady, firebaseUser, getStoreLabel]);
-
-  // ===== 登入 =====
-  const handleAuth = (e) => {
-    e.preventDefault();
-
-    const inputPassword = String(passwordInput || '').trim();
-    const config = authConfig || {
-      adminPassword: '9999',
-      managerA: { name: '店長A', password: 'a8888', storeId: 'storeA' },
-      managerB: { name: '店長B', password: 'b8888', storeId: 'storeB' }
-    };
-
-    if (authMode === 'admin') {
-      const adminPassword = String(config.adminPassword || '9999').trim();
-      if (inputPassword === adminPassword) {
-        setActiveTab('admin');
-        setAuthMode(null);
-      } else {
-        showMessage('密碼錯誤，請確認 Firebase settings/auth 的 adminPassword', 'error');
-      }
-    }
-
-    if (authMode === 'manager') {
-      const data = config[managerLoginKey];
-      const managerPassword = String(data?.password || '').trim();
-
-      if (inputPassword === managerPassword) {
-        setCurrentManager({
-          name: data.name,
-          storeId: data.storeId,
-          key: managerLoginKey
-        });
-        setActiveTab('manager');
-        setAuthMode(null);
-      } else {
-        showMessage('密碼錯誤，請確認 Firebase settings/auth 的店長密碼', 'error');
-      }
-    }
-
-    setPasswordInput('');
-  };
-
-  const leaveManagerMode = () => {
-    setCurrentManager(null);
-    setActiveTab('employee');
-  };
-
-  const handleMissedClockRequest = async () => {
-    if (!selectedEmp?.id) {
-      showMessage('請先選擇員工', 'error');
-      return;
-    }
-
-    if (!missedClockForm.requestDate || !missedClockForm.requestTime || !missedClockForm.reason.trim()) {
-      showMessage('請完整填寫忘打卡日期、時間與原因', 'error');
-      return;
-    }
-
-    const requestDateTime = `${missedClockForm.requestDate}T${missedClockForm.requestTime}`;
-
-    try {
-      await addDoc(collection(db, 'stores', selectedEmp.storeId, 'logs'), {
-        empId: selectedEmp.id,
-        amount: 0,
-        reason: '忘打卡申請',
-        note: missedClockForm.reason.trim(),
-        occurrenceDate: missedClockForm.requestDate,
-        requestDate: missedClockForm.requestDate,
-        requestTime: missedClockForm.requestTime,
-        requestDateTime,
-        timestamp: new Date().toISOString(),
-        createdAt: Date.now(),
-        name: selectedEmp.name,
-        operator: selectedEmp.name,
-        operatorKey: 'employee_request',
-        operatorStoreId: selectedEmp.storeId,
-        operatorStoreLabel: getStoreLabel(selectedEmp.storeId),
-        actionType: 'missed_clock_request',
-        requestStatus: 'pending'
-      });
-
-      setMissedClockForm({
-        requestDate: new Date().toISOString().split('T')[0],
-        requestTime: '',
-        reason: ''
-      });
-      showMessage('忘打卡申請已送出', 'success');
-    } catch (error) {
-      console.error('送出忘打卡申請失敗:', error);
-      showMessage('送出忘打卡申請失敗', 'error');
-    }
-  };
-
-  const handleMissedClockReview = async (log, nextStatus) => {
-    if (!log?.id || !log?.storeId) {
-      showMessage('找不到忘打卡申請資料', 'error');
-      return;
-    }
-
-    try {
-      await updateDoc(doc(db, 'stores', log.storeId, 'logs', log.id), {
-        requestStatus: nextStatus,
-        reviewedAt: new Date().toISOString(),
-        reviewedBy: '管理員',
-        reviewerKey: 'admin'
-      });
-
-      await addDoc(collection(db, 'stores', log.storeId, 'logs'), {
-        empId: log.empId,
-        amount: 0,
-        reason: nextStatus === 'approved' ? '批准忘打卡申請' : '退回忘打卡申請',
-        note: `${log.name || '員工'}｜${log.requestDate || log.occurrenceDate || ''} ${log.requestTime || ''}｜原因：${log.note || '未填寫'}`,
-        occurrenceDate: new Date().toISOString().split('T')[0],
-        timestamp: new Date().toISOString(),
-        createdAt: Date.now(),
-        name: log.name || '未知員工',
-        operator: '管理員',
-        operatorKey: 'admin',
-        operatorStoreId: log.storeId,
-        operatorStoreLabel: getStoreLabel(log.storeId),
-        actionType: nextStatus === 'approved' ? 'approve_missed_clock_request' : 'reject_missed_clock_request',
-        requestStatus: nextStatus,
-        targetRequestId: log.id,
-        requestDate: log.requestDate || log.occurrenceDate || '',
-        requestTime: log.requestTime || ''
-      });
-
-      showMessage(nextStatus === 'approved' ? '已批准忘打卡申請' : '已退回忘打卡申請', 'success');
-    } catch (error) {
-      console.error('審核忘打卡申請失敗:', error);
-      showMessage('審核忘打卡申請失敗', 'error');
-    }
-  };
-
-
-  const handleDeleteMissedClockRequest = async (log) => {
-    if (!log?.id || !log?.storeId) {
-      showMessage('找不到忘打卡申請資料', 'error');
-      return;
-    }
-
-    try {
-      await addDoc(collection(db, 'stores', log.storeId, 'logs'), {
-        empId: log.empId,
-        amount: 0,
-        reason: '刪除忘打卡申請',
-        note: `${log.name || '員工'}｜${log.requestDate || log.occurrenceDate || ''} ${log.requestTime || ''}｜狀態：${log.requestStatus || 'pending'}｜原因：${log.note || '未填寫'}`,
-        occurrenceDate: new Date().toISOString().split('T')[0],
-        timestamp: new Date().toISOString(),
-        createdAt: Date.now(),
-        name: log.name || '未知員工',
-        operator: '管理員',
-        operatorKey: 'admin',
-        operatorStoreId: log.storeId,
-        operatorStoreLabel: getStoreLabel(log.storeId),
-        actionType: 'delete_missed_clock_request',
-        deletedRequestId: log.id,
-        deletedRequestStatus: log.requestStatus || 'pending',
-        requestDate: log.requestDate || log.occurrenceDate || '',
-        requestTime: log.requestTime || ''
-      });
-
-      await deleteDoc(doc(db, 'stores', log.storeId, 'logs', log.id));
-      showMessage('忘打卡申請已刪除', 'success');
-    } catch (error) {
-      console.error('刪除忘打卡申請失敗:', error);
-      showMessage('刪除忘打卡申請失敗', 'error');
-    }
-  };
-
-  // ===== 新增員工 =====
-  const handleAddEmployee = async () => {
-    if (!editingEmp?.name) {
-      showMessage('請輸入姓名', 'error');
-      return;
-    }
-
-    const birthdayId = normalizeBirthdayId(editingEmp?.birthdayId);
-    if (birthdayId && birthdayId.length !== 4) {
-      showMessage('生日月日請輸入 4 碼，例如 0512', 'error');
-      return;
-    }
-
-    const storeId =
-      editingEmp?.storeId ||
-      (activeTab === 'manager' ? currentStoreId : null);
-
-    if (!storeId) {
-      showMessage('請先選擇所屬分店', 'error');
-      return;
-    }
-
-    try {
-      const newEmpRef = await addDoc(collection(db, 'stores', storeId, 'employees'), {
-        ...editingEmp,
-        birthdayId,
-        storeId,
-        shop: getStoreLabel(storeId),
-        currentPoints: editingEmp.initialPoints || DEFAULT_INITIAL_POINTS
-      });
-
-      await addDoc(collection(db, 'stores', storeId, 'logs'), {
-        empId: newEmpRef.id,
-        amount: 0,
-        reason: '新增員工資料',
-        note: `${editingEmp.name} 已被新增`,
-        occurrenceDate: new Date().toISOString().split('T')[0],
-        timestamp: new Date().toISOString(),
-        createdAt: Date.now(),
-        name: editingEmp.name,
-        operator: currentManager?.name || '管理員',
-        operatorKey: currentManager?.key || 'admin',
-        operatorStoreId: currentManager?.storeId || storeId,
-        operatorStoreLabel: getStoreLabel(currentManager?.storeId || storeId),
-        actionType: 'create_employee'
-      });
-
-      setEditingEmp(null);
-      setIsAddingNew(false);
-      showMessage('夥伴資料已新增', 'success');
-    } catch (error) {
-      console.error('新增夥伴失敗:', error);
-      showMessage('新增夥伴失敗', 'error');
-    }
-  };
-
-  // ===== 加扣分 =====
-  const handlePointChange = async (empId, amount, reason) => {
-    const emp = employees.find((e) => e.id === empId);
-    if (!emp) {
-      showMessage('找不到員工資料', 'error');
-      return;
-    }
-
-    try {
-      await addDoc(collection(db, 'stores', emp.storeId, 'logs'), {
-        empId,
-        amount,
-        reason,
-        note,
-        occurrenceDate,
-        timestamp: new Date().toISOString(),
-        createdAt: Date.now(),
-        name: emp.name,
-        operator: currentManager?.name || '管理員',
-        operatorKey: currentManager?.key || 'admin',
-        operatorStoreId: currentManager?.storeId || emp.storeId,
-        operatorStoreLabel: getStoreLabel(currentManager?.storeId || emp.storeId),
-        actionType: 'score_change'
-      });
-
-      setNote('');
-      setSelectedItemLabel('');
-      setCustomPoints('0');
-      showMessage('紀錄已新增', 'success');
-    } catch (error) {
-      console.error('新增紀錄失敗:', error);
-      showMessage('新增紀錄失敗', 'error');
-    }
-  };
-
-  const handleDeleteScoreLog = async (log) => {
-    if (!log?.id || !log?.storeId) {
-      showMessage('找不到評分紀錄', 'error');
-      return;
-    }
-
-    try {
-      await addDoc(collection(db, 'stores', log.storeId, 'logs'), {
-        empId: log.empId || 'UNKNOWN',
-        amount: 0,
-        reason: '刪除加扣分紀錄',
-        note: `已刪除「${log.reason || '未命名項目'}」${Number(log.amount) || 0} 分`,
-        occurrenceDate: new Date().toISOString().split('T')[0],
-        timestamp: new Date().toISOString(),
-        createdAt: Date.now(),
-        name: log.name || '未知員工',
-        operator: currentManager?.name || '管理員',
-        operatorKey: currentManager?.key || 'admin',
-        operatorStoreId: currentManager?.storeId || log.storeId,
-        operatorStoreLabel: getStoreLabel(currentManager?.storeId || log.storeId),
-        actionType: 'delete_score_change',
-        deletedLogId: log.id,
-        deletedReason: log.reason || '',
-        deletedAmount: Number(log.amount) || 0,
-        deletedOccurrenceDate: log.occurrenceDate || '',
-        deletedOriginalTimestamp: log.timestamp || ''
-      });
-
-      await deleteDoc(doc(db, 'stores', log.storeId, 'logs', log.id));
-      showMessage('加扣分紀錄已刪除', 'success');
-    } catch (error) {
-      console.error('刪除評分紀錄失敗:', error);
-      showMessage('刪除評分紀錄失敗', 'error');
-    }
-  };
-
-  // ===== 刪除員工 =====
-  const deleteEmployee = async (id) => {
-    const emp = employees.find((e) => e.id === id);
-    if (!emp) {
-      showMessage('找不到員工資料', 'error');
-      return;
-    }
-
-    try {
-      await addDoc(collection(db, 'stores', emp.storeId, 'logs'), {
-        empId: emp.id,
-        name: emp.name,
-        storeId: emp.storeId,
-        reason: '刪除員工資料',
-        amount: 0,
-        note: `${emp.name} 的員工資料已被刪除`,
-        occurrenceDate: new Date().toISOString().split('T')[0],
-        timestamp: new Date().toISOString(),
-        createdAt: Date.now(),
-        operator: currentManager?.name || '管理員',
-        operatorKey: currentManager?.key || 'admin',
-        operatorStoreId: currentManager?.storeId || emp.storeId,
-        operatorStoreLabel: getStoreLabel(currentManager?.storeId || emp.storeId),
-        actionType: 'delete_employee'
-      });
-
-      await deleteDoc(
-        doc(db, 'stores', emp.storeId, 'employees', id)
-      );
-
-      setDeletingEmpId(null);
-      showMessage('夥伴資料已刪除', 'success');
-    } catch (error) {
-      console.error('刪除夥伴失敗:', error);
-      showMessage('刪除夥伴失敗', 'error');
-    }
-  };
-
-  // ===== 更新員工 =====
-  const handleSaveEmpEdit = async () => {
-    if (!editingEmp?.storeId || !editingEmp?.id) {
-      showMessage('員工資料不完整', 'error');
-      return;
-    }
-
-    const birthdayId = normalizeBirthdayId(editingEmp?.birthdayId);
-    if (birthdayId && birthdayId.length !== 4) {
-      showMessage('生日月日請輸入 4 碼，例如 0512', 'error');
-      return;
-    }
-
-    try {
-      await updateDoc(
-        doc(db, 'stores', editingEmp.storeId, 'employees', editingEmp.id),
-        {
-          ...editingEmp,
-          birthdayId,
-          shop: getStoreLabel(editingEmp.storeId)
-        }
-      );
-
-      await addDoc(collection(db, 'stores', editingEmp.storeId, 'logs'), {
-        empId: editingEmp.id,
-        amount: 0,
-        reason: '修改員工資料',
-        note: `${editingEmp.name} 資料已被修改`,
-        occurrenceDate: new Date().toISOString().split('T')[0],
-        timestamp: new Date().toISOString(),
-        createdAt: Date.now(),
-        name: editingEmp.name,
-        operator: currentManager?.name || '管理員',
-        operatorKey: currentManager?.key || 'admin',
-        operatorStoreId: editingEmp.storeId,
-        operatorStoreLabel: getStoreLabel(editingEmp.storeId),
-        actionType: 'edit_employee'
-      });
-
-      setEditingEmp(null);
-      showMessage('夥伴資料已更新', 'success');
-    } catch (error) {
-      console.error('更新夥伴失敗:', error);
-      showMessage('更新夥伴失敗', 'error');
-    }
-  };
-  const visibleEmployees = useMemo(() => {
-    if (activeTab === 'manager' && currentStoreId) {
-      return employees.filter((emp) => emp.storeId === currentStoreId);
-    }
-    return employees;
-  }, [employees, activeTab, currentStoreId]);
-
-  const selectedEmp =
-    visibleEmployees.find((e) => e.id === selectedEmpId) ||
-    null;
-
-  const monthlyPersonalLogs = sortLogsByNewestFirst(
-    logs
-      .filter((log) => log.empId === selectedEmp?.id)
-      .filter((log) => {
-        const monthKey = getMonthKeyFromDate(log.occurrenceDate || log.timestamp);
-        return monthKey === selectedMonth;
-      })
-  );
-
-  const filteredPersonalLogs = monthlyPersonalLogs.filter((log) => {
-    const category = getPersonalLogCategory(log);
-    const keyword = personalLogSearch.trim().toLowerCase();
-
-    const matchesCategory =
-      personalLogCategory === 'all' || category === personalLogCategory;
-
-    const searchableText = [
-      log.reason,
-      log.note,
-      log.name,
-      log.operator,
-      log.requestDate,
-      log.requestTime,
-      log.requestDateTime,
-      log.occurrenceDate
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-
-    const matchesSearch = !keyword || searchableText.includes(keyword);
-
-    return matchesCategory && matchesSearch;
-  });
-
-  const managerViewLogs = sortLogsByNewestFirst(
-    logs
-      .filter((log) => log.empId === selectedEmpId)
-      .filter((log) => !currentStoreId || log.storeId === currentStoreId)
-  ).slice(0, 10);
-
-  const employeeMissedClockLogs = useMemo(() => {
-    return [...logs]
-      .filter((log) => log.actionType === 'missed_clock_request')
-      .sort((a, b) => {
-        const aTime = toJsDate(a.timestamp || a.requestDateTime || a.occurrenceDate)?.getTime() || 0;
-        const bTime = toJsDate(b.timestamp || b.requestDateTime || b.occurrenceDate)?.getTime() || 0;
-        return bTime - aTime;
-      });
-  }, [logs]);
-
-  const selectedEmpMissedClockLogs = useMemo(() => {
-    if (!selectedEmp?.id) return [];
-    return employeeMissedClockLogs.filter((log) => log.empId === selectedEmp.id).slice(0, 8);
-  }, [employeeMissedClockLogs, selectedEmp]);
-
-  const pendingMissedClockRequests = useMemo(() => {
-    return employeeMissedClockLogs.filter((log) => log.requestStatus === 'pending');
-  }, [employeeMissedClockLogs]);
-
-  const reviewedMissedClockRequests = useMemo(() => {
-    return employeeMissedClockLogs
-      .filter((log) => log.requestStatus === 'approved' || log.requestStatus === 'rejected')
-      .slice(0, 30);
-  }, [employeeMissedClockLogs]);
-
-  const getEmployeeMonthlyMissedClockCount = (empId, monthKey = getCurrentMonthKey()) => {
-    return employeeMissedClockLogs.filter((log) => {
-      if (log.empId !== empId) return false;
-      const targetMonthKey = getMonthKeyFromDate(log.requestDate || log.occurrenceDate || log.timestamp);
-      return targetMonthKey === monthKey;
-    }).length;
-  };
-
-  const adminManagerLogs = useMemo(() => {
-    return [...logs]
-      .filter((log) => log.operatorKey === 'managerA' || log.operatorKey === 'managerB')
-      .sort((a, b) => {
-        const aTime = toJsDate(a.timestamp || a.occurrenceDate)?.getTime() || 0;
-        const bTime = toJsDate(b.timestamp || b.occurrenceDate)?.getTime() || 0;
-        return bTime - aTime;
-      })
-      .slice(0, 80);
-  }, [logs]);
-
-  const sortedEmployees = useMemo(() => {
-    return [...employees].sort((a, b) => {
-      const aPoints = getEmployeeYearPoints(a, getCurrentYear());
-      const bPoints = getEmployeeYearPoints(b, getCurrentYear());
-      return aPoints - bPoints;
-    });
-  }, [employees, getEmployeeYearPoints]);
-
-  const sortedVisibleEmployees = useMemo(() => {
-    return [...visibleEmployees].sort((a, b) => {
-      const aPoints = getEmployeeYearPoints(a, getCurrentYear());
-      const bPoints = getEmployeeYearPoints(b, getCurrentYear());
-      return aPoints - bPoints;
-    });
-  }, [visibleEmployees, getEmployeeYearPoints]);
-
-  const getEmployeeMonthLogs = (empId, monthKey = getCurrentMonthKey()) => {
-    return sortLogsByNewestFirst(
-      logs.filter((log) => {
-        if (log.empId !== empId) return false;
-        return getMonthKeyFromDate(log.occurrenceDate || log.timestamp) === monthKey;
-      })
-    );
-  };
-
-  const getEmployeeMonthlyPoints = (empId, monthKey = getCurrentMonthKey()) => {
-    const monthLogs = getEmployeeMonthLogs(empId, monthKey);
-    const monthlyDelta = monthLogs.reduce(
-      (sum, log) => sum + (Number(log.amount) || 0),
-      0
-    );
-
-    return MONTHLY_BASE_POINTS + monthlyDelta;
-  };
-
-  const isLateLog = (log) => {
-    const reason = String(log.reason || '');
-    return reason.includes('遲到');
-  };
-
-  const isMajorMistakeLog = (log) => {
-    const reason = String(log.reason || '');
-    return (
-      reason.includes('作業失誤-重') ||
-      reason.includes('燒焦') ||
-      reason.includes('客訴')
-    );
-  };
-
-  const getEmployeeMonthlyWarningStats = (
-    empId,
-    monthKey = getCurrentMonthKey()
-  ) => {
-    const monthLogs = getEmployeeMonthLogs(empId, monthKey);
-
-    const lateCount = monthLogs.filter(isLateLog).length;
-    const majorMistakeCount = monthLogs.filter(isMajorMistakeLog).length;
-    const totalPenaltyPoints = monthLogs
-      .filter((log) => Number(log.amount) < 0)
-      .reduce((sum, log) => sum + Math.abs(Number(log.amount) || 0), 0);
-    const totalPenaltyCount = monthLogs.filter(
-      (log) => Number(log.amount) < 0
-    ).length;
-
-    return {
-      lateCount,
-      majorMistakeCount,
-      totalPenaltyPoints,
-      totalPenaltyCount
-    };
-  };
-
-  const getEmployeeWarnings = (emp) => {
-    if (!emp) return [];
-
-    const warnings = [];
-    const stats = getEmployeeMonthlyWarningStats(emp.id);
-    const assessment = getEmployeeAssessment(emp);
-
-    if (stats.lateCount >= 2) {
-      warnings.push({
-        key: 'late',
-        label: `本月遲到 ${stats.lateCount} 次`,
-        level: 'warning'
-      });
-    }
-
-    if (stats.majorMistakeCount >= 2) {
-      warnings.push({
-        key: 'majorMistake',
-        label: `本月重大失誤 ${stats.majorMistakeCount} 次`,
-        level: 'danger'
-      });
-    }
-
-    if (stats.totalPenaltyPoints >= 15) {
-      warnings.push({
-        key: 'penaltyPoints',
-        label: `本月累積扣分 ${stats.totalPenaltyPoints}`,
-        level: 'danger'
-      });
-    }
-
-    if (stats.totalPenaltyCount >= 5) {
-      warnings.push({
-        key: 'penaltyCount',
-        label: `本月負向紀錄 ${stats.totalPenaltyCount} 筆`,
-        level: 'warning'
-      });
-    }
-
-    if (assessment.result.status.includes('B')) {
-      warnings.push({
-        key: 'yearB',
-        label: '年度 B 警示',
-        level: 'warning'
-      });
-    }
-
-    if (assessment.result.status.includes('C')) {
-      warnings.push({
-        key: 'yearC',
-        label: '年度 C 重罰',
-        level: 'danger'
-      });
-    }
-
-    if (assessment.result.status.includes('D')) {
-      warnings.push({
-        key: 'yearD',
-        label: '年度 D 淘汰',
-        level: 'danger'
-      });
-    }
-
-    return warnings;
-  };
-
-  const getWarningBadgeClass = (level) => {
-    if (level === 'danger') {
-      return 'bg-red-100 text-red-700 border-red-200';
-    }
-    return 'bg-yellow-100 text-yellow-700 border-yellow-200';
-  };
-
-  const totalEmployees = employees.length;
-  const warningCount = employees.filter((emp) => {
-    const warnings = getEmployeeWarnings(emp);
-    return warnings.length > 0;
-  }).length;
-
-  const monthlyWarningCount = employees.filter((emp) => {
-    const warnings = getEmployeeWarnings(emp);
-    return warnings.some(
-      (w) =>
-        w.key === 'late' ||
-        w.key === 'majorMistake' ||
-        w.key === 'penaltyPoints'
-    );
-  }).length;
-
-  const adminStoreStats = {
-    storeA: employees.filter((emp) => emp.storeId === 'storeA').length,
-    storeB: employees.filter((emp) => emp.storeId === 'storeB').length
-  };
-
-  const adminEmployeeRows = useMemo(() => {
-    return sortedEmployees
-      .map((emp) => {
-        const assessment = getEmployeeAssessment(emp);
-        const seniority = calculateSeniority(emp.startDate);
-        const warnings = getEmployeeWarnings(emp);
-        const monthlyStats = getEmployeeMonthlyWarningStats(emp.id);
-        const monthlyPoints = getEmployeeMonthlyPoints(emp.id);
-        const finalPay = calculateFinalPay(emp);
-
-        return {
-          ...emp,
-          assessment,
-          seniority,
-          warnings,
-          monthlyStats,
-          monthlyPoints,
-          finalPay
-        };
-      })
-      .filter((emp) => {
-        const keyword = adminSearch.trim().toLowerCase();
-        const matchesSearch =
-          !keyword ||
-          String(emp.name || '').toLowerCase().includes(keyword) ||
-          String(emp.level || '').toLowerCase().includes(keyword) ||
-          String(getStoreLabel(emp.storeId) || '').toLowerCase().includes(keyword);
-
-        const matchesStore =
-          adminStoreFilter === 'all' || emp.storeId === adminStoreFilter;
-
-        const statusCode = String(emp.assessment?.result?.status || '').charAt(0);
-        const matchesStatus =
-          adminStatusFilter === 'all' || statusCode === adminStatusFilter;
-
-        return matchesSearch && matchesStore && matchesStatus;
-      });
-  }, [
-    sortedEmployees,
-    getEmployeeAssessment,
-    calculateFinalPay,
-    adminSearch,
-    adminStoreFilter,
-    adminStatusFilter,
-    getStoreLabel
-  ]);
-
-  const adminOverview = useMemo(() => {
-    const summary = {
-      total: employees.length,
-      warning: 0,
-      lateRisk: 0,
-      highRisk: 0,
-      statusA: 0,
-      statusB: 0,
-      statusC: 0,
-      statusD: 0
-    };
-
-    employees.forEach((emp) => {
-      const warnings = getEmployeeWarnings(emp);
-      const assessment = getEmployeeAssessment(emp);
-      const stats = getEmployeeMonthlyWarningStats(emp.id);
-      const status = String(assessment?.result?.status || '');
-
-      if (warnings.length > 0) summary.warning += 1;
-      if (stats.lateCount >= 2) summary.lateRisk += 1;
-      if (stats.majorMistakeCount >= 2 || status.includes('C') || status.includes('D')) {
-        summary.highRisk += 1;
-      }
-      if (status.includes('A')) summary.statusA += 1;
-      if (status.includes('B')) summary.statusB += 1;
-      if (status.includes('C')) summary.statusC += 1;
-      if (status.includes('D')) summary.statusD += 1;
-    });
-
-    return summary;
-  }, [employees, getEmployeeAssessment]);
-
-
-  const formatExcelValue = (value) => {
-    if (value === null || value === undefined) return '';
-    const raw = String(value);
-    if (/^[=+\-@]/.test(raw)) return `'${raw}`;
-    return raw.replace(/"/g, '""');
-  };
-
-  const exportEmployeesToExcel = () => {
-    try {
-      const monthKey = getCurrentMonthKey();
-      const rows = employees.map((emp) => {
-        const assessment = getEmployeeAssessment(emp);
-        const seniority = calculateSeniority(emp.startDate);
-        const monthlyStats = getEmployeeMonthlyWarningStats(emp.id, monthKey);
-        const missedCount = getEmployeeMonthlyMissedClockCount(emp.id, monthKey);
-        const monthlyPoints = getEmployeeMonthlyPoints(emp.id, monthKey);
-        const warnings = getEmployeeWarnings(emp).map((item) => item.label).join('、');
-        const finalPay = calculateFinalPay(emp);
-
-        return {
-          分店: getStoreLabel(emp.storeId),
-          員工姓名: emp.name || '',
-          員工編號: emp.employeeId || '',
-          職級: emp.level || '',
-          到職日: formatDate(emp.startDate),
-          年資: seniority.text,
-          初始積分: typeof emp.initialPoints === 'number' ? emp.initialPoints : DEFAULT_INITIAL_POINTS,
-          去年分數: assessment.lastYearPoints,
-          今年分數: assessment.thisYearPoints,
-          年度結果: assessment.result.status,
-          年度說明: assessment.result.desc,
-          本月遲到次數: monthlyStats.lateCount,
-          本月重大失誤次數: monthlyStats.majorMistakeCount,
-          本月負向紀錄數: monthlyStats.totalPenaltyCount,
-          本月累積扣分: monthlyStats.totalPenaltyPoints,
-          當月積分: monthlyPoints,
-          本月忘打卡次數: missedCount,
-          已過關卡: emp.skillsPassed || 0,
-          倍率: emp.multiplier || 1,
-          預估加級: finalPay,
-          去年是否低分: emp.lastYearLow ? '是' : '否',
-          警示摘要: warnings || '無',
-          備註: emp.note || ''
-        };
-      });
-
-      const headers = [
-        '分店','員工姓名','員工編號','職級','到職日','年資','初始積分','去年分數','今年分數','年度結果','年度說明',
-        '本月遲到次數','本月重大失誤次數','本月負向紀錄數','本月累積扣分','當月積分','本月忘打卡次數',
-        '已過關卡','倍率','預估加級','去年是否低分','警示摘要','備註'
+};
+
+const formatTaipeiDateKey = (ts = Date.now()) => {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(ts));
+
+  const year = parts.find((p) => p.type === "year")?.value || "";
+  const month = parts.find((p) => p.type === "month")?.value || "";
+  const day = parts.find((p) => p.type === "day")?.value || "";
+  return `${year}-${month}-${day}`;
+};
+
+const getTomorrowTaipeiDateKey = () => {
+  const tomorrow = Date.now() + 24 * 60 * 60 * 1000;
+  return formatTaipeiDateKey(tomorrow);
+};
+
+const getMonthValue = (ts = Date.now()) => {
+  const d = new Date(ts);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
+};
+
+const normalizeEmpId = (value) => String(value || "").trim().toUpperCase();
+
+const getMonthKeyFromAnyDate = (value) => {
+  if (!value) return "";
+  let d = null;
+  if (value?.toDate) d = value.toDate();
+  else if (value?.seconds) d = new Date(value.seconds * 1000);
+  else d = new Date(value);
+  if (!d || Number.isNaN(d.getTime())) return "";
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
+
+const ensurePointsFirebaseAuth = async () => {
+  if (pointsAuth.currentUser) return true;
+  await signInAnonymously(pointsAuth);
+  return true;
+};
+
+const fetchMonthlyPointsFromPerformanceSystem = async (empId) => {
+  const targetId = normalizeEmpId(empId);
+  if (!targetId) {
+    return { found: false, message: "尚無積分資料" };
+  }
+
+  await ensurePointsFirebaseAuth();
+
+  for (const storeId of POINTS_STORE_IDS) {
+    const empSnap = await getDocs(fsCollection(pointsDb, "stores", storeId, "employees"));
+    const matchedDoc = empSnap.docs.find((empDoc) => {
+      const data = empDoc.data() || {};
+      const candidates = [
+        empDoc.id,
+        data.birthdayId,
+        data.checkinId,
+        data.employeeId,
+        data.empId,
+        data.id,
+        data.birthday,
+        data.birthDate,
       ];
+      return candidates.some((item) => normalizeEmpId(item) === targetId);
+    });
 
-      const csv = [
-        headers.join(','),
-        ...rows.map((row) => headers.map((header) => `"${formatExcelValue(row[header])}"`).join(','))
-      ].join('\n');
+    if (!matchedDoc) continue;
 
-      const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      const today = new Date();
-      const fileDate = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
-      link.href = url;
-      link.setAttribute('download', `員工積分總表_${fileDate}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
+    const logSnap = await getDocs(fsCollection(pointsDb, "stores", storeId, "logs"));
+    const monthKey = getMonthValue();
+    const monthLogs = logSnap.docs
+      .map((item) => ({ id: item.id, ...(item.data() || {}) }))
+      .filter((log) => {
+        if (log.empId !== matchedDoc.id) return false;
+        return getMonthKeyFromAnyDate(log.occurrenceDate || log.timestamp) === monthKey;
+      });
 
-      showMessage('員工 Excel 報表已匯出', 'success');
-    } catch (error) {
-      console.error('匯出員工報表失敗:', error);
-      showMessage('匯出員工報表失敗', 'error');
-    }
-  };
+    const monthlyDelta = monthLogs.reduce((sum, log) => sum + (Number(log.amount) || 0), 0);
+    const monthlyPoints = MONTHLY_BASE_POINTS + monthlyDelta;
+    const penaltyCount = monthLogs.filter((log) => Number(log.amount) < 0).length;
+    const bonusCount = monthLogs.filter((log) => Number(log.amount) > 0).length;
 
-  const savePasswords = async () => {
-    try {
-      setSavingPassword(true);
+    return {
+      found: true,
+      empDocId: matchedDoc.id,
+      storeId,
+      name: matchedDoc.data()?.name || "",
+      monthlyPoints,
+      monthlyDelta,
+      logCount: monthLogs.length,
+      penaltyCount,
+      bonusCount,
+      monthKey,
+    };
+  }
 
-      const payload = {
-        adminPassword: passwordPanel.adminPassword.trim(),
-        managerA: {
-          name: passwordPanel.managerAName.trim() || '店長A',
-          password: passwordPanel.managerAPassword.trim(),
-          storeId: 'storeA'
-        },
-        managerB: {
-          name: passwordPanel.managerBName.trim() || '店長B',
-          password: passwordPanel.managerBPassword.trim(),
-          storeId: 'storeB'
-        }
+  return { found: false, message: "尚無積分資料" };
+};
+
+
+const getStatusStyle = (status) => {
+  switch (status) {
+    case "上班中":
+      return {
+        background: "#dcfce7",
+        color: "#166534",
+        dot: "#22c55e",
+        border: "#86efac",
       };
+    case "休息中":
+      return {
+        background: "#ffedd5",
+        color: "#9a3412",
+        dot: "#f59e0b",
+        border: "#fdba74",
+      };
+    case "已下班":
+    case "未打卡":
+      return {
+        background: "#fee2e2",
+        color: "#b91c1c",
+        dot: "#ef4444",
+        border: "#fca5a5",
+      };
+    default:
+      return {
+        background: "#e0f2fe",
+        color: "#0369a1",
+        dot: "#38bdf8",
+        border: "#7dd3fc",
+      };
+  }
+};
 
-      if (
-        !payload.adminPassword ||
-        !payload.managerA.password ||
-        !payload.managerB.password
-      ) {
-        showMessage('密碼不可空白', 'error');
+const formatDate = (timestamp) => {
+  if (!timestamp) return "";
+  return new Date(timestamp).toLocaleDateString("zh-TW");
+};
+
+const formatDateTime = (timestamp) => {
+  if (!timestamp) return "";
+  return new Date(timestamp).toLocaleString("zh-TW", {
+    hour12: false,
+  });
+};
+
+const formatDateTimeLocalValue = (timestamp) => {
+  if (!timestamp) return "";
+  const d = new Date(timestamp);
+  if (Number.isNaN(d.getTime())) return "";
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hours = String(d.getHours()).padStart(2, "0");
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+};
+
+const datetimeLocalToTimestamp = (value) => {
+  if (!value) return 0;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? 0 : d.getTime();
+};
+
+const getNextStatus = (type) => {
+  if (type === "上班") return "上班中";
+  if (type === "下班") return "已下班";
+  if (type === "休息開始") return "休息中";
+  if (type === "休息結束") return "上班中";
+  return "未打卡";
+};
+
+const isValidTransition = (currentStatus, type) => {
+  const status = currentStatus || "未打卡";
+
+  if (type === "上班") return status === "未打卡" || status === "已下班";
+  if (type === "下班") return status === "上班中";
+  if (type === "休息開始") return status === "上班中";
+  if (type === "休息結束") return status === "休息中";
+  return false;
+};
+
+const getStatusFromTypeHistory = (records = []) => {
+  if (!records.length) return "未打卡";
+  const latest = [...records].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+  return getNextStatus(latest?.type);
+};
+
+const buildLineScheduleMessage = (storeName, scheduleList, dateKey) => {
+  const title = `📢 ${dateKey} ${storeName} 班表通知`;
+
+  if (!scheduleList.length) {
+    return `${title}
+今日未安排上班人員`;
+  }
+
+  return [
+    title,
+    ...scheduleList.map((item) => `• ${item.name} ${item.startTime} - ${item.endTime || "未填"}`),
+  ].join("\n");
+};
+
+
+const getTaipeiTimestampFromDateTime = (dateKey, timeValue) => {
+  if (!dateKey || !timeValue) return 0;
+  const [year, month, day] = String(dateKey).split("-").map(Number);
+  const [hour, minute] = String(timeValue).split(":").map(Number);
+
+  if (!year || !month || !day || Number.isNaN(hour) || Number.isNaN(minute)) {
+    return 0;
+  }
+
+  // 台灣全年 UTC+8，這裡直接換算成 UTC 時間戳，避免手機/瀏覽器時區誤差。
+  return Date.UTC(year, month - 1, day, hour - 8, minute, 0, 0);
+};
+
+const safeFirebaseKey = (value) => {
+  return String(value || "")
+    .replace(/[.#$\[\]/]/g, "_")
+    .replace(/\s+/g, "_");
+};
+
+const buildLateLineMessage = (storeName, lateList, dateKey, reason = "") => {
+  return [
+    `⚠️ ${dateKey} ${storeName} 遲到名單`,
+    "",
+    ...lateList.map((item, index) => {
+      const actualText =
+        item.status === "not_checked"
+          ? "尚未打卡"
+          : `打卡 ${item.actualTime}`;
+
+      return `${index + 1}. ${item.name}｜排班 ${item.startTime}｜${actualText}｜遲到 ${item.lateMinutes} 分鐘`;
+    }),
+    "",
+    `共 ${lateList.length} 人`,
+  ].join("\n");
+};
+
+const timeTextToMinutes = (value = "") => {
+  const match = String(value || "").match(/(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+};
+
+const calculateLateMinutesFallback = (person = {}, fallbackTimestamp = 0) => {
+  if (person.lateMinutes !== undefined && person.lateMinutes !== null && person.lateMinutes !== "") {
+    return Number(person.lateMinutes);
+  }
+
+  const startMinutes = timeTextToMinutes(person.startTime);
+  if (startMinutes === null) return null;
+
+  if (person.status !== "not_checked" && person.actualTime && person.actualTime !== "未打卡") {
+    const actualMinutes = timeTextToMinutes(person.actualTime);
+    if (actualMinutes !== null) {
+      return Math.max(0, actualMinutes - startMinutes);
+    }
+  }
+
+  if (fallbackTimestamp) {
+    const d = new Date(fallbackTimestamp);
+    if (!Number.isNaN(d.getTime())) {
+      const nowMinutes = d.getHours() * 60 + d.getMinutes();
+      return Math.max(0, nowMinutes - startMinutes);
+    }
+  }
+
+  return null;
+};
+
+
+export default function App() {
+  const [authReady, setAuthReady] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [employees, setEmployees] = useState([]);
+  const [records, setRecords] = useState([]);
+  const [employeeId, setEmployeeId] = useState("");
+  const [scoreToast, setScoreToast] = useState(null);
+
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [password, setPassword] = useState("");
+  const [showLoginModal, setShowLoginModal] = useState(false);
+
+  const [newEmpId, setNewEmpId] = useState("");
+  const [newName, setNewName] = useState("");
+  const [store, setStore] = useState("");
+  const [role, setRole] = useState("正職");
+  const [showAddModal, setShowAddModal] = useState(false);
+
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingEmp, setEditingEmp] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [editStore, setEditStore] = useState("");
+  const [editRole, setEditRole] = useState("正職");
+
+  const [showRecordEditModal, setShowRecordEditModal] = useState(false);
+  const [editingRecord, setEditingRecord] = useState(null);
+  const [editRecordType, setEditRecordType] = useState("上班");
+  const [editRecordTime, setEditRecordTime] = useState("");
+
+  const [authorizedDevices, setAuthorizedDevices] = useState({});
+  const [bindStore, setBindStore] = useState("西螺文昌店");
+  const [nowTime, setNowTime] = useState("");
+  const [selectedMonth, setSelectedMonth] = useState(getMonthValue());
+  const [recordSearch, setRecordSearch] = useState("");
+
+  const myDevice = getDeviceId();
+  const isAuthorizedDevice = useMemo(() => {
+    return Object.values(authorizedDevices || {}).some((item) => item?.id === myDevice);
+  }, [authorizedDevices, myDevice]);
+
+  const currentDeviceStoreName = useMemo(() => {
+    const matched = Object.entries(authorizedDevices || {}).find(([, item]) => item?.id === myDevice);
+    return matched?.[0] || "";
+  }, [authorizedDevices, myDevice]);
+
+  const lateCheckRunningRef = useRef(false);
+
+  const [scheduleItems, setScheduleItems] = useState({});
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [scheduleSent, setScheduleSent] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState(formatTaipeiDateKey());
+  const [publishStore, setPublishStore] = useState("西螺文昌店");
+  const [adminStoreTab, setAdminStoreTab] = useState("全部");
+  const [scheduleHistory, setScheduleHistory] = useState({});
+  const [scheduleNotifyHistory, setScheduleNotifyHistory] = useState({});
+  const [lineStatus, setLineStatus] = useState({});
+  const [adminPanels, setAdminPanels] = useState({
+    scheduleHistory: false,
+    lateCheck: false,
+    lineQuery: false,
+  });
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const [publicViewMode, setPublicViewMode] = useState(
+    urlParams.get("view") === "schedule" ? "schedule" : "checkin"
+  );
+  const [publicScheduleDate, setPublicScheduleDate] = useState(
+    urlParams.get("date") || getTomorrowTaipeiDateKey()
+  );
+  const [publicScheduleStore, setPublicScheduleStore] = useState(
+    urlParams.get("store") || "全部"
+  );
+  const [publicEmployeeKeyword, setPublicEmployeeKeyword] = useState("");
+  const [publicScheduleData, setPublicScheduleData] = useState({});
+  const [scheduleLinkCopied, setScheduleLinkCopied] = useState(false);
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        setAuthError("");
+        setAuthReady(true);
         return;
       }
 
-      await setDoc(doc(db, 'settings', 'auth'), payload);
-      setAuthConfig(payload);
+      try {
+        setAuthError("");
+        await signInAnonymously(auth);
+      } catch (error) {
+        console.error("匿名登入失敗：", error);
 
-      if (currentManager?.key && payload[currentManager.key]) {
-        setCurrentManager({
-          key: currentManager.key,
-          name: payload[currentManager.key].name,
-          storeId: payload[currentManager.key].storeId
-        });
+        const code = error?.code || "未知錯誤";
+        const message = error?.message || "請檢查 Firebase Authentication 與專案設定";
+
+        setAuthError(`${code}｜${message}`);
+        setAuthReady(false);
+
+        alert(
+          `匿名登入失敗
+錯誤代碼：${code}
+${message}
+
+請先確認：
+1. Firebase Authentication 已啟用 Anonymous
+2. firebase.js 連到正確專案
+3. 網路正常後重新整理`
+        );
+      }
+    });
+
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    if (!authReady) return;
+
+    const employeesRef = ref(db, "employees");
+    return onValue(employeesRef, (snap) => {
+      const data = snap.val() || {};
+      const list = Object.keys(data)
+        .map((key) => ({
+          id: key,
+          ...data[key],
+        }))
+        .filter((emp) => !emp.archived);
+
+      list.sort((a, b) => (a.empId || a.id).localeCompare(b.empId || b.id));
+      setEmployees(list);
+    });
+  }, [authReady]);
+
+  useEffect(() => {
+    if (!authReady) return;
+
+    const recordsRef = query(ref(db, "records"), orderByChild("createdAt"), limitToLast(500));
+    return onValue(recordsRef, (snap) => {
+      const data = snap.val() || {};
+      const list = Object.keys(data).map((key) => ({
+        id: key,
+        ...data[key],
+      }));
+      list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setRecords(list);
+    });
+  }, [authReady]);
+
+  useEffect(() => {
+    if (!authReady) return;
+
+    const configRef = ref(db, "config/device");
+    return onValue(configRef, (snap) => {
+      const data = snap.val() || {};
+
+      // 新版：config/device/devices 可綁定多台設備。
+      // 舊版：config/device/id 只有單台設備，這裡保留相容，避免更新後原本設備失效。
+      const nextDevices = data.devices || {};
+      if (data.id && !Object.values(nextDevices).some((item) => item?.id === data.id)) {
+        nextDevices["原本已綁定設備"] = {
+          id: data.id,
+          boundAt: data.boundAt || 0,
+        };
       }
 
-      showMessage('權限設定已更新', 'success');
+      setAuthorizedDevices(nextDevices);
+    });
+  }, [authReady]);
+
+  useEffect(() => {
+    const updateTaipeiTime = () => {
+      setNowTime(formatTaipeiNow());
+    };
+    updateTaipeiTime();
+    const timer = setInterval(updateTaipeiTime, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const todayKey = useMemo(() => formatTaipeiDateKey(), [nowTime]);
+
+  const storeGroups = useMemo(() => {
+    const groups = {};
+    employees.forEach((emp) => {
+      const store = emp.store || "未填店名";
+      if (!groups[store]) groups[store] = [];
+      groups[store].push(emp);
+    });
+    return groups;
+  }, [employees]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    setScheduleItems((prev) => {
+      const next = { ...prev };
+      employees.forEach((emp) => {
+        const key = emp.empId || emp.id;
+        if (!next[key]) {
+          next[key] = { working: false, startTime: "05:00", endTime: "14:00" };
+        }
+      });
+      return next;
+    });
+  }, [employees, isAdmin]);
+
+  useEffect(() => {
+    if (!authReady || !isAdmin) return;
+    const targetDate = scheduleDate || formatTaipeiDateKey();
+    const schedRef = ref(db, `schedules/${targetDate}`);
+    return onValue(schedRef, (snap) => {
+      const data = snap.val() || {};
+      setScheduleItems(() => {
+        const next = {};
+        employees.forEach((emp) => {
+          const key = emp.empId || emp.id;
+          next[key] = { working: false, startTime: "05:00", endTime: "14:00" };
+        });
+        Object.entries(data).forEach(([empId, schedData]) => {
+          next[empId] = {
+            working: schedData.working || false,
+            startTime: schedData.startTime || "05:00",
+            endTime: schedData.endTime || "14:00",
+          };
+        });
+        return next;
+      });
+    });
+  }, [authReady, isAdmin, scheduleDate, employees]);
+
+  useEffect(() => {
+    if (!authReady || !isAdmin) return;
+    const historyRef = ref(db, "schedules");
+    return onValue(historyRef, (snap) => {
+      setScheduleHistory(snap.val() || {});
+    });
+  }, [authReady, isAdmin]);
+
+  useEffect(() => {
+    if (!authReady || !isAdmin) return;
+    const notifyRef = ref(db, "schedule_notify");
+    return onValue(notifyRef, (snap) => {
+      setScheduleNotifyHistory(snap.val() || {});
+    });
+  }, [authReady, isAdmin]);
+
+  useEffect(() => {
+    if (!authReady || !isAdmin) return;
+    const lineStatusRef = ref(db, "line_status");
+    return onValue(lineStatusRef, (snap) => {
+      setLineStatus(snap.val() || {});
+    });
+  }, [authReady, isAdmin]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    const schedRef = ref(db, `schedules/${publicScheduleDate || formatTaipeiDateKey()}`);
+    return onValue(schedRef, (snap) => {
+      setPublicScheduleData(snap.val() || {});
+    });
+  }, [authReady, publicScheduleDate]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    triggerAutoLateCheck("app-open");
+  }, [authReady]);
+
+  useEffect(() => {
+    if (!authReady) return;
+
+    const timer = setInterval(() => {
+      triggerAutoLateCheck("auto-timer");
+    }, 60000);
+
+    return () => clearInterval(timer);
+  }, [authReady]);
+
+
+  const todayRecords = useMemo(() => {
+    return records.filter((r) => {
+      if (r.dateKey) return r.dateKey === todayKey;
+      const fallbackKey = r.createdAt ? formatTaipeiDateKey(r.createdAt) : "";
+      return fallbackKey === todayKey;
+    });
+  }, [records, todayKey]);
+
+  const latestWorkInMap = useMemo(() => {
+    const map = {};
+
+    todayRecords.forEach((record) => {
+      if (record?.type !== "上班") return;
+
+      const empId = String(record?.empId || "").trim();
+      const name = String(record?.name || "").trim();
+      const keys = [empId, name].filter(Boolean);
+
+      keys.forEach((key) => {
+        if (!map[key] || (record.createdAt || 0) > (map[key].createdAt || 0)) {
+          map[key] = record;
+        }
+      });
+    });
+
+    return map;
+  }, [todayRecords]);
+
+  const liveStatusList = useMemo(() => {
+    const map = {};
+
+    employees.forEach((emp) => {
+      const key = emp.empId || emp.id;
+      map[key] = {
+        empId: key,
+        name: emp.name,
+        store: emp.store || "",
+        role: emp.role || "",
+        status: "未打卡",
+        lastTime: 0,
+      };
+    });
+
+    todayRecords.forEach((record) => {
+      const key = record.empId || "";
+      if (!key) return;
+      const nextStatus = getNextStatus(record.type);
+      if (!map[key]) {
+        map[key] = {
+          empId: key,
+          name: record.name || key,
+          store: record.store || "",
+          role: record.role || "",
+          status: nextStatus,
+          lastTime: record.createdAt || 0,
+        };
+      }
+      if ((record.createdAt || 0) >= (map[key].lastTime || 0)) {
+        map[key] = {
+          ...map[key],
+          name: record.name || map[key].name,
+          store: record.store || map[key].store,
+          role: record.role || map[key].role,
+          status: nextStatus,
+          lastTime: record.createdAt || 0,
+        };
+      }
+    });
+
+    return Object.values(map).sort((a, b) => {
+      const statusOrder = { "上班中": 0, "休息中": 1, "已下班": 2, "未打卡": 3 };
+      const orderA = statusOrder[a.status] ?? 9;
+      const orderB = statusOrder[b.status] ?? 9;
+      if (orderA !== orderB) return orderA - orderB;
+      return (a.empId || "").localeCompare(b.empId || "");
+    });
+  }, [employees, todayRecords]);
+
+  const toggleScheduleWorking = (empId) => {
+    setScheduleItems((prev) => ({
+      ...prev,
+      [empId]: { ...prev[empId], working: !prev[empId]?.working },
+    }));
+  };
+
+  const setScheduleTime = (empId, time) => {
+    setScheduleItems((prev) => ({
+      ...prev,
+      [empId]: { ...prev[empId], startTime: time },
+    }));
+  };
+
+  const setScheduleEndTime = (empId, time) => {
+    setScheduleItems((prev) => ({
+      ...prev,
+      [empId]: { ...prev[empId], endTime: time },
+    }));
+  };
+
+
+  const getScheduleShareUrl = (targetDate = scheduleDate, storeName = publishStore) => {
+    const baseUrl = window.location.origin + window.location.pathname;
+    const params = new URLSearchParams();
+    params.set("view", "schedule");
+    params.set("date", targetDate || formatTaipeiDateKey());
+    if (storeName && storeName !== "全部") params.set("store", storeName);
+    return `${baseUrl}?${params.toString()}`;
+  };
+
+  const copyTextToClipboard = async (text) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      return true;
     } catch (error) {
-      console.error('更新設定失敗:', error);
-      showMessage('更新設定失敗', 'error');
-    } finally {
-      setSavingPassword(false);
+      console.error("copy failed", error);
+      return false;
     }
   };
 
+  const copyScheduleLink = async () => {
+    const url = getScheduleShareUrl(scheduleDate, publishStore);
+    const ok = await copyTextToClipboard(`📅 ${scheduleDate} ${publishStore} 班表
+${url}`);
+    if (ok) {
+      setScheduleLinkCopied(true);
+      setTimeout(() => setScheduleLinkCopied(false), 2500);
+      alert("班表連結已複製，可直接貼到 LINE 群組");
+    } else {
+      alert(`複製失敗，請手動複製：
+${url}`);
+    }
+  };
+
+  const saveAndSendSchedule = async () => {
+    setScheduleSaving(true);
+    try {
+      const targetDate = scheduleDate || formatTaipeiDateKey();
+      const finalSchedule = {};
+
+      employees.forEach((emp) => {
+        const key = emp.empId || emp.id;
+        const item = scheduleItems[key];
+        if (item?.working) {
+          finalSchedule[key] = {
+            empId: key,
+            name: emp.name,
+            store: emp.store || "",
+            startTime: item.startTime || "05:00",
+            endTime: item.endTime || "14:00",
+            working: true,
+          };
+        }
+      });
+
+      await set(
+        ref(db, `schedules/${targetDate}`),
+        Object.keys(finalSchedule).length > 0 ? finalSchedule : null
+      );
+
+      const scheduleList = Object.values(finalSchedule).sort((a, b) =>
+        String(a.startTime || "").localeCompare(String(b.startTime || ""))
+      );
+
+      const targetStoreName = publishStore;
+      const targetScheduleList = scheduleList.filter(
+        (item) => (item.store || "未填店名") === targetStoreName
+      );
+      const shareUrl = getScheduleShareUrl(targetDate, targetStoreName);
+
+      await set(ref(db, `schedule_notify/${targetDate}`), {
+        pending: false,
+        savedAt: Date.now(),
+        source: "saveScheduleOnly",
+        mode: "web_link_only",
+        targetStore: targetStoreName,
+        shareUrl,
+        count: targetScheduleList.length,
+      });
+
+      setScheduleSent(true);
+      setTimeout(() => setScheduleSent(false), 4000);
+
+      if (!targetScheduleList.length) {
+        alert("班表發送成功");
+        return;
+      }
+
+      alert("班表發送成功");
+    } catch (err) {
+      alert(`班表儲存失敗：${err.message}`);
+    } finally {
+      setScheduleSaving(false);
+    }
+  };
+
+  const login = () => {
+    if (password === ADMIN_PASSWORD) {
+      setIsAdmin(true);
+      setPassword("");
+      setShowLoginModal(false);
+    } else {
+      alert("密碼錯誤");
+    }
+  };
+
+  const logout = () => {
+    setIsAdmin(false);
+    setPassword("");
+  };
+
+  const addEmployee = async () => {
+    const empId = newEmpId.trim().toUpperCase();
+    const name = newName.trim();
+    const storeName = store.trim();
+
+    if (!empId || !name || !storeName) {
+      alert("請填寫完整資料");
+      return;
+    }
+
+    const exists = employees.some((e) => e.id === empId);
+    if (exists) {
+      alert("此工號已存在");
+      return;
+    }
+
+    await set(ref(db, `employees/${empId}`), {
+      empId,
+      name,
+      store: storeName,
+      role,
+      status: "未打卡",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      archived: false,
+    });
+
+    setNewEmpId("");
+    setNewName("");
+    setStore("");
+    setRole("正職");
+    setShowAddModal(false);
+    alert("員工新增成功");
+  };
+
+  const openEdit = (emp) => {
+    setEditingEmp(emp);
+    setEditName(emp.name || "");
+    setEditStore(emp.store || "");
+    setEditRole(emp.role || "正職");
+    setShowEditModal(true);
+  };
+
+  const updateEmployee = async () => {
+    if (!editingEmp) return;
+
+    const name = editName.trim();
+    const storeName = editStore.trim();
+
+    if (!name || !storeName) {
+      alert("姓名與店名不可空白");
+      return;
+    }
+
+    await update(ref(db, `employees/${editingEmp.id}`), {
+      name,
+      store: storeName,
+      role: editRole,
+      updatedAt: Date.now(),
+    });
+
+    setShowEditModal(false);
+    setEditingEmp(null);
+    alert("員工資料已更新");
+  };
+
+  const deleteEmployee = async (emp) => {
+    if (!window.confirm(`確定停用 ${emp.name} 嗎？`)) return;
+
+    await update(ref(db, `employees/${emp.id}`), {
+      archived: true,
+      archivedAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    alert("員工已停用");
+  };
+
+  const recalcEmployeeStatus = async (empId) => {
+    const employee = employees.find((e) => (e.empId || e.id) === empId);
+    if (!employee) return;
+
+    const targetRecords = records.filter((r) => (r.empId || "") === empId);
+    const nextStatus = getStatusFromTypeHistory(targetRecords);
+
+    await update(ref(db, `employees/${employee.id}`), {
+      status: nextStatus,
+      lastAction: targetRecords[0]?.type || "",
+      lastActionAt: targetRecords[0]?.createdAt || 0,
+      updatedAt: Date.now(),
+    });
+  };
+
+
+  const showScoreToast = (payload) => {
+    setScoreToast(payload);
+    setTimeout(() => setScoreToast(null), 7000);
+  };
+
+  const closeScoreToast = () => {
+    setScoreToast(null);
+  };
+
+  const checkIn = async (type) => {
+    if (!isAuthorizedDevice) {
+      alert("此設備未授權");
+      return;
+    }
+
+    const inputId = employeeId.trim().toUpperCase();
+    const emp = employees.find((e) => e.id === inputId || e.empId === inputId);
+
+    if (!emp) {
+      alert("找不到工號");
+      return;
+    }
+
+    if (!isValidTransition(emp.status, type)) {
+      alert(`目前狀態為「${emp.status || "未打卡"}」，不能執行「${type}」`);
+      return;
+    }
+
+    const lastRecord = records.find(
+      (r) => (r.empId === (emp.empId || emp.id))
+    );
+
+    if (
+      lastRecord &&
+      Date.now() - (lastRecord.createdAt || 0) < CHECKIN_COOLDOWN &&
+      lastRecord.type === type
+    ) {
+      alert("請勿重複打卡");
+      return;
+    }
+
+    const now = new Date();
+    const createdAt = Date.now();
+    const newStatus = getNextStatus(type);
+    const recordId = String(createdAt);
+
+    await set(ref(db, `records/${recordId}`), {
+      empId: emp.empId || emp.id,
+      name: emp.name,
+      store: emp.store || "",
+      role: emp.role || "",
+      type,
+      time: now.toLocaleTimeString("zh-TW", { hour12: false }),
+      date: now.toLocaleDateString("zh-TW"),
+      dateKey: formatTaipeiDateKey(createdAt),
+      device: myDevice,
+      createdAt,
+      monthKey: getMonthValue(createdAt),
+    });
+
+    await update(ref(db, `employees/${emp.id}`), {
+      status: newStatus,
+      lastAction: type,
+      lastActionAt: createdAt,
+      updatedAt: createdAt,
+    });
+
+    setEmployeeId("");
+    // 改為由自動排程統一檢查遲到，避免重複 LINE 通知
+
+    try {
+      const pointsResult = await fetchMonthlyPointsFromPerformanceSystem(emp.empId || emp.id);
+      showScoreToast({
+        success: true,
+        name: emp.name,
+        type,
+        pointsResult,
+        createdAt,
+      });
+    } catch (error) {
+      console.error("讀取本月積分失敗:", error);
+      showScoreToast({
+        success: true,
+        name: emp.name,
+        type,
+        pointsResult: {
+          found: false,
+          message: "積分讀取失敗，但打卡已成功",
+          error: true,
+        },
+        createdAt,
+      });
+    }
+  };
+
+  const bindDevice = async () => {
+    const storeName = bindStore || "西螺文昌店";
+    const currentDeviceNames = Object.keys(authorizedDevices || {});
+    const isUpdatingExistingSlot = Boolean(authorizedDevices?.[storeName]);
+
+    if (currentDeviceNames.length >= 3 && !isUpdatingExistingSlot) {
+      alert("最多只能綁定 3 台設備：西螺店、斗南店、老闆手機");
+      return;
+    }
+
+    await update(ref(db, "config/device"), {
+      [`devices/${storeName}`]: {
+        id: myDevice,
+        store: storeName,
+        boundAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    });
+    alert(`${storeName} 設備已綁定成功`);
+  };
+
+  const unbindDevice = async (storeName) => {
+    if (!window.confirm(`確定解除 ${storeName} 的設備綁定嗎？`)) return;
+    await remove(ref(db, `config/device/devices/${storeName}`));
+    alert(`${storeName} 設備已解除綁定`);
+  };
+
+  const openRecordEdit = (record) => {
+    setEditingRecord(record);
+    setEditRecordType(record.type || "上班");
+    setEditRecordTime(formatDateTimeLocalValue(record.createdAt));
+    setShowRecordEditModal(true);
+  };
+
+  const saveRecordEdit = async () => {
+    if (!editingRecord) return;
+
+    const nextTimestamp = datetimeLocalToTimestamp(editRecordTime);
+    if (!nextTimestamp) {
+      alert("請輸入正確的日期與時間");
+      return;
+    }
+
+    const parsedDate = new Date(nextTimestamp);
+
+    await update(ref(db, `records/${editingRecord.id}`), {
+      type: editRecordType,
+      createdAt: nextTimestamp,
+      time: parsedDate.toLocaleTimeString("zh-TW", { hour12: false }),
+      date: parsedDate.toLocaleDateString("zh-TW"),
+      dateKey: formatTaipeiDateKey(nextTimestamp),
+      monthKey: getMonthValue(nextTimestamp),
+      updatedAt: Date.now(),
+    });
+
+    await recalcEmployeeStatus(editingRecord.empId);
+
+    setShowRecordEditModal(false);
+    setEditingRecord(null);
+    alert("打卡紀錄已修改");
+  };
+
+  const deleteRecord = async (record) => {
+    if (!window.confirm(`確定刪除 ${record.name} 的這筆「${record.type}」紀錄嗎？`)) {
+      return;
+    }
+
+    await remove(ref(db, `records/${record.id}`));
+    await recalcEmployeeStatus(record.empId);
+    alert("打卡紀錄已刪除");
+  };
+
+  const getAllRecordsForExport = async () => {
+    const snap = await get(ref(db, "records"));
+    const data = snap.val() || {};
+    return Object.keys(data)
+      .map((key) => ({
+        id: key,
+        ...data[key],
+      }))
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  };
+
+  const downloadCsv = (filename, header, rows) => {
+    const csv = [header, ...rows]
+      .map((row) => row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(","))
+      .join("\n");
+
+    const blob = new Blob(["\uFEFF" + csv], {
+      type: "text/csv;charset=utf-8;",
+    });
+
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  const exportAllCSV = async () => {
+    try {
+      const allRecords = await getAllRecordsForExport();
+
+      if (!allRecords.length) {
+        alert("目前沒有紀錄可匯出");
+        return;
+      }
+
+      const header = ["員工姓名", "工號", "店名", "身分", "類型", "日期", "時間", "設備"];
+      const rows = allRecords.map((r) => [
+        r.name || "",
+        r.empId || "",
+        r.store || "",
+        r.role || "",
+        r.type || "",
+        r.date || "",
+        r.time || "",
+        r.device || "",
+      ]);
+
+      downloadCsv("打卡紀錄.csv", header, rows);
+    } catch (error) {
+      console.error("匯出全部打卡紀錄失敗：", error);
+      alert("匯出全部打卡紀錄失敗，請稍後再試");
+    }
+  };
+
+  const monthRecords = useMemo(() => {
+    return records.filter((r) => {
+      const key = r.monthKey || getMonthValue(r.createdAt || Date.now());
+      return key === selectedMonth;
+    });
+  }, [records, selectedMonth]);
+
+  const exportMonthlyCSV = async () => {
+    try {
+      const allRecords = await getAllRecordsForExport();
+      const targetMonthRecords = allRecords.filter((r) => {
+        const key = r.monthKey || getMonthValue(r.createdAt || Date.now());
+        return key === selectedMonth;
+      });
+
+      if (!targetMonthRecords.length) {
+        alert(`${selectedMonth} 沒有統計資料可匯出`);
+        return;
+      }
+
+      const map = {};
+
+      employees.forEach((emp) => {
+        const key = emp.empId || emp.id;
+        map[key] = {
+          empId: key,
+          name: emp.name || "",
+          store: emp.store || "",
+          role: emp.role || "",
+          workIn: 0,
+          workOut: 0,
+          breakStart: 0,
+          breakEnd: 0,
+          totalRecords: 0,
+          lastRecordAt: 0,
+        };
+      });
+
+      targetMonthRecords.forEach((r) => {
+        const key = r.empId || r.id || "UNKNOWN";
+        if (!map[key]) {
+          map[key] = {
+            empId: key,
+            name: r.name || "",
+            store: r.store || "",
+            role: r.role || "",
+            workIn: 0,
+            workOut: 0,
+            breakStart: 0,
+            breakEnd: 0,
+            totalRecords: 0,
+            lastRecordAt: 0,
+          };
+        }
+
+        map[key].totalRecords += 1;
+        map[key].lastRecordAt = Math.max(map[key].lastRecordAt, r.createdAt || 0);
+
+        if (r.type === "上班") map[key].workIn += 1;
+        if (r.type === "下班") map[key].workOut += 1;
+        if (r.type === "休息開始") map[key].breakStart += 1;
+        if (r.type === "休息結束") map[key].breakEnd += 1;
+      });
+
+      const stats = Object.values(map).sort((a, b) => {
+        if (b.totalRecords !== a.totalRecords) return b.totalRecords - a.totalRecords;
+        return a.empId.localeCompare(b.empId);
+      });
+
+      const header = ["月份", "員工姓名", "工號", "店名", "身分", "上班次數", "下班次數", "休息開始", "休息結束", "總筆數", "最後打卡日"];
+      const rows = stats.map((item) => [
+        selectedMonth,
+        item.name,
+        item.empId,
+        item.store,
+        item.role,
+        item.workIn,
+        item.workOut,
+        item.breakStart,
+        item.breakEnd,
+        item.totalRecords,
+        formatDate(item.lastRecordAt),
+      ]);
+
+      downloadCsv(`打卡月報表-${selectedMonth}.csv`, header, rows);
+    } catch (error) {
+      console.error("匯出月報表失敗：", error);
+      alert("匯出月報表失敗，請稍後再試");
+    }
+  };
+
+  const toggleAdminPanel = (key) => {
+    setAdminPanels((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
+
+  const runClientLateCheck = async (reason = "") => {
+    if (lateCheckRunningRef.current) return;
+
+    lateCheckRunningRef.current = true;
+
+    try {
+      const dateKey = formatTaipeiDateKey();
+      const nowTs = Date.now();
+      const graceMs = 5 * 60 * 1000;
+
+      const [scheduleSnap, recordsSnap, sentSnap] = await Promise.all([
+        get(ref(db, `schedules/${dateKey}`)),
+        get(ref(db, "records")),
+        get(ref(db, `line_status/attendance_sent/${dateKey}`)),
+      ]);
+
+      const scheduleData = scheduleSnap.val() || {};
+      const recordsData = recordsSnap.val() || {};
+      const sentData = sentSnap.val() || {};
+
+      const todayWorkInRecords = Object.values(recordsData)
+        .filter((record) => {
+          const recordDateKey = record?.dateKey || (record?.createdAt ? formatTaipeiDateKey(record.createdAt) : "");
+          return recordDateKey === dateKey && record?.type === "上班";
+        })
+        .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+      const firstWorkInByEmp = {};
+      todayWorkInRecords.forEach((record) => {
+        const empId = record?.empId || "";
+        if (!empId) return;
+        if (!firstWorkInByEmp[empId]) {
+          firstWorkInByEmp[empId] = record;
+        }
+      });
+
+      const lateByStore = {};
+
+      Object.entries(scheduleData).forEach(([empIdFromKey, item]) => {
+        if (!item?.working) return;
+
+        const empId = item.empId || empIdFromKey;
+        const startTime = item.startTime || "05:00";
+        const startTs = getTaipeiTimestampFromDateTime(dateKey, startTime);
+        if (!startTs) return;
+
+        const shouldCheckTs = startTs + graceMs;
+        if (nowTs < shouldCheckTs) return;
+
+        const storeName = item.store || "未填店名";
+        const sentStoreKey = safeFirebaseKey(storeName);
+        const sentEmpKey = safeFirebaseKey(empId);
+        if (sentData?.[sentStoreKey]?.[sentEmpKey]?.sent) return;
+
+        const workInRecord = firstWorkInByEmp[empId];
+        const actualTs = workInRecord?.createdAt || 0;
+        const isNotChecked = !workInRecord;
+        const isLateCheckedIn = actualTs > shouldCheckTs;
+
+        if (!isNotChecked && !isLateCheckedIn) return;
+
+        if (!lateByStore[storeName]) lateByStore[storeName] = [];
+        const lateMinutes = isNotChecked
+          ? Math.floor((nowTs - startTs) / 60000)
+          : Math.floor((actualTs - startTs) / 60000);
+
+        lateByStore[storeName].push({
+          empId,
+          name: item.name || empId,
+          store: storeName,
+          startTime,
+          actualTime: workInRecord?.time || "未打卡",
+          status: isNotChecked ? "not_checked" : "late_checked_in",
+          lateMinutes,
+        });
+      });
+
+      const entries = Object.entries(lateByStore);
+      if (!entries.length) return;
+
+      for (const [storeName, lateList] of entries) {
+        const message = buildLateLineMessage(storeName, lateList, dateKey, reason);
+
+        const response = await fetch("/api/send-schedule", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            store: storeName,
+            message,
+            dateKey,
+            type: "late_notice",
+            lateList,
+          }),
+        });
+
+        const result = await response.json().catch(() => ({}));
+        const sent = response.ok && result?.success;
+        const sentAt = Date.now();
+        const sentStoreKey = safeFirebaseKey(storeName);
+        const updatePayload = {};
+
+        lateList.forEach((item) => {
+          const sentEmpKey = safeFirebaseKey(item.empId);
+          updatePayload[`line_status/attendance_sent/${dateKey}/${sentStoreKey}/${sentEmpKey}`] = {
+            sent,
+            sentAt,
+            dateKey,
+            store: storeName,
+            empId: item.empId,
+            name: item.name,
+            startTime: item.startTime,
+            actualTime: item.actualTime,
+            status: item.status,
+            reason,
+            result: sent ? "已發送" : "發送失敗",
+            error: sent ? "" : (result?.error || result?.message || "LINE 發送失敗"),
+          };
+        });
+
+        updatePayload[`line_status/manual_late_checks/${dateKey}_${safeFirebaseKey(reason || "auto")}_${sentStoreKey}_${sentAt}`] = {
+          checkedAt: sentAt,
+          sentAt,
+          sent,
+          dateKey,
+          store: storeName,
+          names: lateList.map((item) => item.name),
+          lateDetails: lateList.map((item) => ({
+            empId: item.empId,
+            name: item.name,
+            startTime: item.startTime,
+            actualTime: item.actualTime,
+            status: item.status,
+            lateMinutes: item.lateMinutes,
+          })),
+          result: sent ? "已發送" : "發送失敗",
+          reason,
+          error: sent ? "" : (result?.error || result?.message || "LINE 發送失敗"),
+        };
+
+        await update(ref(db), updatePayload);
+      }
+    } catch (error) {
+      console.error("client late check failed:", error);
+    } finally {
+      lateCheckRunningRef.current = false;
+    }
+  };
+
+  const triggerAutoLateCheck = async (reason = "") => {
+    try {
+      await fetch("/api/auto-check-late", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ reason }),
+      });
+    } catch (error) {
+      console.error("auto-check-late api failed:", error);
+    }
+
+    // 前端補強：即使 Vercel /api/auto-check-late 尚未建立或沒有排程，
+    // 只要有人打開打卡頁或有人上班打卡，就會立即檢查當天班表並發送遲到通知。
+    await runClientLateCheck(reason);
+  };
+
+  const historyScheduleDates = useMemo(() => {
+    return Object.keys(scheduleHistory || {}).sort((a, b) => b.localeCompare(a));
+  }, [scheduleHistory]);
+
+  const lateNoticeEntries = useMemo(() => {
+    const attendanceSent = lineStatus?.attendance_sent || {};
+    const manualChecks = lineStatus?.manual_late_checks || {};
+    const lateSent = lineStatus?.late_sent || {};
+
+    const buildDetailText = (item = {}, fallbackTimestamp = 0) => {
+      const actualText =
+        item.status === "not_checked"
+          ? "尚未打卡"
+          : `打卡 ${item.actualTime || "未記錄"}`;
+      const lateMinutes = calculateLateMinutesFallback(item, fallbackTimestamp);
+      const minuteText = lateMinutes !== null
+        ? `｜遲到 ${lateMinutes} 分鐘`
+        : "｜遲到分鐘未記錄";
+      return `${item.name || item.empId || "未命名"}｜排班 ${item.startTime || "未填"}｜${actualText}${minuteText}`;
+    };
+
+    const entries = [];
+
+    const addGroupedPersonEntries = (source, type) => {
+      Object.entries(source || {}).forEach(([dateKey, dateValue]) => {
+        if (!dateValue || typeof dateValue !== "object") return;
+
+        // 舊資料可能本身就是一筆摘要紀錄
+        if (dateValue.sentAt || dateValue.checkedAt || Array.isArray(dateValue.names)) {
+          entries.push({
+            id: `${type}-${dateKey}`,
+            dateKey: dateValue.dateKey || dateKey,
+            type,
+            ...dateValue,
+          });
+          return;
+        }
+
+        Object.entries(dateValue).forEach(([storeKey, storeValue]) => {
+          if (!storeValue || typeof storeValue !== "object") return;
+
+          const people = Object.values(storeValue)
+            .filter((person) => person && typeof person === "object" && (person.name || person.empId))
+            .map((person) => {
+              const liveRecord =
+                latestWorkInMap[String(person.empId || "").trim()] ||
+                latestWorkInMap[String(person.name || "").trim()];
+
+              let mergedPerson = { ...person };
+
+              if (liveRecord) {
+                mergedPerson = {
+                  ...mergedPerson,
+                  actualTime: liveRecord.time || mergedPerson.actualTime,
+                  status: "late_checked_in",
+                };
+              }
+
+              return {
+                ...mergedPerson,
+                detailText: buildDetailText(
+                  mergedPerson,
+                  mergedPerson.sentAt || 0
+                ),
+              };
+            });
+
+          if (!people.length) return;
+
+          entries.push({
+            id: `${type}-${dateKey}-${storeKey}`,
+            dateKey,
+            type,
+            store: people[0]?.store || storeKey,
+            sentAt: Math.max(...people.map((person) => person.sentAt || 0)),
+            sent: people.some((person) => person.sent),
+            result: people.some((person) => person.sent) ? "已發送" : "未發送",
+            lateDetails: people,
+            names: people.map((person) => person.name || person.empId),
+          });
+        });
+      });
+    };
+
+    addGroupedPersonEntries(attendanceSent, "自動遲到通知");
+    addGroupedPersonEntries(lateSent, "後端遲到通知");
+
+    Object.entries(manualChecks).forEach(([key, value]) => {
+      entries.push({
+        id: `manual-${key}`,
+        dateKey: value?.dateKey || key,
+        type: "手動遲到檢查",
+        ...value,
+      });
+    });
+
+    return entries.sort((a, b) => (b.sentAt || b.checkedAt || 0) - (a.sentAt || a.checkedAt || 0));
+  }, [lineStatus, latestWorkInMap]);
+
+  const lineQueryEntries = useMemo(() => {
+    const scheduleSent = lineStatus?.schedule_sent || {};
+    const scheduleNotify = scheduleNotifyHistory || {};
+
+    return [
+      ...Object.entries(scheduleSent).map(([key, value]) => ({
+        id: `staff-${key}`,
+        dateKey: key,
+        type: "班表推播",
+        ...value,
+      })),
+      ...Object.entries(scheduleNotify).map(([key, value]) => ({
+        id: `notify-${key}`,
+        dateKey: key,
+        type: "發布紀錄",
+        ...value,
+      })),
+    ].sort((a, b) => (b.sentAt || b.createdAt || 0) - (a.sentAt || a.createdAt || 0));
+  }, [lineStatus, scheduleNotifyHistory]);
+
+
+  const publicStoreOptions = useMemo(() => {
+    const stores = Object.values(publicScheduleData || {})
+      .filter((item) => item?.working)
+      .map((item) => item.store || "未填店名");
+    return ["全部", ...Array.from(new Set(stores))];
+  }, [publicScheduleData]);
+
+  const publicScheduleList = useMemo(() => {
+    const keyword = publicEmployeeKeyword.trim().toLowerCase();
+    return Object.values(publicScheduleData || {})
+      .filter((item) => item?.working)
+      .filter((item) => publicScheduleStore === "全部" || (item.store || "未填店名") === publicScheduleStore)
+      .filter((item) => {
+        if (!keyword) return true;
+        return (
+          String(item.name || "").toLowerCase().includes(keyword) ||
+          String(item.empId || "").toLowerCase().includes(keyword)
+        );
+      })
+      .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")));
+  }, [publicScheduleData, publicScheduleStore, publicEmployeeKeyword]);
+
+  const openPublicSchedule = (storeName = "全部", dateKey = getTomorrowTaipeiDateKey()) => {
+    setPublicScheduleStore(storeName);
+    setPublicScheduleDate(dateKey);
+    setPublicViewMode("schedule");
+    const params = new URLSearchParams();
+    params.set("view", "schedule");
+    params.set("date", dateKey);
+    if (storeName && storeName !== "全部") params.set("store", storeName);
+    window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
+  };
+
+  const closePublicSchedule = () => {
+    setPublicViewMode("checkin");
+    window.history.replaceState(null, "", window.location.pathname);
+  };
+
+  const adminFilteredRecords = useMemo(() => {
+    return records.filter((r) => {
+      const keyword = recordSearch.trim().toLowerCase();
+      return (
+        !keyword ||
+        String(r.name || "").toLowerCase().includes(keyword) ||
+        String(r.empId || "").toLowerCase().includes(keyword)
+      );
+    });
+  }, [records, recordSearch]);
+
+  const getLastMonthKey = () => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 1);
+    return getMonthValue(d.getTime());
+  };
+
+  const deleteLastMonthRecords = async () => {
+    const monthKey = getLastMonthKey();
+    const password = window.prompt("請輸入刪除密碼");
+
+    if (password !== "8888") {
+      alert("密碼錯誤，已取消刪除");
+      return;
+    }
+
+    const ok = window.confirm(`確定要刪除 ${monthKey} 的全部打卡紀錄嗎？此動作無法復原。`);
+    if (!ok) return;
+
+    try {
+      const snap = await get(ref(db, "records"));
+      const data = snap.val() || {};
+      const targets = Object.entries(data).filter(([_, value]) => {
+        const key = value?.monthKey || getMonthValue(value?.createdAt || Date.now());
+        return key === monthKey;
+      });
+
+      if (!targets.length) {
+        alert(`${monthKey} 沒有可刪除的打卡紀錄`);
+        return;
+      }
+
+      await Promise.all(targets.map(([id]) => remove(ref(db, `records/${id}`))));
+      alert(`已刪除 ${monthKey} 的 ${targets.length} 筆打卡紀錄`);
+    } catch (error) {
+      console.error(error);
+      alert("刪除上個月打卡紀錄失敗");
+    }
+  };
+
+  const recentRecords = records.slice(0, 8);
+
   if (!authReady) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="bg-white rounded-[2rem] shadow-xl border border-gray-100 px-8 py-6">
-          <p className="font-black text-gray-700">系統載入中...</p>
-          <p className="text-xs text-gray-400 font-bold mt-2">正在進行 Firebase 正式版安全登入</p>
+      <div style={styles.loadingPage}>
+        <div style={styles.loadingCard}>
+          <div style={styles.loadingTitle}>店面打卡系統</div>
+          <div style={styles.loadingText}>系統連線中…</div>
+          {authError ? <div style={styles.errorText}>{authError}</div> : null}
+          {authError ? (
+            <button
+              style={styles.retryBtn}
+              onClick={() => window.location.reload()}
+            >
+              重新整理再試一次
+            </button>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAdmin && publicViewMode === "schedule") {
+    return (
+      <div style={styles.page}>
+        {scoreToast && (
+          <div style={styles.scoreToastOverlay}>
+            <div style={styles.scoreToastCard}>
+              <button style={styles.scoreToastClose} onClick={closeScoreToast}>×</button>
+              <div style={styles.scoreToastIcon}>✓</div>
+              <div style={styles.scoreToastTitle}>{scoreToast.name} {scoreToast.type}成功</div>
+              <div style={styles.scoreToastSub}>{formatDateTime(scoreToast.createdAt)}</div>
+              {scoreToast.pointsResult?.found ? (
+                <div style={styles.scoreToastScoreBox}>
+                  <div style={styles.scoreToastLabel}>本月目前積分</div>
+                  <div style={styles.scoreToastScore}>{scoreToast.pointsResult.monthlyPoints} 分</div>
+                  <div style={styles.scoreToastDetail}>
+                    基本 {MONTHLY_BASE_POINTS} 分｜本月紀錄 {scoreToast.pointsResult.logCount} 筆｜加分 {scoreToast.pointsResult.bonusCount} 筆｜扣分 {scoreToast.pointsResult.penaltyCount} 筆
+                  </div>
+                </div>
+              ) : (
+                <div style={styles.scoreToastNotice}>{scoreToast.pointsResult?.message || "尚無積分資料"}</div>
+              )}
+            </div>
+          </div>
+        )}
+        <div style={styles.overlay} />
+
+        <div style={styles.topRightBar}>
+          <button
+            style={styles.adminTopBtn}
+            onClick={() => setShowLoginModal(true)}
+          >
+            管理員
+          </button>
+        </div>
+
+        {showLoginModal && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.modalCard}>
+              <div style={styles.modalTitle}>管理員登入</div>
+              <input
+                style={styles.modalInput}
+                type="password"
+                placeholder="請輸入密碼"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") login();
+                }}
+              />
+              <div style={styles.modalActions}>
+                <button
+                  style={styles.modalCancelBtn}
+                  onClick={() => {
+                    setShowLoginModal(false);
+                    setPassword("");
+                  }}
+                >
+                  取消
+                </button>
+                <button style={styles.modalLoginBtn} onClick={login}>
+                  進入後台
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div style={styles.mainWrap}>
+          <div style={styles.brandBar}>
+            <div style={styles.brandDot} />
+            <div>
+              <div style={styles.brandTitle}>店面班表查詢</div>
+              <div style={styles.brandSub}>Schedule Viewer</div>
+            </div>
+          </div>
+
+          <div style={styles.schedulePublicCard}>
+            <div style={styles.schedulePublicHeader}>
+              <div>
+                <h1 style={styles.kioskTitle}>📅 班表查詢</h1>
+                <p style={styles.kioskDesc}>預設顯示明日班表，可手動切換日期與店別。</p>
+              </div>
+              <button style={styles.backBtn} onClick={closePublicSchedule}>
+                ← 返回打卡
+              </button>
+            </div>
+
+            <div style={styles.scheduleFilterGrid}>
+              <div>
+                <div style={styles.filterLabel}>班表日期</div>
+                <input
+                  type="date"
+                  value={publicScheduleDate}
+                  onChange={(e) => {
+                    const nextDate = e.target.value;
+                    setPublicScheduleDate(nextDate);
+                    openPublicSchedule(publicScheduleStore, nextDate);
+                  }}
+                  style={styles.scheduleInput}
+                />
+              </div>
+
+              <div>
+                <div style={styles.filterLabel}>店別</div>
+                <select
+                  value={publicScheduleStore}
+                  onChange={(e) => openPublicSchedule(e.target.value, publicScheduleDate)}
+                  style={styles.scheduleInput}
+                >
+                  {publicStoreOptions.map((storeName) => (
+                    <option key={storeName} value={storeName}>{storeName}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <div style={styles.filterLabel}>查自己班表</div>
+                <input
+                  type="text"
+                  placeholder="輸入姓名或工號"
+                  value={publicEmployeeKeyword}
+                  onChange={(e) => setPublicEmployeeKeyword(e.target.value)}
+                  style={styles.scheduleInput}
+                />
+              </div>
+            </div>
+
+            <div style={styles.scheduleSummaryBar}>
+              <div>日期：{publicScheduleDate}</div>
+              <div>店別：{publicScheduleStore}</div>
+              <div>排班：{publicScheduleList.length} 人</div>
+            </div>
+
+            {publicScheduleList.length === 0 ? (
+              <div style={styles.emptyScheduleBox}>目前沒有符合條件的排班</div>
+            ) : (
+              <div style={styles.publicScheduleList}>
+                {publicScheduleList.map((item) => (
+                  <div key={`${item.empId}-${item.startTime}`} style={styles.publicScheduleRow}>
+                    <div>
+                      <div style={styles.publicScheduleName}>{item.name}</div>
+                      <div style={styles.publicScheduleMeta}>{item.empId} ・ {item.store || "未填店名"}</div>
+                    </div>
+                    <div style={styles.publicScheduleTime}>
+                      {item.startTime || "未填"} - {item.endTime || "未填"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAdmin) {
+    return (
+      <div style={styles.page}>
+        {scoreToast && (
+          <div style={styles.scoreToastOverlay}>
+            <div style={styles.scoreToastCard}>
+              <button style={styles.scoreToastClose} onClick={closeScoreToast}>×</button>
+              <div style={styles.scoreToastIcon}>✓</div>
+              <div style={styles.scoreToastTitle}>{scoreToast.name} {scoreToast.type}成功</div>
+              <div style={styles.scoreToastSub}>{formatDateTime(scoreToast.createdAt)}</div>
+              {scoreToast.pointsResult?.found ? (
+                <div style={styles.scoreToastScoreBox}>
+                  <div style={styles.scoreToastLabel}>本月目前積分</div>
+                  <div style={styles.scoreToastScore}>{scoreToast.pointsResult.monthlyPoints} 分</div>
+                  <div style={styles.scoreToastDetail}>
+                    基本 {MONTHLY_BASE_POINTS} 分｜本月紀錄 {scoreToast.pointsResult.logCount} 筆｜加分 {scoreToast.pointsResult.bonusCount} 筆｜扣分 {scoreToast.pointsResult.penaltyCount} 筆
+                  </div>
+                </div>
+              ) : (
+                <div style={styles.scoreToastNotice}>{scoreToast.pointsResult?.message || "尚無積分資料"}</div>
+              )}
+            </div>
+          </div>
+        )}
+        <div style={styles.overlay} />
+
+        <div style={styles.topRightBar}>
+          <button
+            style={styles.adminTopBtn}
+            onClick={() => setShowLoginModal(true)}
+          >
+            管理員
+          </button>
+        </div>
+
+        {showLoginModal && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.modalCard}>
+              <div style={styles.modalTitle}>管理員登入</div>
+              <input
+                style={styles.modalInput}
+                type="password"
+                placeholder="請輸入密碼"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") login();
+                }}
+              />
+              <div style={styles.modalActions}>
+                <button
+                  style={styles.modalCancelBtn}
+                  onClick={() => {
+                    setShowLoginModal(false);
+                    setPassword("");
+                  }}
+                >
+                  取消
+                </button>
+                <button style={styles.modalLoginBtn} onClick={login}>
+                  進入後台
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div style={styles.mainWrap}>
+          <div style={styles.brandBar}>
+            <div style={styles.brandDot} />
+            <div>
+              <div style={styles.brandTitle}>店面打卡系統</div>
+              <div style={styles.brandSub}>Store Check-in Terminal</div>
+            </div>
+          </div>
+
+          <div style={styles.kioskCard}>
+            <div style={styles.kioskHeader}>
+              <h1 style={styles.kioskTitle}>員工打卡入口</h1>
+              <p style={styles.kioskDesc}>請輸入員工工號後打卡</p>
+              <button
+                style={styles.scheduleEntryBtn}
+                onClick={() => openPublicSchedule("全部", getTomorrowTaipeiDateKey())}
+              >
+                📅 查看明日班表
+              </button>
+            </div>
+
+            <div style={styles.timeBox}>台北標準時間：{nowTime}</div>
+
+            {!isAuthorizedDevice && (
+              <div style={styles.warningBox}>
+                此設備尚未授權，請先由管理員進入後台綁定西螺或斗南設備。
+              </div>
+            )}
+
+            <input
+              style={styles.bigInput}
+              placeholder="請輸入工號"
+              value={employeeId}
+              onChange={(e) => setEmployeeId(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") checkIn("上班");
+              }}
+            />
+
+            <div style={styles.btnGridFour}>
+              <button
+                style={{
+                  ...styles.actionBtn,
+                  ...styles.primaryBtn,
+                  opacity: !isAuthorizedDevice ? 0.5 : 1,
+                }}
+                onClick={() => checkIn("上班")}
+              >
+                上班打卡
+              </button>
+
+              <button
+                style={{
+                  ...styles.actionBtn,
+                  ...styles.darkBtn,
+                  opacity: !isAuthorizedDevice ? 0.5 : 1,
+                }}
+                onClick={() => checkIn("下班")}
+              >
+                下班打卡
+              </button>
+
+              <button
+                style={{
+                  ...styles.actionBtn,
+                  ...styles.orangeBtn,
+                  opacity: !isAuthorizedDevice ? 0.5 : 1,
+                }}
+                onClick={() => checkIn("休息開始")}
+              >
+                休息開始
+              </button>
+
+              <button
+                style={{
+                  ...styles.actionBtn,
+                  ...styles.greenBtn,
+                  opacity: !isAuthorizedDevice ? 0.5 : 1,
+                }}
+                onClick={() => checkIn("休息結束")}
+              >
+                休息結束
+              </button>
+            </div>
+          </div>
+
+          <div style={styles.liveStatusCard}>
+            <div style={styles.sectionTitle}>今日上班／休息狀態</div>
+            {liveStatusList.length === 0 ? (
+              <div style={styles.emptyText}>目前沒有員工資料</div>
+            ) : (
+              liveStatusList.map((emp) => {
+                const statusStyle = getStatusStyle(emp.status);
+                return (
+                  <div
+                    key={emp.empId}
+                    style={{
+                      ...styles.liveStatusRow,
+                      borderColor: statusStyle.border,
+                      background: statusStyle.background,
+                    }}
+                  >
+                    <div style={styles.liveStatusLeft}>
+                      <span
+                        style={{
+                          ...styles.statusDot,
+                          background: statusStyle.dot,
+                          boxShadow: `0 0 14px ${statusStyle.dot}`,
+                        }}
+                      />
+                      <div>
+                        <div style={styles.employeeName}>{emp.name}</div>
+                        <div style={styles.employeeId}>
+                          {emp.empId} ・ {emp.store || "未填店名"} ・ {emp.role || "未設定"}
+                        </div>
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        ...styles.statusBadge,
+                        background: "#ffffffcc",
+                        color: statusStyle.color,
+                      }}
+                    >
+                      {emp.status}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <div style={styles.recentCard}>
+            <div style={styles.sectionTitle}>近期打卡紀錄</div>
+            {recentRecords.length === 0 ? (
+              <div style={styles.emptyText}>目前尚無紀錄</div>
+            ) : (
+              recentRecords.map((r) => (
+                <div key={r.id} style={styles.recordRow}>
+                  <div>
+                    <div style={styles.recordName}>{r.name}</div>
+                    <div style={styles.recordMeta}>
+                      {r.empId} ・ {r.date} ・ {r.store || "未填店名"}
+                    </div>
+                  </div>
+                  <div style={styles.recordRight}>
+                    <div style={styles.recordType}>{r.type}</div>
+                    <div style={styles.recordTime}>{r.time}</div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 font-sans text-gray-900 pb-12">
-      {systemMessage && (
-        <div
-          className={`fixed top-4 left-1/2 -translate-x-1/2 z-[1000] px-6 py-3 rounded-full shadow-2xl font-bold flex items-center gap-2 ${
-            systemMessage.type === 'error'
-              ? 'bg-red-600 text-white'
-              : systemMessage.type === 'success'
-              ? 'bg-green-600 text-white'
-              : 'bg-gray-800 text-white'
-          }`}
-        >
-          {systemMessage.text}
+    <div style={styles.adminPage}>
+      {scoreToast && (
+        <div style={styles.scoreToastOverlay}>
+          <div style={styles.scoreToastCard}>
+            <button style={styles.scoreToastClose} onClick={closeScoreToast}>×</button>
+            <div style={styles.scoreToastIcon}>✓</div>
+            <div style={styles.scoreToastTitle}>{scoreToast.name} {scoreToast.type}成功</div>
+            <div style={styles.scoreToastSub}>{formatDateTime(scoreToast.createdAt)}</div>
+            {scoreToast.pointsResult?.found ? (
+              <div style={styles.scoreToastScoreBox}>
+                <div style={styles.scoreToastLabel}>本月目前積分</div>
+                <div style={styles.scoreToastScore}>{scoreToast.pointsResult.monthlyPoints} 分</div>
+                <div style={styles.scoreToastDetail}>
+                  基本 {MONTHLY_BASE_POINTS} 分｜本月紀錄 {scoreToast.pointsResult.logCount} 筆｜加分 {scoreToast.pointsResult.bonusCount} 筆｜扣分 {scoreToast.pointsResult.penaltyCount} 筆
+                </div>
+              </div>
+            ) : (
+              <div style={styles.scoreToastNotice}>{scoreToast.pointsResult?.message || "尚無積分資料"}</div>
+            )}
+          </div>
         </div>
       )}
-
-      {authMode && (
-        <div className="fixed inset-0 z-[600] flex items-center justify-center p-4 bg-gray-900/40 backdrop-blur-sm">
-          <form
-            onSubmit={handleAuth}
-            className="bg-white p-8 rounded-[2rem] shadow-2xl w-full max-w-sm"
-          >
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xl font-black flex items-center gap-2">
-                {authMode === 'manager' ? (
-                  <Store className="text-orange-600" />
-                ) : (
-                  <Lock className="text-red-600" />
-                )}
-                身分驗證
-              </h3>
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthMode(null);
-                  setPasswordInput('');
-                }}
-                className="p-2 hover:bg-gray-100 rounded-full transition-colors"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <p className="text-sm text-gray-400 font-bold mb-4 uppercase tracking-widest">
-              請輸入 {authMode === 'manager' ? '店長' : '最高權限'} 密碼
-            </p>
-
-            {authMode === 'manager' && (
-              <div className="mb-4">
-                <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">
-                  選擇分店店長
-                </label>
-                <select
-                  value={managerLoginKey}
-                  onChange={(e) => setManagerLoginKey(e.target.value)}
-                  className="w-full mt-1 px-4 py-3 bg-gray-50 border-2 border-gray-100 rounded-2xl focus:border-orange-500 outline-none font-bold"
-                >
-                  <option value="managerA">
-                    {authConfig?.managerA?.name || '店長A'} / {getStoreLabel('storeA')}
-                  </option>
-                  <option value="managerB">
-                    {authConfig?.managerB?.name || '店長B'} / {getStoreLabel('storeB')}
-                  </option>
-                </select>
-              </div>
-            )}
+      {showAddModal && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modalCard}>
+            <div style={styles.modalTitle}>新增員工</div>
 
             <input
-              autoFocus
-              type="password"
-              value={passwordInput}
-              onChange={(e) => setPasswordInput(e.target.value)}
-              placeholder="••••"
-              className="w-full text-4xl text-center tracking-[1em] py-4 bg-gray-50 border-2 border-gray-100 rounded-2xl focus:border-orange-500 outline-none transition-all mb-6"
+              style={styles.modalInput}
+              placeholder="請輸入員工工號，例如 A01"
+              value={newEmpId}
+              onChange={(e) => setNewEmpId(e.target.value)}
             />
 
-            <button className="w-full py-4 rounded-2xl bg-gray-900 text-white font-black hover:bg-orange-600 transition-colors">
-              確認進入
-            </button>
-          </form>
-        </div>
-      )}
+            <input
+              style={styles.modalInput}
+              placeholder="請輸入員工姓名"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+            />
 
-      {editingEmp && (
-        <div className="fixed inset-0 z-[700] flex items-center justify-center p-4 bg-gray-900/60 backdrop-blur-md overflow-y-auto">
-          <div className="bg-white rounded-[2.5rem] w-full max-w-lg shadow-2xl">
-            <div className="p-8 border-b flex justify-between items-center bg-gray-50 rounded-t-[2.5rem]">
-              <div>
-                <h3 className="text-2xl font-black">
-                  {isAddingNew ? '註冊新夥伴' : '編輯夥伴資料'}
-                </h3>
-                <p className="text-xs text-gray-400 font-bold uppercase tracking-widest">
-                  Employee Profile Settings
-                </p>
-              </div>
+            <input
+              style={styles.modalInput}
+              placeholder="請輸入店名"
+              value={store}
+              onChange={(e) => setStore(e.target.value)}
+            />
+
+            <select
+              style={styles.modalInput}
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+            >
+              <option value="正職">正職</option>
+              <option value="PT">PT</option>
+            </select>
+
+            <div style={styles.modalActions}>
               <button
+                style={styles.modalCancelBtn}
                 onClick={() => {
-                  setEditingEmp(null);
-                  setIsAddingNew(false);
+                  setShowAddModal(false);
+                  setNewEmpId("");
+                  setNewName("");
+                  setStore("");
+                  setRole("正職");
                 }}
-                className="w-12 h-12 flex items-center justify-center bg-white border rounded-full hover:bg-red-50 hover:text-red-500 transition-all shadow-sm"
-                type="button"
-              >
-                <X size={24} />
-              </button>
-            </div>
-
-            <div className="p-8 space-y-5">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">
-                    夥伴姓名
-                  </label>
-                  <input
-                    type="text"
-                    value={editingEmp.name}
-                    onChange={(e) =>
-                      setEditingEmp({ ...editingEmp, name: e.target.value })
-                    }
-                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:border-orange-500 outline-none font-bold"
-                    placeholder="輸入姓名"
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">
-                    生日月日（打卡ID）
-                  </label>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={4}
-                    value={editingEmp.birthdayId || ''}
-                    onChange={(e) =>
-                      setEditingEmp({
-                        ...editingEmp,
-                        birthdayId: normalizeBirthdayId(e.target.value)
-                      })
-                    }
-                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:border-orange-500 outline-none font-bold"
-                    placeholder="例如 0512"
-                  />
-                  <p className="text-[10px] text-gray-400 font-bold ml-1">
-                    只存在員工資料，用來對應打卡系統，不會在列表顯示。
-                  </p>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">
-                    所屬門店
-                  </label>
-                  <select
-                    value={editingEmp.storeId || ''}
-                    onChange={(e) =>
-                      setEditingEmp({
-                        ...editingEmp,
-                        storeId: e.target.value,
-                        shop: getStoreLabel(e.target.value)
-                      })
-                    }
-                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:border-orange-500 outline-none font-bold appearance-none"
-                    disabled={activeTab === 'manager'}
-                  >
-                    {activeTab === 'manager' ? (
-                      <option value={currentStoreId || ''}>
-                        {getStoreLabel(currentStoreId)}
-                      </option>
-                    ) : (
-                      <>
-                        <option value="">選擇店鋪</option>
-                        <option value="storeA">西螺文昌店</option>
-                        <option value="storeB">斗南站前店</option>
-                      </>
-                    )}
-                  </select>
-                </div>
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">
-                  到職日期
-                </label>
-                <input
-                  type="date"
-                  value={
-                    typeof editingEmp.startDate === 'string'
-                      ? editingEmp.startDate
-                      : ''
-                  }
-                  onChange={(e) =>
-                    setEditingEmp({ ...editingEmp, startDate: e.target.value })
-                  }
-                  className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:border-orange-500 outline-none font-bold"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">
-                    職級名稱
-                  </label>
-                  <select
-                    value={editingEmp.level}
-                    onChange={(e) =>
-                      setEditingEmp({ ...editingEmp, level: e.target.value })
-                    }
-                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:border-orange-500 outline-none font-bold appearance-none"
-                  >
-                    <option value="一般夥伴">一般夥伴</option>
-                    <option value="熟練夥伴">熟練夥伴</option>
-                    <option value="全能夥伴">全能夥伴</option>
-                  </select>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">
-                    已過關卡 (獎金門檻: 2)
-                  </label>
-                  <input
-                    type="number"
-                    value={editingEmp.skillsPassed}
-                    onChange={(e) =>
-                      setEditingEmp({
-                        ...editingEmp,
-                        skillsPassed: parseInt(e.target.value, 10) || 0
-                      })
-                    }
-                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:border-orange-500 outline-none font-bold"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">
-                    考核權重 (Multiplier)
-                  </label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={editingEmp.multiplier}
-                    onChange={(e) =>
-                      setEditingEmp({
-                        ...editingEmp,
-                        multiplier: parseFloat(e.target.value) || 0
-                      })
-                    }
-                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:border-orange-500 outline-none font-bold"
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">
-                    初始總積分 (預設600)
-                  </label>
-                  <input
-                    type="number"
-                    value={editingEmp.initialPoints}
-                    onChange={(e) => {
-                      const points = parseInt(e.target.value, 10) || 600;
-                      setEditingEmp({
-                        ...editingEmp,
-                        initialPoints: points,
-                        currentPoints: isAddingNew
-                          ? points
-                          : editingEmp.currentPoints ?? points
-                      });
-                    }}
-                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:border-orange-500 outline-none font-bold"
-                  />
-                </div>
-              </div>
-
-              {!isAddingNew && (
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">
-                    目前總積分（今年）
-                  </label>
-                  <input
-                    type="number"
-                    value={editingEmp.currentPoints}
-                    onChange={(e) =>
-                      setEditingEmp({
-                        ...editingEmp,
-                        currentPoints: parseInt(e.target.value, 10) || 0
-                      })
-                    }
-                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:border-orange-500 outline-none font-bold"
-                  />
-                </div>
-              )}
-
-              <label className="flex items-center gap-3 p-4 bg-orange-50 rounded-2xl cursor-pointer group hover:bg-orange-100 transition-colors">
-                <input
-                  type="checkbox"
-                  checked={editingEmp.lastYearLow}
-                  onChange={(e) =>
-                    setEditingEmp({
-                      ...editingEmp,
-                      lastYearLow: e.target.checked
-                    })
-                  }
-                  className="w-5 h-5 rounded accent-orange-600"
-                />
-                <div className="flex flex-col">
-                  <span className="font-black text-sm text-orange-700">
-                    去年評分為低分警示
-                  </span>
-                  <span className="text-[10px] font-bold text-orange-400 uppercase">
-                    若去年紀錄未完整，可用此欄位作為 D 判定輔助
-                  </span>
-                </div>
-              </label>
-
-              <button
-                onClick={isAddingNew ? handleAddEmployee : handleSaveEmpEdit}
-                className="w-full py-5 bg-gray-900 text-white rounded-2xl font-black text-lg hover:bg-orange-600 transition-all shadow-xl shadow-gray-200 flex items-center justify-center gap-2"
-                type="button"
-              >
-                <Save size={20} />
-                {isAddingNew ? '新增夥伴' : '儲存夥伴資料'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showAdminSettings && activeTab === 'admin' && (
-        <div className="fixed inset-0 z-[780] flex items-center justify-center p-4 bg-gray-900/50 backdrop-blur-sm">
-          <div className="bg-white rounded-[2rem] w-full max-w-3xl shadow-2xl border border-gray-100">
-            <div className="p-6 sm:p-8 border-b border-gray-100 flex items-center justify-between">
-              <div>
-                <h3 className="text-2xl font-black text-gray-800 flex items-center gap-2">
-                  <Settings size={22} className="text-orange-600" />
-                  管理設定
-                </h3>
-                <p className="text-xs text-gray-400 font-bold mt-1">
-                  密碼與店長名稱統一收在齒輪裡，正式上線更乾淨
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowAdminSettings(false)}
-                className="w-11 h-11 rounded-full border border-gray-200 flex items-center justify-center hover:bg-gray-50 transition-colors"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <div className="p-6 sm:p-8 space-y-5">
-              <div>
-                <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">
-                  管理員密碼
-                </label>
-                <input
-                  type="text"
-                  value={passwordPanel.adminPassword}
-                  onChange={(e) =>
-                    setPasswordPanel((prev) => ({
-                      ...prev,
-                      adminPassword: e.target.value
-                    }))
-                  }
-                  className="w-full mt-1 px-4 py-3 bg-gray-50 border border-gray-200 rounded-2xl focus:border-orange-500 outline-none font-bold"
-                />
-              </div>
-
-              <div className="grid md:grid-cols-2 gap-4">
-                <div className="bg-gray-50 rounded-[1.5rem] p-5 border border-gray-100">
-                  <p className="text-sm font-black text-gray-800 mb-4">
-                    店長 A / {getStoreLabel('storeA')}
-                  </p>
-                  <div className="space-y-3">
-                    <input
-                      type="text"
-                      value={passwordPanel.managerAName}
-                      onChange={(e) =>
-                        setPasswordPanel((prev) => ({
-                          ...prev,
-                          managerAName: e.target.value
-                        }))
-                      }
-                      placeholder="店長名稱"
-                      className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:border-orange-500 outline-none font-bold"
-                    />
-                    <input
-                      type="text"
-                      value={passwordPanel.managerAPassword}
-                      onChange={(e) =>
-                        setPasswordPanel((prev) => ({
-                          ...prev,
-                          managerAPassword: e.target.value
-                        }))
-                      }
-                      placeholder="店長密碼"
-                      className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:border-orange-500 outline-none font-bold"
-                    />
-                  </div>
-                </div>
-
-                <div className="bg-gray-50 rounded-[1.5rem] p-5 border border-gray-100">
-                  <p className="text-sm font-black text-gray-800 mb-4">
-                    店長 B / {getStoreLabel('storeB')}
-                  </p>
-                  <div className="space-y-3">
-                    <input
-                      type="text"
-                      value={passwordPanel.managerBName}
-                      onChange={(e) =>
-                        setPasswordPanel((prev) => ({
-                          ...prev,
-                          managerBName: e.target.value
-                        }))
-                      }
-                      placeholder="店長名稱"
-                      className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:border-orange-500 outline-none font-bold"
-                    />
-                    <input
-                      type="text"
-                      value={passwordPanel.managerBPassword}
-                      onChange={(e) =>
-                        setPasswordPanel((prev) => ({
-                          ...prev,
-                          managerBPassword: e.target.value
-                        }))
-                      }
-                      placeholder="店長密碼"
-                      className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:border-orange-500 outline-none font-bold"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <button
-                onClick={savePasswords}
-                disabled={savingPassword}
-                className="w-full py-4 rounded-2xl bg-gray-900 text-white font-black hover:bg-orange-600 transition-colors flex items-center justify-center gap-2 disabled:opacity-60"
-                type="button"
-              >
-                <Save size={18} />
-                {savingPassword ? '儲存中...' : '儲存管理設定'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {deletingEmpId && (
-        <div className="fixed inset-0 z-[800] flex items-center justify-center p-4 bg-gray-900/50 backdrop-blur-sm">
-          <div className="bg-white rounded-[2rem] p-8 w-full max-w-sm shadow-2xl">
-            <div className="w-14 h-14 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center mb-5">
-              <AlertTriangle size={28} />
-            </div>
-
-            <h3 className="text-xl font-black text-gray-800 mb-2">確認刪除夥伴？</h3>
-            <p className="text-sm text-gray-400 font-bold mb-6">
-              此操作無法復原，員工資料將被移除。
-            </p>
-
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                onClick={() => setDeletingEmpId(null)}
-                className="py-3 rounded-2xl bg-gray-100 text-gray-600 font-black hover:bg-gray-200 transition-colors"
-                type="button"
               >
                 取消
               </button>
-              <button
-                onClick={() => deleteEmployee(deletingEmpId)}
-                className="py-3 rounded-2xl bg-red-600 text-white font-black hover:bg-red-700 transition-colors"
-                type="button"
-              >
-                確認刪除
+              <button style={styles.modalLoginBtn} onClick={addEmployee}>
+                確認新增
               </button>
             </div>
           </div>
         </div>
       )}
 
-      <nav className="bg-white/80 backdrop-blur-md border-b sticky top-0 z-50 shadow-sm">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex justify-between items-center">
-          <div className="flex items-center gap-2">
-            <div className="w-10 h-10 bg-orange-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-orange-200">
-              <ShieldCheck size={24} />
+      {showEditModal && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modalCard}>
+            <div style={styles.modalTitle}>編輯員工</div>
+
+            <input
+              style={styles.modalInput}
+              placeholder="員工姓名"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+            />
+
+            <input
+              style={styles.modalInput}
+              placeholder="店名"
+              value={editStore}
+              onChange={(e) => setEditStore(e.target.value)}
+            />
+
+            <select
+              style={styles.modalInput}
+              value={editRole}
+              onChange={(e) => setEditRole(e.target.value)}
+            >
+              <option value="正職">正職</option>
+              <option value="PT">PT</option>
+            </select>
+
+            <div style={styles.modalActions}>
+              <button
+                style={styles.modalCancelBtn}
+                onClick={() => {
+                  setShowEditModal(false);
+                  setEditingEmp(null);
+                }}
+              >
+                取消
+              </button>
+              <button style={styles.modalLoginBtn} onClick={updateEmployee}>
+                儲存修改
+              </button>
             </div>
-            <div>
-              <h1 className="text-lg font-black text-gray-800 leading-tight">
-                績效考核系統
-              </h1>
-              <p className="text-[10px] text-orange-600 font-bold uppercase tracking-widest">
-                Performance Insight
-              </p>
-            </div>
-          </div>
-
-          <div className="flex bg-gray-100 p-1 rounded-xl gap-1 border border-gray-200">
-            <button
-              onClick={() => window.open('https://yuchinyuxian.quickconnect.to/d/s/186Vedg15q40Guighjofsun0kdaXKNrV/VFvQfyzlaq7tHfK_BUVdvlop3-PSq2rC-ALkgpXiWKw0', '_blank', 'noopener,noreferrer')}
-              title="前往公司雲端"
-              className="px-3 py-1.5 rounded-lg text-xs font-black transition flex items-center gap-1 text-gray-400 hover:text-blue-600 hover:bg-white"
-              type="button"
-            >
-              <Cloud size={14} />
-              <span className="hidden sm:inline">雲端</span>
-            </button>
-
-            <button
-              onClick={() => window.location.href = 'https://work-checkin.vercel.app/'}
-              title="前往打卡系統"
-              className="px-3 py-1.5 rounded-lg text-xs font-black transition flex items-center gap-1 text-gray-400 hover:text-orange-600 hover:bg-white"
-              type="button"
-            >
-              <Clock3 size={14} />
-              <span className="hidden sm:inline">打卡</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('employee')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-black transition flex items-center gap-1 ${
-                activeTab === 'employee'
-                  ? 'bg-white shadow-sm text-orange-600'
-                  : 'text-gray-400 hover:text-gray-600'
-              }`}
-              type="button"
-            >
-              <Search size={14} />
-              <span className="hidden sm:inline">查詢</span>
-            </button>
-
-            <button
-              onClick={() =>
-                activeTab === 'manager' ? leaveManagerMode() : setAuthMode('manager')
-              }
-              className={`px-3 py-1.5 rounded-lg text-xs font-black transition flex items-center gap-1 ${
-                activeTab === 'manager'
-                  ? 'bg-orange-600 text-white shadow-md'
-                  : 'text-gray-400 hover:text-gray-600'
-              }`}
-              type="button"
-            >
-              <Store size={14} />
-              <span className="hidden sm:inline">
-                {activeTab === 'manager' ? currentManager?.name || '店長' : '店長'}
-              </span>
-            </button>
-
-            <button
-              onClick={() =>
-                window.open(
-                  "https://staff-meal-system.vercel.app/",
-                  "_blank",
-                  "noopener,noreferrer"
-                )
-              }
-              className="px-3 py-1.5 rounded-lg text-xs font-black transition text-gray-400 hover:text-green-600 hover:bg-white"
-              type="button"
-            >
-              員工餐
-            </button>
-
-            <button
-              onClick={() =>
-                activeTab === 'admin'
-                  ? setActiveTab('employee')
-                  : setAuthMode('admin')
-              }
-              className={`px-3 py-1.5 rounded-lg text-xs font-black transition flex items-center justify-center ${
-                activeTab === 'admin'
-                  ? 'bg-red-600 text-white shadow-md'
-                  : 'text-gray-400 hover:text-red-600'
-              }`}
-              type="button"
-            >
-              <Lock size={14} />
-            </button>
           </div>
         </div>
-      </nav>
+      )}
 
-      <main className="max-w-5xl mx-auto p-4 sm:p-6">
-        {activeTab === 'employee' && (
-          <div className="space-y-6 animate-in slide-in-from-top-4 duration-300">
-            <section className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-8">
-                <div>
-                  <h2 className="text-xl font-black text-gray-800 flex items-center gap-2">
-                    <Users size={22} className="text-orange-600" />
-                    員工查詢總覽
-                  </h2>
-                  <p className="text-xs text-gray-400 font-bold mt-1">
-                    查詢兩間店所有夥伴的年資、分數、年度結果與警示
-                  </p>
-                </div>
+      {showRecordEditModal && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modalCard}>
+            <div style={styles.modalTitle}>修改打卡紀錄</div>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <div className="bg-gray-50 p-5 rounded-2xl border border-gray-100">
-                    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">
-                      全部人數
-                    </p>
-                    <p className="text-3xl font-black text-gray-800 mt-2">
-                      {totalEmployees}
-                    </p>
-                  </div>
+            <input
+              style={styles.modalInput}
+              value={editingRecord?.name || ""}
+              readOnly
+            />
 
-                  <div className="bg-gray-50 p-5 rounded-2xl border border-gray-100">
-                    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">
-                      全部警示人數
-                    </p>
-                    <p className="text-3xl font-black text-orange-600 mt-2">
-                      {warningCount}
-                    </p>
-                  </div>
+            <select
+              style={styles.modalInput}
+              value={editRecordType}
+              onChange={(e) => setEditRecordType(e.target.value)}
+            >
+              <option value="上班">上班</option>
+              <option value="下班">下班</option>
+              <option value="休息開始">休息開始</option>
+              <option value="休息結束">休息結束</option>
+            </select>
 
-                  <div className="bg-gray-50 p-5 rounded-2xl border border-gray-100">
-                    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">
-                      本月警示人數
-                    </p>
-                    <p className="text-3xl font-black text-red-600 mt-2">
-                      {monthlyWarningCount}
-                    </p>
-                  </div>
+            <input
+              style={styles.modalInput}
+              type="datetime-local"
+              value={editRecordTime}
+              onChange={(e) => setEditRecordTime(e.target.value)}
+            />
 
-                  <div className="bg-gray-50 p-5 rounded-2xl border border-gray-100">
-                    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">
-                      年度基準
-                    </p>
-                    <p className="text-3xl font-black text-gray-800 mt-2">
-                      {DEFAULT_INITIAL_POINTS}
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                {sortedEmployees.map((emp) => {
-                  const assessment = getEmployeeAssessment(emp);
-                  const warnings = getEmployeeWarnings(emp);
-
-                  return (
-                    <div
-                      key={emp.id}
-                      className={`p-5 rounded-3xl border transition-all ${
-                        warnings.some((w) => w.level === 'danger')
-                          ? 'border-red-200 bg-red-50/40'
-                          : warnings.length > 0
-                          ? 'border-yellow-200 bg-yellow-50/40'
-                          : 'border-gray-100 bg-gray-50'
-                      }`}
-                    >
-                      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-5">
-                        <div className="flex-1">
-                          <div className="flex items-center flex-wrap gap-2 mb-3">
-                            <h3 className="text-xl font-black text-gray-800">
-                              {emp.name}
-                            </h3>
-
-                            <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest bg-white border border-gray-200 text-gray-400">
-                              {emp.shop || '未設定店鋪'}
-                            </span>
-
-                            <span
-                              className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${assessment.result.bg}`}
-                            >
-                              {assessment.result.status}
-                            </span>
-
-                            {warnings.slice(0, 4).map((warning) => (
-                              <span
-                                key={warning.key}
-                                className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border ${getWarningBadgeClass(
-                                  warning.level
-                                )}`}
-                              >
-                                {warning.label}
-                              </span>
-                            ))}
-                          </div>
-
-                          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                            <div className="bg-white rounded-2xl p-4 border border-gray-100">
-                              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">
-                                今年分數
-                              </p>
-                              <p className="text-2xl font-black mt-2 text-gray-800">
-                                {assessment.thisYearPoints}
-                              </p>
-                            </div>
-
-                            <div className="bg-white rounded-2xl p-4 border border-gray-100">
-                              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">
-                                年度結果
-                              </p>
-                              <div className="mt-2">
-                                <span
-                                  className={`px-3 py-1 rounded-2xl text-xs font-black ${assessment.result.bg}`}
-                                >
-                                  {assessment.result.status}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="bg-blue-50 rounded-2xl p-4 border border-blue-100">
-                              <p className="text-[10px] text-blue-500 font-black uppercase tracking-widest">
-                                當月積分
-                              </p>
-                              <p className="text-2xl font-black mt-2 text-blue-700">
-                                {getEmployeeMonthlyPoints(emp.id)}
-                              </p>
-                            </div>
-
-                            <div className="bg-orange-50 rounded-2xl p-4 border border-orange-100">
-                              <p className="text-[10px] text-orange-500 font-black uppercase tracking-widest">
-                                本月忘打卡
-                              </p>
-                              <p className="text-2xl font-black mt-2 text-orange-600">
-                                {getEmployeeMonthlyMissedClockCount(emp.id)}
-                              </p>
-                            </div>
-
-                            <div className="bg-white rounded-2xl p-4 border border-gray-100">
-                              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">
-                                目前警示
-                              </p>
-                              <p className="text-sm font-black mt-2 text-gray-700">
-                                {warnings.length > 0 ? `${warnings.length} 項` : '無'}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="xl:w-[140px]">
-                          <button
-                            onClick={() => {
-                              setSelectedEmpId(emp.id);
-                              setSelectedMonth(new Date().toISOString().substring(0, 7));
-                            }}
-                            className="w-full px-4 py-4 rounded-2xl bg-white border border-gray-200 text-gray-700 font-black hover:border-orange-300 hover:text-orange-600 transition-colors"
-                            type="button"
-                          >
-                            {selectedEmpId === emp.id ? '查看中' : '查看詳情'}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {sortedEmployees.length === 0 && (
-                  <div className="p-8 rounded-3xl border border-dashed border-gray-200 text-center bg-gray-50 text-gray-400 font-bold">
-                    目前尚無員工資料
-                  </div>
-                )}
-              </div>
-            </section>
-
-            {selectedEmp && (
-              <section className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-6">
-                <div className="bg-white rounded-[2rem] shadow-sm border border-gray-100 overflow-hidden">
-                  <div className="p-8 border-b bg-gray-50">
-                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                      <div>
-                        <p className="text-[10px] text-orange-600 font-black uppercase tracking-widest">
-                          Employee Detail
-                        </p>
-                        <h3 className="text-3xl font-black mt-2 text-gray-800">
-                          {selectedEmp.name}
-                        </h3>
-                        <p className="text-sm text-gray-400 font-bold mt-2">
-                          {selectedEmp.shop || '未設定店鋪'} · {selectedEmp.level}
-                        </p>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <div className="flex items-center gap-2 bg-white border border-gray-200 px-4 py-2.5 rounded-2xl">
-                          <Calendar size={16} className="text-gray-400" />
-                          <input
-                            type="month"
-                            value={selectedMonth}
-                            onChange={(e) => setSelectedMonth(e.target.value)}
-                            className="bg-transparent text-sm font-black text-gray-700 outline-none"
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setSelectedEmpId(null)}
-                          className="px-4 py-2.5 rounded-2xl bg-white border border-gray-200 text-gray-600 font-black hover:border-orange-300 hover:text-orange-600 transition-colors"
-                        >
-                          收合詳情
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="p-8">
-                    <div className="space-y-3">
-                      <div className="bg-gray-50 rounded-3xl px-5 py-4 border border-gray-100 flex items-center justify-between gap-4 min-h-[88px]">
-                        <div>
-                          <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">
-                            年資
-                          </p>
-                          <p className="text-sm text-gray-400 font-bold mt-2">
-                            到職後累積年資
-                          </p>
-                        </div>
-                        <p className="text-2xl font-black text-gray-800 text-right leading-tight">
-                          {calculateSeniority(selectedEmp.startDate).text}
-                        </p>
-                      </div>
-
-                      <div className="bg-gray-50 rounded-3xl px-5 py-4 border border-gray-100 flex items-center justify-between gap-4 min-h-[88px]">
-                        <div>
-                          <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">
-                            去年分數
-                          </p>
-                          <p className="text-sm text-gray-400 font-bold mt-2">
-                            去年年度累積結果
-                          </p>
-                        </div>
-                        <p className="text-3xl font-black text-gray-800 text-right leading-none">
-                          {getEmployeeAssessment(selectedEmp).lastYearPoints}
-                        </p>
-                      </div>
-
-                      <div className="bg-gray-50 rounded-3xl px-5 py-4 border border-gray-100 flex items-center justify-between gap-4 min-h-[88px]">
-                        <div>
-                          <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">
-                            年度結果
-                          </p>
-                          <p className="text-sm text-gray-400 font-bold mt-2">
-                            {getEmployeeAssessment(selectedEmp).result.desc}
-                          </p>
-                        </div>
-                        <span
-                          className={`px-4 py-2 rounded-2xl text-sm font-black whitespace-nowrap ${getEmployeeAssessment(selectedEmp).result.bg}`}
-                        >
-                          {getEmployeeAssessment(selectedEmp).result.status}
-                        </span>
-                      </div>
-
-                      <div className="bg-gray-50 rounded-3xl px-5 py-4 border border-gray-100 flex items-center justify-between gap-4 min-h-[88px]">
-                        <div>
-                          <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">
-                            已過關卡
-                          </p>
-                          <p className="text-sm text-gray-400 font-bold mt-2">
-                            獎金門檻至少 2 關
-                          </p>
-                        </div>
-                        <p className="text-3xl font-black text-gray-800 text-right leading-none">
-                          {selectedEmp.skillsPassed || 0}
-                        </p>
-                      </div>
-
-                      <div className="bg-gray-50 rounded-3xl px-5 py-4 border border-gray-100 flex items-center justify-between gap-4 min-h-[88px]">
-                        <div>
-                          <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">
-                            預估加級
-                          </p>
-                          <p className="text-sm text-gray-400 font-bold mt-2">
-                            依今年結果預估
-                          </p>
-                        </div>
-                        <p className="text-3xl font-black text-orange-600 text-right leading-none">
-                          {calculateFinalPay(selectedEmp)}
-                        </p>
-                      </div>
-
-                      <div className="bg-blue-50 rounded-3xl px-5 py-4 border border-blue-100 flex items-center justify-between gap-4 min-h-[88px]">
-                        <div>
-                          <p className="text-[10px] text-blue-500 font-black uppercase tracking-widest">
-                            當月積分
-                          </p>
-                          <p className="text-sm text-blue-400 font-bold mt-2">
-                            每月基本 {MONTHLY_BASE_POINTS} 分，加扣分後合計
-                          </p>
-                        </div>
-                        <p className="text-3xl font-black text-blue-700 text-right leading-none">
-                          {getEmployeeMonthlyPoints(selectedEmp.id, selectedMonth)}
-                        </p>
-                      </div>
-
-                      <div className="bg-orange-50 rounded-3xl px-5 py-4 border border-orange-100 flex items-center justify-between gap-4 min-h-[88px]">
-                        <div>
-                          <p className="text-[10px] text-orange-500 font-black uppercase tracking-widest">
-                            本月忘打卡次數
-                          </p>
-                          <p className="text-sm text-orange-400 font-bold mt-2">
-                            依目前選擇月份統計
-                          </p>
-                        </div>
-                        <p className="text-3xl font-black text-orange-600 text-right leading-none">
-                          {getEmployeeMonthlyMissedClockCount(selectedEmp.id, selectedMonth)}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-gray-100">
-                  <div className="flex flex-col gap-4 mb-5">
-                    <div className="flex items-center justify-between gap-3">
-                      <h3 className="font-black text-gray-800 flex items-center gap-2">
-                        <History size={18} className="text-gray-400" />
-                        當月紀錄
-                      </h3>
-                      <span className="text-[10px] text-gray-300 font-black uppercase tracking-widest">
-                        {selectedMonth}・{filteredPersonalLogs.length}/{monthlyPersonalLogs.length} 筆
-                      </span>
-                    </div>
-
-                    <div className="grid md:grid-cols-[1fr_auto] gap-3">
-                      <div className="relative">
-                        <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-300" />
-                        <input
-                          type="text"
-                          value={personalLogSearch}
-                          onChange={(e) => setPersonalLogSearch(e.target.value)}
-                          placeholder="搜尋紀錄、備註、日期、操作人"
-                          className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-100 rounded-2xl text-sm font-bold outline-none focus:border-orange-400"
-                        />
-                      </div>
-
-                      <div className="flex bg-gray-100 p-1 rounded-2xl border border-gray-200 overflow-x-auto">
-                        {[
-                          { key: 'all', label: '全部' },
-                          { key: 'score', label: '加扣分' },
-                          { key: 'missedClock', label: '忘打卡' },
-                          { key: 'other', label: '其他' }
-                        ].map((item) => (
-                          <button
-                            key={item.key}
-                            type="button"
-                            onClick={() => setPersonalLogCategory(item.key)}
-                            className={`px-3 py-2 rounded-xl text-xs font-black whitespace-nowrap transition ${
-                              personalLogCategory === item.key
-                                ? 'bg-white text-orange-600 shadow-sm'
-                                : 'text-gray-400 hover:text-gray-600'
-                            }`}
-                          >
-                            {item.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  {filteredPersonalLogs.length > 0 ? (
-                    <div className="space-y-3 max-h-[420px] overflow-y-auto pr-2 overscroll-contain">
-                      {filteredPersonalLogs.map((log) => (
-                        <div
-                          key={log.id}
-                          className="p-4 rounded-2xl bg-gray-50 border border-gray-100 flex items-center justify-between"
-                        >
-                          <div className="flex items-center gap-4">
-                            <div
-                              className={`w-11 h-11 rounded-2xl flex items-center justify-center font-black ${
-                                log.amount >= 0
-                                  ? 'bg-green-100 text-green-600'
-                                  : 'bg-red-100 text-red-600'
-                              }`}
-                            >
-                              {log.amount > 0 ? '+' : ''}
-                              {log.amount}
-                            </div>
-
-                            <div>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <p className="font-black text-gray-800">{log.reason}</p>
-                                <span
-                                  className={`px-2 py-0.5 rounded-full border text-[10px] font-black ${getPersonalLogCategoryClass(
-                                    getPersonalLogCategory(log)
-                                  )}`}
-                                >
-                                  {getPersonalLogCategoryLabel(getPersonalLogCategory(log))}
-                                </span>
-                              </div>
-                              <p className="text-xs text-gray-400 mt-1">
-                                {formatDate(log.occurrenceDate)}
-                                {log.note ? ` · ${log.note}` : ''}
-                              </p>
-                            </div>
-                          </div>
-
-                          <span className="text-[10px] font-black uppercase tracking-widest text-gray-300">
-                            {log.operator || '-'}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="bg-gray-50 border border-dashed border-gray-200 rounded-2xl p-8 text-center text-gray-400 font-bold">
-                      沒有符合條件的紀錄
-                    </div>
-                  )}
-                </div>
-
-                <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-gray-100">
-                  <div className="flex items-center justify-between mb-5">
-                    <h3 className="font-black text-gray-800 flex items-center gap-2">
-                      <Clock3 size={18} className="text-orange-500" />
-                      忘打卡申請
-                    </h3>
-                    <span className="text-[10px] text-gray-300 font-black uppercase tracking-widest">
-                      Employee Self Service
-                    </span>
-                  </div>
-
-                  <div className="grid md:grid-cols-2 gap-4 mb-4">
-                    <div className="space-y-2">
-                      <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">忘打卡日期</label>
-                      <input
-                        type="date"
-                        value={missedClockForm.requestDate}
-                        onChange={(e) =>
-                          setMissedClockForm((prev) => ({ ...prev, requestDate: e.target.value }))
-                        }
-                        className="w-full bg-gray-50 border-2 border-gray-100 px-4 py-4 rounded-2xl font-black text-gray-700 focus:border-orange-400 outline-none transition-colors"
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">忘打卡時間</label>
-                      <input
-                        type="time"
-                        value={missedClockForm.requestTime}
-                        onChange={(e) =>
-                          setMissedClockForm((prev) => ({ ...prev, requestTime: e.target.value }))
-                        }
-                        className="w-full bg-gray-50 border-2 border-gray-100 px-4 py-4 rounded-2xl font-black text-gray-700 focus:border-orange-400 outline-none transition-colors"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-2 mb-4">
-                    <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">原因說明</label>
-                    <textarea
-                      value={missedClockForm.reason}
-                      onChange={(e) =>
-                        setMissedClockForm((prev) => ({ ...prev, reason: e.target.value }))
-                      }
-                      rows={3}
-                      className="w-full bg-gray-50 border-2 border-gray-100 px-4 py-4 rounded-2xl font-bold text-gray-700 focus:border-orange-400 outline-none transition-colors resize-none"
-                      placeholder="例如：早上尖峰太忙忘記補打卡"
-                    />
-                  </div>
-
-                  <button
-                    onClick={handleMissedClockRequest}
-                    className="w-full py-4 rounded-2xl bg-orange-600 text-white font-black hover:bg-orange-700 transition-colors flex items-center justify-center gap-2 mb-6"
-                    type="button"
-                  >
-                    <ArrowRight size={18} />
-                    送出忘打卡申請
-                  </button>
-
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <p className="font-black text-gray-800">我的申請紀錄</p>
-                      <span className="text-[10px] text-gray-300 font-black uppercase tracking-widest">最近 {selectedEmpMissedClockLogs.length} 筆</span>
-                    </div>
-
-                    {selectedEmpMissedClockLogs.length > 0 ? (
-                      selectedEmpMissedClockLogs.map((log) => (
-                        <div
-                          key={`missed-clock-${log.id}`}
-                          className="p-4 rounded-2xl bg-gray-50 border border-gray-100"
-                        >
-                          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                            <div>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <p className="font-black text-gray-800">
-                                  {log.requestDate || '-'} {log.requestTime || ''}
-                                </p>
-                                <span
-                                  className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${
-                                    log.requestStatus === 'approved'
-                                      ? 'bg-green-100 text-green-700'
-                                      : log.requestStatus === 'rejected'
-                                      ? 'bg-red-100 text-red-700'
-                                      : 'bg-yellow-100 text-yellow-700'
-                                  }`}
-                                >
-                                  {log.requestStatus === 'approved'
-                                    ? '已批准'
-                                    : log.requestStatus === 'rejected'
-                                    ? '已退回'
-                                    : '待審核'}
-                                </span>
-                              </div>
-                              <p className="text-sm text-gray-600 font-bold mt-2 leading-6">{log.note || '無原因說明'}</p>
-                              <p className="text-xs text-gray-400 font-bold mt-1">申請時間：{formatDateTime(log.timestamp)}</p>
-                            </div>
-                          </div>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="bg-gray-50 border border-dashed border-gray-200 rounded-2xl p-6 text-center text-gray-400 font-bold">
-                        目前尚無忘打卡申請紀錄
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </section>
-            )}
+            <div style={styles.modalActions}>
+              <button
+                style={styles.modalCancelBtn}
+                onClick={() => {
+                  setShowRecordEditModal(false);
+                  setEditingRecord(null);
+                }}
+              >
+                取消
+              </button>
+              <button style={styles.modalLoginBtn} onClick={saveRecordEdit}>
+                儲存修改
+              </button>
+            </div>
           </div>
-        )}
+        </div>
+      )}
 
-        {activeTab === 'manager' && (
-          <div className="space-y-6 animate-in slide-in-from-top-4 duration-300">
-            <section className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-8">
-                <div>
-                  <h2 className="text-xl font-black flex items-center gap-2 text-gray-800">
-                    <Store size={24} className="text-orange-600" />
-                    店長評分區
-                  </h2>
-                  <p className="text-xs text-gray-400 font-bold mt-1">
-                    {currentManager
-                      ? `${currentManager.name} / ${getStoreLabel(currentStoreId)}`
-                      : '選取夥伴並提交當日考核表現'}
-                  </p>
-                </div>
+      <div style={styles.adminHeader}>
+        <div>
+          <div style={styles.adminTitle}>管理後台</div>
+          <div style={styles.adminSub}>員工、設備、紀錄、月報表匯出管理中心</div>
+        </div>
+        <button style={styles.logoutBtn} onClick={logout}>
+          離開管理模式
+        </button>
+      </div>
 
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingEmp({
-                        name: '',
-                        birthdayId: '',
-                        shop: getStoreLabel(currentStoreId),
-                        startDate: new Date().toISOString().split('T')[0],
-                        currentPoints: DEFAULT_INITIAL_POINTS,
-                        initialPoints: DEFAULT_INITIAL_POINTS,
-                        lastYearLow: false,
-                        level: '一般夥伴',
-                        multiplier: 1,
-                        skillsPassed: 0,
-                        storeId: currentStoreId
-                      });
-                      setIsAddingNew(true);
-                    }}
-                    className="px-4 py-3 rounded-2xl bg-gray-900 text-white font-black hover:bg-orange-600 transition-colors inline-flex items-center justify-center gap-2"
-                  >
-                    <PlusCircle size={18} />
-                    新增員工
-                  </button>
+      <div style={styles.adminGrid}>
+        <div style={styles.leftCol}>
+          <div style={styles.panelCard}>
+            <div style={styles.listHeader}>
+              <div style={styles.panelTitle}>班表發布</div>
+              <div style={styles.badge}>{adminStoreTab === "全部" ? publishStore : adminStoreTab}</div>
+            </div>
 
-                  <div className="flex items-center gap-2 bg-orange-50 px-4 py-2.5 rounded-2xl border border-orange-100 w-fit">
-                    <Calendar size={16} className="text-orange-600" />
-                    <input
-                      type="date"
-                      value={occurrenceDate}
-                      onChange={(e) => setOccurrenceDate(e.target.value)}
-                      className="bg-transparent text-sm font-black text-orange-700 outline-none cursor-pointer"
-                    />
-                  </div>
+            <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, marginTop: 6 }}>
+              排班設定已整合進員工名單。現在改為「儲存班表＋複製班表連結」，不再自動 LINE 推播完整班表。
+            </div>
+
+            <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
+              <div style={{
+                display: "grid",
+                gap: 8,
+                padding: "12px",
+                borderRadius: 14,
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>發布班表日期</div>
+                <input
+                  type="date"
+                  value={scheduleDate}
+                  onChange={(e) => setScheduleDate(e.target.value)}
+                  style={{
+                    width: "100%",
+                    borderRadius: 12,
+                    border: "1px solid #cbd5e1",
+                    padding: "12px 14px",
+                    fontSize: 15,
+                    outline: "none",
+                    background: "#fff",
+                  }}
+                />
+                <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5 }}>
+                  例如今天先發布明天早班，就把日期改成明天再傳送。
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-8">
-                {sortedVisibleEmployees.map((emp) => {
-                  const assessment = getEmployeeAssessment(emp);
-                  const seniority = calculateSeniority(emp.startDate);
-                  const warnings = getEmployeeWarnings(emp);
+              <select
+                value={publishStore}
+                onChange={(e) => setPublishStore(e.target.value)}
+                style={{
+                  width: "100%",
+                  borderRadius: 12,
+                  border: "1px solid #d1d5db",
+                  padding: "12px 14px",
+                  fontSize: 15,
+                  outline: "none",
+                }}
+              >
+                <option value="西螺文昌店">西螺文昌店</option>
+                <option value="斗南站前店">斗南站前店</option>
+              </select>
 
-                  return (
-                    <div
-                      key={`manager-overview-${emp.id}`}
-                      className={`rounded-[2rem] border p-5 transition-all ${
-                        selectedEmpId === emp.id
-                          ? 'border-orange-300 bg-orange-50 shadow-lg shadow-orange-100'
-                          : 'border-gray-100 bg-gray-50'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3 mb-4">
-                        <div>
-                          <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">
-                            {getStoreLabel(emp.storeId)}
-                          </p>
-                          <h3 className="text-lg font-black text-gray-800 mt-1">{emp.name}</h3>
-                          <p className="text-xs text-gray-400 font-bold mt-1">
-                            {emp.level || '一般夥伴'}
-                          </p>
-                        </div>
+              <button
+                style={{
+                  ...styles.fullMainBtn,
+                  background: scheduleSent
+                    ? "linear-gradient(135deg, #10b981, #22c55e)"
+                    : "linear-gradient(135deg, #2563eb, #3b82f6)",
+                  opacity: scheduleSaving ? 0.7 : 1,
+                }}
+                onClick={saveAndSendSchedule}
+                disabled={scheduleSaving}
+              >
+                {scheduleSaving
+                  ? "儲存中…"
+                  : scheduleSent
+                  ? `✓ ${publishStore} ${scheduleDate} 已儲存`
+                  : `儲存班表 ${publishStore} ${scheduleDate}`}
+              </button>
+              <button
+                style={{
+                  ...styles.fullGreenBtn,
+                  marginTop: 0,
+                }}
+                onClick={copyScheduleLink}
+              >
+                {scheduleLinkCopied ? "✓ 已複製 LINE 分享文字" : "複製班表連結給 LINE 群組"}
+              </button>
 
-                        <span
-                          className={`px-3 py-1 rounded-full text-xs font-black ${
-                            warnings.length > 0
-                              ? 'bg-red-100 text-red-700'
-                              : 'bg-green-100 text-green-700'
-                          }`}
-                        >
-                          {warnings.length > 0 ? '需要注意' : '狀態穩定'}
-                        </span>
+              <div style={styles.shareLinkBox}>
+                {getScheduleShareUrl(scheduleDate, publishStore)}
+              </div>
+
+            </div>
+          </div>
+
+          <div style={styles.panelCard}>
+            <div style={styles.panelTitle}>設備設定</div>
+            <div style={styles.deviceBox}>
+              <div style={styles.deviceLabel}>目前設備 ID</div>
+              <div style={styles.deviceId}>{myDevice}</div>
+              <div style={{ marginTop: 6, fontSize: 12, color: isAuthorizedDevice ? "#16a34a" : "#dc2626", fontWeight: 800 }}>
+                {isAuthorizedDevice ? `此設備已授權：${currentDeviceStoreName}` : "此設備尚未授權"}
+              </div>
+            </div>
+
+            <div style={styles.deviceBox}>
+              <div style={styles.deviceLabel}>選擇要綁定的店別</div>
+              <select
+                value={bindStore}
+                onChange={(e) => setBindStore(e.target.value)}
+                style={{
+                  width: "100%",
+                  borderRadius: 12,
+                  border: "1px solid #cbd5e1",
+                  padding: "10px 12px",
+                  fontSize: 14,
+                  outline: "none",
+                  marginTop: 8,
+                  background: "#fff",
+                }}
+              >
+                {DEVICE_BIND_OPTIONS.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </div>
+
+            <button style={styles.fullDarkBtn} onClick={bindDevice}>
+              綁定這台設備到 {bindStore}
+            </button>
+
+            <div style={{ marginTop: 14 }}>
+              <div style={styles.deviceLabel}>已授權設備列表</div>
+              {Object.keys(authorizedDevices || {}).length === 0 ? (
+                <div style={styles.emptyText}>尚未綁定任何設備</div>
+              ) : (
+                Object.entries(authorizedDevices || {}).map(([storeName, item]) => (
+                  <div key={storeName} style={{ ...styles.deviceBox, marginTop: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={styles.deviceLabel}>{storeName}</div>
+                        <div style={styles.deviceId}>{item?.id || "未設定"}</div>
                       </div>
+                      <button
+                        style={{
+                          border: "none",
+                          borderRadius: 10,
+                          padding: "8px 10px",
+                          background: "#fee2e2",
+                          color: "#b91c1c",
+                          fontWeight: 900,
+                          cursor: "pointer",
+                          whiteSpace: "nowrap",
+                        }}
+                        onClick={() => unbindDevice(storeName)}
+                      >
+                        解除
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
 
-                      <div className="grid grid-cols-2 gap-3 mb-4">
-                        <div className="bg-white rounded-2xl border border-gray-100 px-4 py-3">
-                          <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">今年分數</p>
-                          <p className="text-xl font-black text-gray-800 mt-2">{assessment.thisYearPoints}</p>
-                        </div>
-                        <div className="bg-white rounded-2xl border border-gray-100 px-4 py-3">
-                          <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">年資</p>
-                          <p className="text-base font-black text-gray-800 mt-2">{seniority.text}</p>
-                        </div>
-                      </div>
+          <div style={styles.panelCard}>
+            <div style={styles.panelTitle}>資料匯出</div>
+            <button style={styles.fullGreenBtn} onClick={exportAllCSV}>
+              匯出全部打卡 CSV
+            </button>
 
-                      <div className="space-y-2 mb-4">
-                        <div className="flex items-center justify-between text-sm font-bold text-gray-600">
-                          <span>技能通過</span>
-                          <span>{emp.skillsPassed || 0}</span>
-                        </div>
-                        <div className="flex items-center justify-between text-sm font-bold text-gray-600">
-                          <span>本月忘打卡</span>
-                          <span className="text-orange-600">{getEmployeeMonthlyMissedClockCount(emp.id)} 次</span>
-                        </div>
-                        <div className="flex items-center justify-between text-sm font-bold text-gray-600">
-                          <span>當月積分</span>
-                          <span className="text-blue-600">{getEmployeeMonthlyPoints(emp.id)} 分</span>
-                        </div>
-                        <div className="flex items-center justify-between text-sm font-bold text-gray-600">
-                          <span>年度狀態</span>
-                          <span className={`px-2.5 py-1 rounded-full text-xs ${assessment.result.bg}`}>
-                            {assessment.result.status}
-                          </span>
-                        </div>
-                      </div>
+            <div style={styles.exportDivider} />
 
-                      <div className="flex flex-wrap gap-2 mb-4">
-                        {warnings.length > 0 ? (
-                          warnings.slice(0, 3).map((warning) => (
-                            <span
-                              key={warning.key}
-                              className={`px-2.5 py-1 rounded-full border text-[11px] font-black ${getWarningBadgeClass(warning.level)}`}
-                            >
-                              {warning.label}
-                            </span>
-                          ))
+            <div style={styles.deviceLabel}>月報表月份</div>
+            <input
+              type="month"
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(e.target.value)}
+              style={styles.monthInput}
+            />
+
+            <button style={styles.fullOrangeBtn} onClick={exportMonthlyCSV}>
+              匯出月報表 Excel
+            </button>
+          </div>
+
+          <div style={styles.panelCard}>
+            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("scheduleHistory")}>
+              歷史班表 {adminPanels.scheduleHistory ? "－" : "＋"}
+            </button>
+            {adminPanels.scheduleHistory ? (
+              <div style={styles.collapseContent}>
+                {historyScheduleDates.length === 0 ? (
+                  <div style={styles.emptyText}>目前沒有歷史班表</div>
+                ) : (
+                  historyScheduleDates.slice(0, 14).map((dateKey) => {
+                    const dayData = scheduleHistory[dateKey] || {};
+                    const storeMap = {};
+                    Object.entries(dayData).forEach(([empId, item]) => {
+                      if (!item?.working) return;
+                      const storeName = item.store || "未填店名";
+                      if (!storeMap[storeName]) storeMap[storeName] = [];
+                      storeMap[storeName].push({ empId, ...item });
+                    });
+
+                    return (
+                      <div key={dateKey} style={styles.historyBlock}>
+                        <div style={styles.historyDate}>{dateKey}</div>
+                        {Object.keys(storeMap).length === 0 ? (
+                          <div style={styles.historyItem}>無排班資料</div>
                         ) : (
-                          <span className="px-2.5 py-1 rounded-full border text-[11px] font-black bg-green-50 text-green-700 border-green-100">
-                            本月狀況正常
-                          </span>
+                          Object.entries(storeMap).map(([storeName, list]) => (
+                            <div key={storeName} style={{ marginTop: 8 }}>
+                              <div style={styles.storeLabel}>{storeName}</div>
+                              {list
+                                .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")))
+                                .map((item) => (
+                                  <div key={`${dateKey}-${storeName}-${item.empId}`} style={styles.historyItem}>
+                                    {item.name}｜{item.startTime || "未填"} - {item.endTime || "未填"}
+                                  </div>
+                                ))}
+                            </div>
+                          ))
                         )}
                       </div>
+                    );
+                  })
+                )}
+              </div>
+            ) : null}
+          </div>
 
-                      <button
-                        type="button"
-                        onClick={() => setSelectedEmpId(emp.id)}
-                        className="w-full py-3 rounded-2xl bg-white border border-gray-200 text-gray-700 font-black hover:border-orange-300 hover:text-orange-600 transition-colors"
-                      >
-                        {selectedEmpId === emp.id ? '目前選取中' : '選取這位夥伴'}
-                      </button>
+          <div style={styles.panelCard}>
+            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("lateCheck")}>
+              自動抓遲到 {adminPanels.lateCheck ? "－" : "＋"}
+            </button>
+            {adminPanels.lateCheck ? (
+              <div style={styles.collapseContent}>
+                <div style={styles.historyItem}>系統會依班表自動抓遲到，超過 5 分鐘未打上班卡就通知對應店長群組，並顯示每位員工遲到分鐘數。</div>
+                <div style={{ ...styles.deviceLabel, marginTop: 14 }}>遲到通知紀錄</div>
+                {lateNoticeEntries.length === 0 ? (
+                  <div style={styles.emptyText}>目前沒有遲到通知紀錄</div>
+                ) : (
+                  lateNoticeEntries.slice(0, 12).map((item) => (
+                    <div key={item.id} style={styles.historyBlock}>
+                      <div style={styles.historyDate}>
+                        {item.type}｜{item.store || item.dateKey || "未分類"}
+                      </div>
+                      <div style={styles.historyItem}>時間：{formatDateTime(item.sentAt || item.checkedAt)}</div>
+                      <div style={styles.historyItem}>結果：{item.result || (item.sent ? "已發送" : "未發送")}</div>
+                      {Array.isArray(item.lateDetails) && item.lateDetails.length ? (
+                        <div style={styles.historyItem}>
+                          名單：
+                          {item.lateDetails.map((person, index) => {
+                            const actualText = person.status === "not_checked"
+                              ? "尚未打卡"
+                              : `打卡 ${person.actualTime || "未記錄"}`;
+                            const computedLateMinutes = calculateLateMinutesFallback(person, item.sentAt || item.checkedAt || 0);
+                            const lateText = computedLateMinutes !== null
+                              ? `遲到 ${computedLateMinutes} 分鐘`
+                              : "遲到分鐘未記錄";
+                            return (
+                              <div key={`${person.empId || person.name || index}-${index}`}>
+                                {index + 1}. {person.name || person.empId || "未命名"}｜排班 {person.startTime || "未填"}｜{actualText}｜{lateText}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : Array.isArray(item.names) && item.names.length ? (
+                        <div style={styles.historyItem}>名單：{item.names.join("、")}</div>
+                      ) : null}
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          <div style={styles.panelCard}>
+            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("lineQuery")}>
+              LINE 查詢頁 {adminPanels.lineQuery ? "－" : "＋"}
+            </button>
+            {adminPanels.lineQuery ? (
+              <div style={styles.collapseContent}>
+                {lineQueryEntries.length === 0 ? (
+                  <div style={styles.emptyText}>目前沒有 LINE 發送紀錄</div>
+                ) : (
+                  lineQueryEntries.slice(0, 14).map((item) => (
+                    <div key={item.id} style={styles.historyBlock}>
+                      <div style={styles.historyDate}>{item.type}｜{item.targetStore || item.store || item.dateKey}</div>
+                      <div style={styles.historyItem}>時間：{formatDateTime(item.sentAt || item.createdAt)}</div>
+                      <div style={styles.historyItem}>狀態：{item.pending ? "待處理" : item.sent === false ? "未發送" : "已發送"}</div>
+                      {item.lastError ? <div style={styles.errorMini}>錯誤：{item.lastError}</div> : null}
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        <div style={styles.rightCol}>
+          <div style={styles.panelCard}>
+            <div style={styles.listHeader}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={styles.panelTitle}>排班設定＋員工名單</div>
+                <div style={styles.badge}>{employees.length}</div>
+              </div>
+            </div>
+
+            <button style={styles.addEmployeeFullBtn} onClick={() => setShowAddModal(true)}>
+              ＋ 新增員工
+            </button>
+
+            <div style={styles.storeSwitchWrap}>
+              {["全部", "西螺文昌店", "斗南站前店"].map((storeName) => (
+                <button
+                  key={storeName}
+                  style={{
+                    ...styles.storeSwitchBtn,
+                    ...(adminStoreTab === storeName ? styles.storeSwitchBtnActive : {}),
+                  }}
+                  onClick={() => setAdminStoreTab(storeName)}
+                >
+                  {storeName}
+                </button>
+              ))}
+            </div>
+
+            {employees.length === 0 ? (
+              <div style={styles.emptyText}>目前沒有員工資料</div>
+            ) : (
+              employees
+                .filter((emp) => adminStoreTab === "全部" || emp.store === adminStoreTab)
+                .map((emp) => {
+                  const statusStyle = getStatusStyle(emp.status || "未打卡");
+                  const key = emp.empId || emp.id;
+                  const item = scheduleItems[key] || {
+                    working: false,
+                    startTime: "05:00",
+                    endTime: "14:00",
+                  };
+
+                  return (
+                    <div key={emp.id} style={styles.integratedEmployeeCard}>
+                      <div style={styles.integratedTopRow}>
+                        <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                          <label style={styles.scheduleCheckWrap}>
+                            <input
+                              type="checkbox"
+                              checked={!!item.working}
+                              onChange={() => toggleScheduleWorking(key)}
+                              style={{ width: 18, height: 18, cursor: "pointer" }}
+                            />
+                          </label>
+
+                          <div>
+                            <div style={styles.employeeTopRow}>
+                              <div style={styles.employeeName}>{emp.name}</div>
+                              <span
+                                style={{
+                                  ...styles.statusBadge,
+                                  background: statusStyle.background,
+                                  color: statusStyle.color,
+                                }}
+                              >
+                                {emp.status || "未打卡"}
+                              </span>
+                            </div>
+                            <div style={styles.employeeId}>
+                              工號：{emp.empId || emp.id} ・ {emp.store || "未填店名"} ・ {emp.role || "未設定"}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div style={styles.actionBtns}>
+                          <button style={styles.editBtn} onClick={() => openEdit(emp)}>
+                            編輯
+                          </button>
+                          <button style={styles.deleteBtn} onClick={() => deleteEmployee(emp)}>
+                            停用
+                          </button>
+                        </div>
+                      </div>
+
+                      <div style={styles.integratedSchedulePanel}>
+                        <div style={styles.integratedScheduleLabel}>
+                          {item.working ? "今日已排班" : "未排班"}
+                        </div>
+
+                        <div style={styles.integratedTimeRow}>
+                          <div style={{ ...styles.integratedTimeBox, opacity: item.working ? 1 : 0.45 }}>
+                            <div style={styles.integratedTimeTitle}>上班</div>
+                            <input
+                              type="time"
+                              value={item.startTime || "05:00"}
+                              onChange={(e) => setScheduleTime(key, e.target.value)}
+                              disabled={!item.working}
+                              style={styles.integratedTimeInput}
+                            />
+                          </div>
+
+                          <div style={{ ...styles.integratedTimeBox, opacity: item.working ? 1 : 0.45 }}>
+                            <div style={styles.integratedTimeTitle}>下班</div>
+                            <input
+                              type="time"
+                              value={item.endTime || "14:00"}
+                              onChange={(e) => setScheduleEndTime(key, e.target.value)}
+                              disabled={!item.working}
+                              style={styles.integratedTimeInput}
+                            />
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   );
-                })}
-              </div>
-
-              <div className="flex gap-3 mb-10 overflow-x-auto pb-4">
-                {sortedVisibleEmployees.map((emp) => (
-                  <button
-                    key={emp.id}
-                    onClick={() => setSelectedEmpId(emp.id)}
-                    className={`px-5 py-4 rounded-2xl whitespace-nowrap border-2 transition-all min-w-[140px] text-left ${
-                      selectedEmpId === emp.id
-                        ? 'border-orange-500 bg-orange-50 text-orange-700 shadow-lg shadow-orange-100'
-                        : 'border-gray-50 bg-white hover:border-gray-200 text-gray-400'
-                    }`}
-                    type="button"
-                  >
-                    <p className="text-[10px] opacity-60 font-black mb-1">
-                      {emp.shop}
-                    </p>
-                    <span className="block font-black text-lg">{emp.name}</span>
-                  </button>
-                ))}
-
-                {sortedVisibleEmployees.length === 0 && (
-                  <div className="px-5 py-4 rounded-2xl border-2 border-dashed border-gray-200 text-gray-400 font-black">
-                    此分店目前沒有夥伴
-                  </div>
-                )}
-              </div>
-
-              {selectedEmp ? (
-                <>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                    <div className="md:col-span-2 space-y-2">
-                      <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">
-                        考核項目
-                      </label>
-                      <select
-                        value={selectedItemLabel}
-                        onChange={(e) => {
-                          const label = e.target.value;
-                          setSelectedItemLabel(label);
-
-                          const allItems = [
-                            ...PERFORMANCE_ITEMS.penalty,
-                            ...PERFORMANCE_ITEMS.bonus
-                          ];
-                          const item = allItems.find((i) => i.label === label);
-                          if (item) setCustomPoints(item.val);
-                        }}
-                        className="w-full bg-gray-50 border-2 border-gray-100 px-4 py-4 rounded-2xl font-black text-gray-700 focus:border-orange-400 outline-none transition-colors appearance-none"
-                      >
-                        <option value="">請選擇考核標籤</option>
-                        <optgroup label="🔴 扣分項目 (Penalty)">
-                          {PERFORMANCE_ITEMS.penalty.map((i) => (
-                            <option key={i.label} value={i.label}>
-                              {i.label} ({i.val})
-                            </option>
-                          ))}
-                        </optgroup>
-                        <optgroup label="🟢 獎勵項目 (Bonus)">
-                          {PERFORMANCE_ITEMS.bonus.map((i) => (
-                            <option key={i.label} value={i.label}>
-                              {i.label} (+{i.val})
-                            </option>
-                          ))}
-                        </optgroup>
-                      </select>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">
-                        點數
-                      </label>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const raw = String(customPoints || '0');
-                            const normalized = raw.startsWith('-') ? raw.slice(1) || '0' : `-${raw || '0'}`;
-                            setCustomPoints(normalized);
-                          }}
-                          className="w-16 shrink-0 bg-orange-50 border-2 border-orange-200 px-4 py-4 rounded-2xl font-black text-orange-600 hover:bg-orange-100 transition-colors"
-                        >
-                          −
-                        </button>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          value={customPoints}
-                          onChange={(e) => {
-                            const value = e.target.value;
-                            if (/^-?\d*$/.test(value)) setCustomPoints(value);
-                          }}
-                          placeholder="例如 -10 或 5"
-                          className="w-full bg-gray-50 border-2 border-gray-100 px-4 py-4 rounded-2xl font-black text-gray-700 focus:border-orange-400 outline-none transition-colors"
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2 mb-6">
-                    <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">
-                      備註
-                    </label>
-                    <textarea
-                      value={note}
-                      onChange={(e) => setNote(e.target.value)}
-                      rows={3}
-                      className="w-full bg-gray-50 border-2 border-gray-100 px-4 py-4 rounded-2xl font-bold text-gray-700 focus:border-orange-400 outline-none transition-colors resize-none"
-                      placeholder="可選填當次情況說明"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-                    <button
-                      onClick={() => {
-                        if (!selectedItemLabel) {
-                          showMessage('請先選擇考核項目', 'error');
-                          return;
-                        }
-                        const scoreAmount = Number(customPoints);
-                        if (customPoints === '' || customPoints === '-' || Number.isNaN(scoreAmount)) {
-                          showMessage('請輸入正確點數，例如 -10 或 5', 'error');
-                          return;
-                        }
-                        handlePointChange(
-                          selectedEmp.id,
-                          scoreAmount,
-                          selectedItemLabel
-                        );
-                      }}
-                      className="py-4 rounded-2xl bg-gray-900 text-white font-black hover:bg-orange-600 transition-colors flex items-center justify-center gap-2"
-                      type="button"
-                    >
-                      <ArrowRight size={18} />
-                      提交評分
-                    </button>
-
-                    <button
-                      onClick={() => {
-                        setEditingEmp({ ...selectedEmp });
-                        setIsAddingNew(false);
-                      }}
-                      className="py-4 rounded-2xl bg-white border border-gray-200 text-gray-700 font-black hover:border-orange-300 hover:text-orange-600 transition-colors flex items-center justify-center gap-2"
-                      type="button"
-                    >
-                      <Edit3 size={18} />
-                      編輯夥伴
-                    </button>
-
-                    <button
-                      onClick={() => setDeletingEmpId(selectedEmp.id)}
-                      className="py-4 rounded-2xl bg-red-50 border border-red-100 text-red-600 font-black hover:bg-red-100 transition-colors flex items-center justify-center gap-2"
-                      type="button"
-                    >
-                      <Trash2 size={18} />
-                      刪除夥伴
-                    </button>
-                  </div>
-
-                  <div className="bg-gray-50 rounded-[2rem] p-6 border border-gray-100">
-                    <div className="flex items-center justify-between mb-5">
-                      <h3 className="font-black text-gray-800 flex items-center gap-2">
-                        <History size={18} className="text-gray-400" />
-                        最近評分紀錄
-                      </h3>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingEmp({
-                            name: '',
-                            birthdayId: '',
-                            shop: getStoreLabel(currentStoreId),
-                            startDate: new Date().toISOString().split('T')[0],
-                            currentPoints: DEFAULT_INITIAL_POINTS,
-                            initialPoints: DEFAULT_INITIAL_POINTS,
-                            lastYearLow: false,
-                            level: '一般夥伴',
-                            multiplier: 1,
-                            skillsPassed: 0,
-                            storeId: currentStoreId
-                          });
-                          setIsAddingNew(true);
-                        }}
-                        className="px-4 py-2 rounded-xl bg-white border border-gray-200 text-gray-700 font-black text-sm hover:border-orange-300 hover:text-orange-600 transition-colors flex items-center gap-2"
-                      >
-                        <PlusCircle size={16} />
-                        新增夥伴
-                      </button>
-                    </div>
-
-                    {managerViewLogs.length > 0 ? (
-                      <div className="space-y-3">
-                        {managerViewLogs.map((log) => (
-                          <div
-                            key={log.id}
-                            className="p-4 rounded-2xl bg-white border border-gray-100 flex items-center justify-between gap-4"
-                          >
-                            <div className="flex items-center gap-4">
-                              <div
-                                className={`w-11 h-11 rounded-2xl flex items-center justify-center font-black ${
-                                  log.amount >= 0
-                                    ? 'bg-green-100 text-green-600'
-                                    : 'bg-red-100 text-red-600'
-                                }`}
-                              >
-                                {log.amount > 0 ? '+' : ''}
-                                {log.amount}
-                              </div>
-
-                              <div>
-                                <p className="font-black text-gray-800">{log.reason}</p>
-                                <p className="text-xs text-gray-400 mt-1">
-                                  {formatDate(log.occurrenceDate)}
-                                  {log.note ? ` · ${log.note}` : ''}
-                                </p>
-                              </div>
-                            </div>
-
-                            <button
-                              onClick={() => {
-                                if (log.actionType !== 'score_change') return;
-                                handleDeleteScoreLog(log);
-                              }}
-                              className={`w-11 h-11 rounded-2xl flex items-center justify-center transition-colors ${
-                                log.actionType === 'score_change'
-                                  ? 'bg-gray-50 hover:bg-gray-100 text-gray-500'
-                                  : 'bg-gray-100 text-gray-300 cursor-not-allowed'
-                              }`}
-                              title={log.actionType === 'score_change' ? '刪除這筆加扣分並留下紀錄' : '只有原始加扣分紀錄可刪除'}
-                              type="button"
-                            >
-                              <RotateCcw size={18} />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="bg-white border border-dashed border-gray-200 rounded-2xl p-8 text-center text-gray-400 font-bold">
-                        目前沒有紀錄
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="bg-gray-50 border border-dashed border-gray-200 rounded-[2rem] p-10 text-center text-gray-400 font-bold">
-                  此分店目前尚無夥伴資料，請先新增夥伴
-                  <div className="mt-5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingEmp({
-                          name: '',
-                          birthdayId: '',
-                          shop: getStoreLabel(currentStoreId),
-                          startDate: new Date().toISOString().split('T')[0],
-                          currentPoints: DEFAULT_INITIAL_POINTS,
-                          initialPoints: DEFAULT_INITIAL_POINTS,
-                          lastYearLow: false,
-                          level: '一般夥伴',
-                          multiplier: 1,
-                          skillsPassed: 0,
-                          storeId: currentStoreId
-                        });
-                        setIsAddingNew(true);
-                      }}
-                      className="px-5 py-3 rounded-2xl bg-white border border-gray-200 text-gray-700 font-black hover:border-orange-300 hover:text-orange-600 transition-colors inline-flex items-center gap-2"
-                    >
-                      <PlusCircle size={16} />
-                      新增夥伴
-                    </button>
-                  </div>
-                </div>
-              )}
-            </section>
+                })
+            )}
           </div>
-        )}
 
-        {activeTab === 'admin' && (
-          <div className="space-y-6 animate-in slide-in-from-top-4 duration-300">
-            <section className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4 mb-6">
-                <div>
-                  <h2 className="text-xl font-black flex items-center gap-2 text-gray-800">
-                    <Lock size={22} className="text-red-600" />
-                    管理員總控中心
-                  </h2>
-                  <p className="text-xs text-gray-400 font-bold mt-1">
-                    先看整體營運狀態，需要改密碼再點右上齒輪
-                  </p>
-                </div>
+          <div style={styles.panelCard}>
+            <div style={styles.listHeader}>
+              <div style={styles.panelTitle}>打卡紀錄</div>
+              <div style={styles.badge}>最新 {records.length} 筆</div>
+            </div>
 
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setShowAdminSettings(true)}
-                    className="px-4 py-3 rounded-2xl border border-gray-200 bg-white text-gray-700 font-black hover:border-orange-300 hover:text-orange-600 transition-colors inline-flex items-center gap-2"
-                  >
-                    <Settings size={18} />
-                    管理設定
-                  </button>
+            <div style={styles.recordToolbar}>
+              <input
+                type="text"
+                placeholder="搜尋員工姓名或工號"
+                value={recordSearch}
+                onChange={(e) => setRecordSearch(e.target.value)}
+                style={styles.recordFilterInput}
+              />
+              <button style={styles.recordDangerBtn} onClick={deleteLastMonthRecords}>
+                刪除上個月打卡紀錄
+              </button>
+            </div>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingEmp({
-                        name: '',
-                        birthdayId: '',
-                        shop: '',
-                        startDate: new Date().toISOString().split('T')[0],
-                        currentPoints: DEFAULT_INITIAL_POINTS,
-                        initialPoints: DEFAULT_INITIAL_POINTS,
-                        lastYearLow: false,
-                        level: '一般夥伴',
-                        multiplier: 1,
-                        skillsPassed: 0,
-                        storeId: 'storeA'
-                      });
-                      setIsAddingNew(true);
-                    }}
-                    className="px-4 py-3 rounded-2xl bg-gray-900 text-white font-black hover:bg-orange-600 transition-colors inline-flex items-center gap-2"
-                  >
-                    <PlusCircle size={18} />
-                    新增員工
-                  </button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 xl:grid-cols-6 gap-3">
-                <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
-                  <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">全部員工</p>
-                  <p className="text-2xl font-black mt-2 text-gray-800">{adminOverview.total}</p>
-                </div>
-                <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
-                  <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">有警示</p>
-                  <p className="text-2xl font-black mt-2 text-orange-600">{adminOverview.warning}</p>
-                </div>
-                <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
-                  <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">遲到風險</p>
-                  <p className="text-2xl font-black mt-2 text-yellow-600">{adminOverview.lateRisk}</p>
-                </div>
-                <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
-                  <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">高風險</p>
-                  <p className="text-2xl font-black mt-2 text-red-600">{adminOverview.highRisk}</p>
-                </div>
-                <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
-                  <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">{getStoreLabel('storeA')}</p>
-                  <p className="text-2xl font-black mt-2 text-orange-600">{adminStoreStats.storeA}</p>
-                </div>
-                <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
-                  <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">{getStoreLabel('storeB')}</p>
-                  <p className="text-2xl font-black mt-2 text-orange-600">{adminStoreStats.storeB}</p>
-                </div>
-              </div>
-            </section>
-
-            <section className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-              <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 mb-5">
-                <div>
-                  <h3 className="text-lg font-black text-gray-800">員工全覽儀表板</h3>
-                  <p className="text-xs text-gray-400 font-bold mt-1">
-                    年資、去年分數、今年分數、年度等級、當月風險與年終預估一次看完
-                  </p>
-                </div>
-
-                <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-3 w-full xl:w-auto">
-                  <input
-                    type="text"
-                    value={adminSearch}
-                    onChange={(e) => setAdminSearch(e.target.value)}
-                    placeholder="搜尋姓名 / 分店 / 職級"
-                    className="px-4 py-3 bg-gray-50 border border-gray-200 rounded-2xl outline-none focus:border-orange-500 font-bold"
-                  />
-
-                  <select
-                    value={adminStoreFilter}
-                    onChange={(e) => setAdminStoreFilter(e.target.value)}
-                    className="px-4 py-3 bg-gray-50 border border-gray-200 rounded-2xl outline-none focus:border-orange-500 font-bold"
-                  >
-                    <option value="all">全部分店</option>
-                    <option value="storeA">{getStoreLabel('storeA')}</option>
-                    <option value="storeB">{getStoreLabel('storeB')}</option>
-                  </select>
-
-                  <select
-                    value={adminStatusFilter}
-                    onChange={(e) => setAdminStatusFilter(e.target.value)}
-                    className="px-4 py-3 bg-gray-50 border border-gray-200 rounded-2xl outline-none focus:border-orange-500 font-bold"
-                  >
-                    <option value="all">全部年度結果</option>
-                    <option value="A">A 合格</option>
-                    <option value="B">B 警示</option>
-                    <option value="C">C 重罰</option>
-                    <option value="D">D 淘汰</option>
-                  </select>
-
-                  <button
-                    type="button"
-                    onClick={exportEmployeesToExcel}
-                    className="px-4 py-3 rounded-2xl bg-gray-900 text-white font-black hover:bg-orange-600 transition-colors inline-flex items-center justify-center gap-2"
-                  >
-                    <Save size={16} />
-                    快速匯出 Excel
-                  </button>
-                </div>
-              </div>
-
-              <div className="grid md:grid-cols-4 gap-3 mb-5">
-                <div className="bg-green-50 rounded-2xl p-4 border border-green-100">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-green-600">A 合格</p>
-                  <p className="text-2xl font-black mt-2 text-green-700">{adminOverview.statusA}</p>
-                </div>
-                <div className="bg-yellow-50 rounded-2xl p-4 border border-yellow-100">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-yellow-600">B 警示</p>
-                  <p className="text-2xl font-black mt-2 text-yellow-700">{adminOverview.statusB}</p>
-                </div>
-                <div className="bg-red-50 rounded-2xl p-4 border border-red-100">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-red-600">C 重罰</p>
-                  <p className="text-2xl font-black mt-2 text-red-700">{adminOverview.statusC}</p>
-                </div>
-                <div className="bg-gray-100 rounded-2xl p-4 border border-gray-200">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-600">D 淘汰</p>
-                  <p className="text-2xl font-black mt-2 text-gray-800">{adminOverview.statusD}</p>
-                </div>
-              </div>
-
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[1180px]">
-                  <thead>
-                    <tr className="text-left text-[11px] uppercase tracking-widest text-gray-400">
-                      <th className="pb-3 pr-4">員工</th>
-                      <th className="pb-3 pr-4">分店 / 職級</th>
-                      <th className="pb-3 pr-4">年資</th>
-                      <th className="pb-3 pr-4">去年</th>
-                      <th className="pb-3 pr-4">今年</th>
-                      <th className="pb-3 pr-4">年度結果</th>
-                      <th className="pb-3 pr-4">本月風險</th>
-                      <th className="pb-3 pr-4">年終預估</th>
-                      <th className="pb-3 text-right">操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {adminEmployeeRows.length > 0 ? (
-                      adminEmployeeRows.map((emp) => (
-                        <tr key={emp.id} className="border-t border-gray-100 align-top">
-                          <td className="py-4 pr-4">
-                            <div className="font-black text-gray-800">{emp.name}</div>
-                            <div className="text-xs text-gray-400 font-bold mt-1">
-                              已過關卡 {emp.skillsPassed || 0} / 倍率 {emp.multiplier || 1}
-                            </div>
-                          </td>
-                          <td className="py-4 pr-4">
-                            <div className="font-black text-gray-700">{getStoreLabel(emp.storeId)}</div>
-                            <div className="text-xs text-gray-400 font-bold mt-1">{emp.level || '未設定職級'}</div>
-                          </td>
-                          <td className="py-4 pr-4 font-black text-gray-700">{emp.seniority.text}</td>
-                          <td className="py-4 pr-4 font-black text-gray-700">{emp.assessment.lastYearPoints}</td>
-                          <td className="py-4 pr-4 font-black text-gray-800">{emp.assessment.thisYearPoints}</td>
-                          <td className="py-4 pr-4">
-                            <span className={`inline-flex px-3 py-1 rounded-full text-xs font-black ${emp.assessment.result.bg}`}>
-                              {emp.assessment.result.status}
-                            </span>
-                            <div className="text-xs text-gray-400 font-bold mt-2">{emp.assessment.result.desc}</div>
-                          </td>
-                          <td className="py-4 pr-4">
-                            <div className="flex flex-wrap gap-2">
-                              {emp.warnings.length > 0 ? (
-                                emp.warnings.slice(0, 3).map((warning) => (
-                                  <span
-                                    key={warning.key}
-                                    className={`px-2.5 py-1 rounded-full border text-[11px] font-black ${getWarningBadgeClass(warning.level)}`}
-                                  >
-                                    {warning.label}
-                                  </span>
-                                ))
-                              ) : (
-                                <span className="px-2.5 py-1 rounded-full border text-[11px] font-black bg-green-50 text-green-700 border-green-100">
-                                  狀態穩定
-                                </span>
-                              )}
-                            </div>
-                            <div className="text-xs text-gray-400 font-bold mt-2">
-                              遲到 {emp.monthlyStats.lateCount} / 重大失誤 {emp.monthlyStats.majorMistakeCount} / 負向 {emp.monthlyStats.totalPenaltyCount}
-                            </div>
-                          </td>
-                          <td className="py-4 pr-4 font-black text-gray-800">
-                            {emp.finalPay > 0 ? `${emp.finalPay} 元` : '0 元'}
-                          </td>
-                          <td className="py-4 text-right">
-                            <div className="flex justify-end gap-2">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setEditingEmp({
-                                    ...emp,
-                                    currentPoints: emp.assessment.thisYearPoints
-                                  })
-                                }
-                                className="px-3 h-10 rounded-2xl bg-gray-50 hover:bg-gray-100 inline-flex items-center justify-center gap-2 text-gray-700 font-black transition-colors"
-                              >
-                                <Edit3 size={16} />
-                                編輯
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setDeletingEmpId(emp.id)}
-                                className="w-10 h-10 rounded-2xl bg-red-50 hover:bg-red-100 flex items-center justify-center text-red-600 transition-colors"
-                              >
-                                <Trash2 size={16} />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={9} className="py-10 text-center text-gray-400 font-bold">
-                          目前沒有符合條件的員工資料
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-
-            <section className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-5">
-                <div>
-                  <h3 className="font-black text-gray-800 flex items-center gap-2">
-                    <Clock3 size={18} className="text-orange-500" />
-                    忘打卡申請審核
-                  </h3>
-                  <p className="text-xs text-gray-400 font-bold mt-1">
-                    管理員可查看員工忘打卡日期時間、原因，並直接批准、退回或刪除申請
-                  </p>
-                </div>
-                <span className="text-[10px] text-gray-300 font-black uppercase tracking-widest">
-                  待審核 {pendingMissedClockRequests.length} 筆
-                </span>
-              </div>
-
-              {pendingMissedClockRequests.length > 0 ? (
-                <div className="space-y-3 mb-6">
-                  {pendingMissedClockRequests.map((log) => (
-                    <div
-                      key={`pending-${log.id}`}
-                      className="p-4 rounded-2xl bg-orange-50 border border-orange-100 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4"
-                    >
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="font-black text-gray-800">{log.name || '未指定員工'}</p>
-                          <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest bg-white border border-orange-200 text-orange-600">
-                            {getStoreLabel(log.storeId)}
-                          </span>
-                          <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest bg-yellow-100 text-yellow-700">
-                            待審核
-                          </span>
-                        </div>
-                        <p className="text-sm font-black text-gray-700 mt-2">
-                          忘打卡時間：{log.requestDate || log.occurrenceDate || '-'} {log.requestTime || ''}
-                        </p>
-                        <p className="text-sm text-gray-600 font-bold mt-2 leading-6">原因：{log.note || '未填寫'}</p>
-                        <p className="text-xs text-gray-400 font-bold mt-2">申請時間：{formatDateTime(log.timestamp)}</p>
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-3 xl:w-[390px]">
-                        <button
-                          type="button"
-                          onClick={() => handleMissedClockReview(log, 'approved')}
-                          className="py-3 rounded-2xl bg-green-600 text-white font-black hover:bg-green-700 transition-colors flex items-center justify-center gap-2"
-                        >
-                          <CheckCircle2 size={18} />
-                          批准
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleMissedClockReview(log, 'rejected')}
-                          className="py-3 rounded-2xl bg-red-600 text-white font-black hover:bg-red-700 transition-colors"
-                        >
-                          退回
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteMissedClockRequest(log)}
-                          className="py-3 rounded-2xl bg-gray-900 text-white font-black hover:bg-black transition-colors flex items-center justify-center gap-2"
-                        >
-                          <Trash2 size={16} />
-                          刪除
-                        </button>
-                      </div>
+            {adminFilteredRecords.length === 0 ? (
+              <div style={styles.emptyText}>目前沒有符合條件的打卡紀錄</div>
+            ) : (
+              adminFilteredRecords.map((r) => (
+                <div key={r.id} style={styles.recordAdminRow}>
+                  <div>
+                    <div style={styles.employeeName}>{r.name}</div>
+                    <div style={styles.employeeId}>
+                      {r.empId} ・ {r.store || "未填店名"} ・ {r.role || "未設定"} ・ {r.date}
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="bg-gray-50 border border-dashed border-gray-200 rounded-2xl p-8 text-center text-gray-400 font-bold mb-6">
-                  目前沒有待審核的忘打卡申請
-                </div>
-              )}
-
-              <div>
-                <div className="flex items-center justify-between gap-3 mb-4">
-                  <h4 className="font-black text-gray-800">最近已審核申請</h4>
-                  <span className="text-[10px] text-gray-300 font-black uppercase tracking-widest">最新 {reviewedMissedClockRequests.length} 筆</span>
-                </div>
-
-                {reviewedMissedClockRequests.length > 0 ? (
-                  <div className="space-y-3">
-                    {reviewedMissedClockRequests.map((log) => (
-                      <div
-                        key={`reviewed-${log.id}`}
-                        className="p-4 rounded-2xl bg-gray-50 border border-gray-100"
-                      >
-                        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="font-black text-gray-800">{log.name || '未指定員工'}</p>
-                              <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest bg-white border border-gray-200 text-gray-500">
-                                {getStoreLabel(log.storeId)}
-                              </span>
-                              <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${
-                                log.requestStatus === 'approved'
-                                  ? 'bg-green-100 text-green-700'
-                                  : 'bg-red-100 text-red-700'
-                              }`}>
-                                {log.requestStatus === 'approved' ? '已批准' : '已退回'}
-                              </span>
-                            </div>
-                            <p className="text-sm font-black text-gray-700 mt-2">
-                              忘打卡時間：{log.requestDate || log.occurrenceDate || '-'} {log.requestTime || ''}
-                            </p>
-                            <p className="text-sm text-gray-600 font-bold mt-2 leading-6">原因：{log.note || '未填寫'}</p>
-                          </div>
-
-                          <div className="flex items-center gap-3">
-                            <div className="text-xs text-gray-400 font-bold leading-6 text-right">
-                              <div>申請：{formatDateTime(log.timestamp)}</div>
-                              <div>審核：{formatDateTime(log.reviewedAt)}</div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteMissedClockRequest(log)}
-                              className="px-4 py-3 rounded-2xl bg-gray-900 text-white font-black hover:bg-black transition-colors flex items-center justify-center gap-2"
-                            >
-                              <Trash2 size={16} />
-                              刪除
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
                   </div>
-                ) : (
-                  <div className="bg-gray-50 border border-dashed border-gray-200 rounded-2xl p-6 text-center text-gray-400 font-bold">
-                    目前尚無已審核申請
-                  </div>
-                )}
-              </div>
-            </section>
-
-            <section className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-              <div className="flex items-center justify-between gap-3 mb-5">
-                <div>
-                  <h3 className="font-black text-gray-800 flex items-center gap-2">
-                    <History size={18} className="text-red-500" />
-                    兩位店長操作歷程
-                  </h3>
-                  <p className="text-xs text-gray-400 font-bold mt-1">
-                    管理員可直接查看兩間店店長的所有加扣分操作紀錄
-                  </p>
-                </div>
-                <span className="text-[10px] text-gray-300 font-black uppercase tracking-widest">
-                  最新 {adminManagerLogs.length} 筆
-                </span>
-              </div>
-
-              {adminManagerLogs.length > 0 ? (
-                <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
-                  {adminManagerLogs.map((log) => (
-                    <div
-                      key={log.id}
-                      className="p-4 rounded-2xl bg-gray-50 border border-gray-100 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4"
-                    >
-                      <div className="flex items-start gap-4">
-                        <div
-                          className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black shrink-0 ${
-                            Number(log.amount) >= 0
-                              ? 'bg-green-100 text-green-600'
-                              : 'bg-red-100 text-red-600'
-                          }`}
-                        >
-                          {Number(log.amount) > 0 ? '+' : ''}
-                          {Number(log.amount) || 0}
-                        </div>
-
-                        <div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="font-black text-gray-800">
-                              {log.operator || '店長'} → {log.name || '未指定員工'}
-                            </p>
-                            <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest bg-white border border-gray-200 text-gray-500">
-                              {log.operatorStoreLabel || getStoreLabel(log.operatorStoreId || log.storeId)}
-                            </span>
-                            <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest bg-white border border-gray-200 text-gray-500">
-                              {getStoreLabel(log.storeId)}
-                            </span>
-                          </div>
-
-                          <p className="text-sm font-black text-gray-700 mt-2">
-                            {log.reason || '未填寫原因'}
-                          </p>
-
-                          <p className="text-xs text-gray-400 font-bold mt-1 leading-6">
-                            發生日：{formatDate(log.occurrenceDate)}　
-                            建立時間：{formatDate(log.timestamp)}　
-                            {log.note ? `備註：${log.note}` : '無備註'}
-                          </p>
-                        </div>
-                      </div>
+                  <div style={styles.recordAdminActions}>
+                    <div style={styles.recordAdminRight}>
+                      <div style={styles.recordTypeBadge}>{r.type}</div>
+                      <div style={styles.recordTime}>{r.time}</div>
                     </div>
-                  ))}
+                    <button style={styles.editBtn} onClick={() => openRecordEdit(r)}>
+                      修改
+                    </button>
+                    <button style={styles.deleteBtn} onClick={() => deleteRecord(r)}>
+                      刪除
+                    </button>
+                  </div>
                 </div>
-              ) : (
-                <div className="bg-gray-50 border border-dashed border-gray-200 rounded-2xl p-8 text-center text-gray-400 font-bold">
-                  目前尚無店長操作歷程
-                </div>
-              )}
-            </section>
-
-            <section className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-              <h3 className="font-black text-gray-800 mb-4">正式上線前檢查重點</h3>
-              <div className="grid md:grid-cols-2 gap-4 text-sm font-bold text-gray-600">
-                <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100 leading-7">
-                  <div>1. firebase.js 要使用你正式專案的設定值。</div>
-                  <div>2. Firestore 規則要允許登入後讀寫 stores 與 settings。</div>
-                  <div>3. GitHub Pages 若空白，多半是環境變數、路由或 base path 問題。</div>
-                </div>
-                <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100 leading-7">
-                  <div>4. 這版已把新增 / 編輯 / 刪除 / 加扣分都補上錯誤提示。</div>
-                  <div>5. 管理設定已收進齒輪，不會擠在主畫面。</div>
-                  <div>6. 管理員首頁直接看全員狀態，也能追蹤兩位店長操作歷程。</div>
-                </div>
-              </div>
-            </section>
+              ))
+            )}
           </div>
-        )}
-      </main>
+        </div>
+      </div>
     </div>
   );
-};
+}
 
-export default App;
+const styles = {
+  loadingPage: {
+    minHeight: "100vh",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background:
+      "linear-gradient(135deg, #0f172a 0%, #1e3a8a 45%, #60a5fa 100%)",
+    padding: 24,
+    fontFamily:
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  },
+  loadingCard: {
+    background: "rgba(255,255,255,0.95)",
+    borderRadius: 28,
+    padding: 32,
+    boxShadow: "0 20px 60px rgba(15,23,42,0.22)",
+    minWidth: 280,
+    textAlign: "center",
+  },
+  loadingTitle: {
+    fontSize: 28,
+    fontWeight: 900,
+    color: "#0f172a",
+    marginBottom: 10,
+  },
+  loadingText: {
+    color: "#475569",
+    fontWeight: 700,
+  },
+  errorText: {
+    marginTop: 14,
+    padding: "12px 14px",
+    borderRadius: 14,
+    background: "#fef2f2",
+    color: "#b91c1c",
+    border: "1px solid #fecaca",
+    fontSize: 14,
+    fontWeight: 700,
+    lineHeight: 1.6,
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+  },
+  retryBtn: {
+    marginTop: 14,
+    border: "none",
+    background: "#2563eb",
+    color: "#fff",
+    padding: "12px 18px",
+    borderRadius: 14,
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  page: {
+    minHeight: "100vh",
+    background:
+      "linear-gradient(135deg, #0f172a 0%, #1e3a8a 45%, #60a5fa 100%)",
+    position: "relative",
+    overflow: "hidden",
+    fontFamily:
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  },
+  overlay: {
+    position: "absolute",
+    inset: 0,
+    background:
+      "radial-gradient(circle at top left, rgba(255,255,255,0.18), transparent 28%), radial-gradient(circle at bottom right, rgba(255,255,255,0.12), transparent 24%)",
+  },
+  topRightBar: {
+    position: "relative",
+    zIndex: 2,
+    display: "flex",
+    justifyContent: "flex-end",
+    padding: "20px 20px 0",
+  },
+  adminTopBtn: {
+    border: "1px solid rgba(255,255,255,0.25)",
+    background: "rgba(255,255,255,0.12)",
+    color: "#fff",
+    padding: "12px 18px",
+    borderRadius: 999,
+    fontWeight: 900,
+    cursor: "pointer",
+    backdropFilter: "blur(10px)",
+  },
+  modalOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.45)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 30,
+    padding: 20,
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 420,
+    background: "#fff",
+    borderRadius: 24,
+    padding: 24,
+    boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+  },
+  modalTitle: {
+    fontSize: 24,
+    fontWeight: 900,
+    color: "#0f172a",
+    marginBottom: 16,
+    textAlign: "center",
+  },
+  modalInput: {
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "14px 16px",
+    borderRadius: 14,
+    border: "1px solid #cbd5e1",
+    outline: "none",
+    fontSize: 16,
+    marginBottom: 14,
+    background: "#fff",
+  },
+  modalActions: {
+    display: "flex",
+    gap: 10,
+  },
+  modalCancelBtn: {
+    flex: 1,
+    border: "none",
+    background: "#e2e8f0",
+    color: "#334155",
+    padding: "12px 16px",
+    borderRadius: 14,
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  modalLoginBtn: {
+    flex: 1,
+    border: "none",
+    background: "#2563eb",
+    color: "#fff",
+    padding: "12px 16px",
+    borderRadius: 14,
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  mainWrap: {
+    position: "relative",
+    zIndex: 1,
+    maxWidth: 1100,
+    margin: "0 auto",
+    padding: "10px 18px 40px",
+  },
+  brandBar: {
+    display: "flex",
+    alignItems: "center",
+    gap: 14,
+    color: "#fff",
+    marginBottom: 24,
+  },
+  brandDot: {
+    width: 16,
+    height: 16,
+    borderRadius: "50%",
+    background: "#93c5fd",
+    boxShadow: "0 0 20px rgba(147,197,253,0.9)",
+  },
+  brandTitle: {
+    fontSize: 24,
+    fontWeight: 800,
+    letterSpacing: 0.5,
+  },
+  brandSub: {
+    fontSize: 13,
+    opacity: 0.85,
+  },
+  kioskCard: {
+    background: "rgba(255,255,255,0.95)",
+    backdropFilter: "blur(12px)",
+    borderRadius: 32,
+    padding: 28,
+    boxShadow: "0 20px 60px rgba(15,23,42,0.22)",
+    marginBottom: 20,
+  },
+  kioskHeader: {
+    textAlign: "center",
+    marginBottom: 24,
+  },
+  kioskTitle: {
+    fontSize: 34,
+    margin: 0,
+    color: "#0f172a",
+    fontWeight: 900,
+  },
+  kioskDesc: {
+    marginTop: 8,
+    color: "#64748b",
+    fontSize: 14,
+    fontWeight: 600,
+  },
+  timeBox: {
+    textAlign: "center",
+    fontSize: 22,
+    fontWeight: 900,
+    color: "#0f172a",
+    marginBottom: 16,
+    background: "#eff6ff",
+    border: "1px solid #bfdbfe",
+    padding: "12px 14px",
+    borderRadius: 16,
+  },
+  warningBox: {
+    background: "#fff7ed",
+    color: "#c2410c",
+    border: "1px solid #fdba74",
+    padding: 14,
+    borderRadius: 16,
+    marginBottom: 18,
+    fontWeight: 700,
+    textAlign: "center",
+  },
+  bigInput: {
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "22px 20px",
+    borderRadius: 22,
+    border: "2px solid #dbeafe",
+    background: "#f8fafc",
+    fontSize: 30,
+    fontWeight: 800,
+    textAlign: "center",
+    outline: "none",
+    marginBottom: 18,
+  },
+  btnGridFour: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 14,
+  },
+  actionBtn: {
+    padding: "22px 12px",
+    borderRadius: 22,
+    border: "none",
+    cursor: "pointer",
+    color: "#fff",
+    fontSize: 22,
+    fontWeight: 900,
+    boxShadow: "0 14px 28px rgba(0,0,0,0.12)",
+  },
+  primaryBtn: {
+    background: "linear-gradient(135deg, #2563eb, #3b82f6)",
+  },
+  darkBtn: {
+    background: "linear-gradient(135deg, #0f172a, #334155)",
+  },
+  orangeBtn: {
+    background: "linear-gradient(135deg, #f59e0b, #f97316)",
+  },
+  greenBtn: {
+    background: "linear-gradient(135deg, #10b981, #22c55e)",
+  },
+  liveStatusCard: {
+    background: "rgba(255,255,255,0.95)",
+    backdropFilter: "blur(12px)",
+    borderRadius: 28,
+    padding: 22,
+    boxShadow: "0 20px 60px rgba(15,23,42,0.16)",
+    marginBottom: 20,
+  },
+  liveStatusRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    padding: "14px 16px",
+    borderRadius: 18,
+    border: "1px solid #e2e8f0",
+    marginBottom: 12,
+    flexWrap: "wrap",
+  },
+  liveStatusLeft: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+  },
+  statusDot: {
+    width: 16,
+    height: 16,
+    borderRadius: "50%",
+    flexShrink: 0,
+  },
+  recentCard: {
+    background: "rgba(255,255,255,0.95)",
+    backdropFilter: "blur(12px)",
+    borderRadius: 28,
+    padding: 22,
+    boxShadow: "0 20px 60px rgba(15,23,42,0.16)",
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 900,
+    color: "#0f172a",
+    marginBottom: 14,
+  },
+  recordRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "14px 0",
+    borderBottom: "1px solid #eef2f7",
+    gap: 12,
+  },
+  recordName: {
+    fontSize: 16,
+    fontWeight: 800,
+    color: "#0f172a",
+  },
+  recordMeta: {
+    marginTop: 4,
+    fontSize: 12,
+    color: "#64748b",
+  },
+  recordRight: {
+    textAlign: "right",
+  },
+  recordType: {
+    fontSize: 13,
+    fontWeight: 800,
+    color: "#2563eb",
+  },
+  recordTime: {
+    marginTop: 4,
+    fontSize: 13,
+    color: "#475569",
+    fontWeight: 700,
+  },
+  adminPage: {
+    minHeight: "100vh",
+    background: "#f8fafc",
+    padding: 24,
+    fontFamily:
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  },
+  adminHeader: {
+    maxWidth: 1200,
+    margin: "0 auto 20px",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 16,
+    flexWrap: "wrap",
+  },
+  adminTitle: {
+    fontSize: 32,
+    fontWeight: 900,
+    color: "#0f172a",
+  },
+  adminSub: {
+    marginTop: 4,
+    color: "#64748b",
+    fontWeight: 600,
+  },
+  logoutBtn: {
+    border: "none",
+    background: "#0f172a",
+    color: "#fff",
+    padding: "12px 18px",
+    borderRadius: 14,
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  adminGrid: {
+    maxWidth: 1200,
+    margin: "0 auto",
+    display: "grid",
+    gridTemplateColumns: "320px 1fr",
+    gap: 20,
+  },
+  leftCol: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 20,
+  },
+  rightCol: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 20,
+  },
+  panelCard: {
+    background: "#fff",
+    borderRadius: 24,
+    padding: 20,
+    boxShadow: "0 12px 30px rgba(15,23,42,0.06)",
+    border: "1px solid #e2e8f0",
+  },
+  panelTitle: {
+    fontSize: 18,
+    fontWeight: 900,
+    color: "#0f172a",
+    marginBottom: 14,
+  },
+  fullMainBtn: {
+    width: "100%",
+    border: "none",
+    background: "linear-gradient(135deg, #2563eb, #3b82f6)",
+    color: "#fff",
+    padding: "14px 16px",
+    borderRadius: 14,
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  fullDarkBtn: {
+    width: "100%",
+    border: "none",
+    background: "#0f172a",
+    color: "#fff",
+    padding: "14px 16px",
+    borderRadius: 14,
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  fullGreenBtn: {
+    width: "100%",
+    border: "none",
+    background: "#059669",
+    color: "#fff",
+    padding: "14px 16px",
+    borderRadius: 14,
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  fullOrangeBtn: {
+    width: "100%",
+    border: "none",
+    background: "#ea580c",
+    color: "#fff",
+    padding: "14px 16px",
+    borderRadius: 14,
+    fontWeight: 900,
+    cursor: "pointer",
+    marginTop: 12,
+  },
+  collapseBtn: {
+    width: "100%",
+    border: "1px solid #dbeafe",
+    background: "#eff6ff",
+    color: "#1d4ed8",
+    padding: "14px 16px",
+    borderRadius: 14,
+    fontWeight: 900,
+    cursor: "pointer",
+    textAlign: "left",
+  },
+  collapseContent: {
+    marginTop: 12,
+    display: "grid",
+    gap: 10,
+  },
+  historyBlock: {
+    border: "1px solid #e5e7eb",
+    borderRadius: 14,
+    padding: 12,
+    background: "#fafafa",
+  },
+  historyDate: {
+    fontSize: 14,
+    fontWeight: 800,
+    color: "#111827",
+    marginBottom: 6,
+  },
+  historyItem: {
+    fontSize: 13,
+    color: "#4b5563",
+    lineHeight: 1.7,
+  },
+  errorMini: {
+    marginTop: 6,
+    fontSize: 12,
+    color: "#b91c1c",
+    background: "#fee2e2",
+    borderRadius: 10,
+    padding: "8px 10px",
+  },
+  monthInput: {
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "12px 14px",
+    borderRadius: 14,
+    border: "1px solid #cbd5e1",
+    fontSize: 15,
+    outline: "none",
+    background: "#fff",
+  },
+  exportDivider: {
+    height: 1,
+    background: "#e2e8f0",
+    margin: "16px 0",
+  },
+  deviceBox: {
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 10,
+  },
+  deviceLabel: {
+    fontSize: 12,
+    color: "#64748b",
+    fontWeight: 700,
+    marginBottom: 6,
+  },
+  deviceId: {
+    fontSize: 14,
+    color: "#0f172a",
+    fontWeight: 800,
+    wordBreak: "break-all",
+  },
+  listHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+    gap: 8,
+    flexWrap: "wrap",
+  },
+
+  storeSwitchWrap: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 10,
+    marginBottom: 14,
+  },
+  storeSwitchBtn: {
+    padding: "10px 16px",
+    borderRadius: 999,
+    border: "none",
+    background: "#f1f5f9",
+    color: "#475569",
+    fontWeight: 800,
+    fontSize: 14,
+    cursor: "pointer",
+    boxShadow: "inset 0 0 0 1px #e2e8f0",
+    transition: "all 0.2s ease",
+  },
+  storeSwitchBtnActive: {
+    background: "linear-gradient(135deg, #60a5fa, #3b82f6)",
+    color: "#fff",
+    boxShadow: "0 10px 24px rgba(59,130,246,0.28)",
+  },
+  addEmployeeFullBtn: {
+    width: "100%",
+    border: "none",
+    background: "linear-gradient(135deg, #10b981, #22c55e)",
+    color: "#fff",
+    padding: "12px 16px",
+    borderRadius: 16,
+    fontWeight: 900,
+    cursor: "pointer",
+    fontSize: 15,
+    boxShadow: "0 12px 24px rgba(34,197,94,0.22)",
+    transition: "all 0.2s ease",
+    marginBottom: 14,
+  },
+  integratedEmployeeCard: {
+    border: "1px solid #e5e7eb",
+    borderRadius: 22,
+    padding: 18,
+    background: "linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)",
+    boxShadow: "0 10px 24px rgba(15,23,42,0.04)",
+    marginBottom: 14,
+  },
+  integratedTopRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  scheduleCheckWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    background: "#ecfdf5",
+    border: "1px solid #bbf7d0",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 2,
+    flexShrink: 0,
+  },
+  integratedSchedulePanel: {
+    marginTop: 14,
+    padding: 14,
+    borderRadius: 18,
+    background: "#ffffff",
+    border: "1px solid #e2e8f0",
+  },
+  integratedScheduleLabel: {
+    fontSize: 13,
+    fontWeight: 800,
+    color: "#475569",
+    marginBottom: 10,
+  },
+  integratedTimeRow: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gap: 12,
+  },
+  integratedTimeBox: {
+    borderRadius: 16,
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+    padding: 12,
+  },
+  integratedTimeTitle: {
+    fontSize: 12,
+    fontWeight: 800,
+    color: "#64748b",
+    marginBottom: 6,
+  },
+  integratedTimeInput: {
+    width: "100%",
+    border: "none",
+    outline: "none",
+    background: "transparent",
+    fontSize: 24,
+    fontWeight: 900,
+    color: "#0f172a",
+    letterSpacing: 1,
+  },
+  badge: {
+    minWidth: 32,
+    height: 32,
+    borderRadius: 999,
+    background: "#dbeafe",
+    color: "#1d4ed8",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontWeight: 900,
+    fontSize: 13,
+    padding: "0 8px",
+  },
+  employeeRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "14px 0",
+    borderBottom: "1px solid #eef2f7",
+    gap: 12,
+  },
+  employeeTopRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+  employeeName: {
+    fontSize: 16,
+    fontWeight: 800,
+    color: "#0f172a",
+  },
+  employeeId: {
+    marginTop: 4,
+    fontSize: 12,
+    color: "#64748b",
+    fontWeight: 600,
+  },
+  statusBadge: {
+    display: "inline-block",
+    padding: "6px 10px",
+    borderRadius: 999,
+    fontSize: 12,
+    fontWeight: 900,
+  },
+  actionBtns: {
+    display: "flex",
+    gap: 8,
+    flexShrink: 0,
+  },
+  editBtn: {
+    border: "none",
+    background: "#dbeafe",
+    color: "#1d4ed8",
+    padding: "10px 14px",
+    borderRadius: 12,
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  deleteBtn: {
+    border: "none",
+    background: "#fee2e2",
+    color: "#dc2626",
+    padding: "10px 14px",
+    borderRadius: 12,
+    fontWeight: 800,
+    cursor: "pointer",
+    flexShrink: 0,
+  },
+  recordToolbar: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gap: 10,
+    marginBottom: 14,
+  },
+  recordFilterInput: {
+    width: "100%",
+    borderRadius: 12,
+    border: "1px solid #d1d5db",
+    padding: "12px 14px",
+    fontSize: 14,
+    outline: "none",
+    background: "#fff",
+  },
+  recordDangerBtn: {
+    border: "none",
+    borderRadius: 10,
+    background: "#fee2e2",
+    color: "#b91c1c",
+    fontWeight: 800,
+    fontSize: 12,
+    padding: "8px 12px",
+    cursor: "pointer",
+    boxShadow: "inset 0 0 0 1px #fecaca",
+    justifySelf: "start",
+    width: "fit-content",
+  },
+  recordAdminRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "14px 0",
+    borderBottom: "1px solid #eef2f7",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  recordAdminActions: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  recordAdminRight: {
+    textAlign: "right",
+    flexShrink: 0,
+    minWidth: 90,
+  },
+  recordTypeBadge: {
+    display: "inline-block",
+    background: "#e0f2fe",
+    color: "#0369a1",
+    padding: "6px 10px",
+    borderRadius: 999,
+    fontSize: 12,
+    fontWeight: 900,
+  },
+  emptyText: {
+    color: "#94a3b8",
+    padding: "12px 0",
+    fontWeight: 700,
+  },
+  storeLabel: {
+    fontSize: 13,
+    fontWeight: 800,
+    color: "#475569",
+    marginTop: 12,
+    marginBottom: 6,
+    paddingBottom: 4,
+    borderBottom: "1px solid #e2e8f0",
+  },
+  scheduleRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "7px 0",
+    borderBottom: "1px solid #f1f5f9",
+  },
+  scheduleEmpName: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: 700,
+    color: "#0f172a",
+  },
+  timeInput: {
+    padding: "6px 8px",
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    fontSize: 14,
+    fontWeight: 700,
+    outline: "none",
+    background: "#fff",
+    width: 108,
+  },
+  scheduleEntryBtn: {
+    marginTop: 14,
+    border: "1px solid rgba(255,255,255,0.28)",
+    background: "linear-gradient(135deg, #0ea5e9, #2563eb)",
+    color: "#fff",
+    padding: "12px 18px",
+    borderRadius: 999,
+    fontWeight: 900,
+    cursor: "pointer",
+    boxShadow: "0 10px 24px rgba(37,99,235,0.25)",
+  },
+  schedulePublicCard: {
+    background: "rgba(255,255,255,0.96)",
+    borderRadius: 28,
+    padding: 24,
+    boxShadow: "0 20px 60px rgba(15,23,42,0.18)",
+    border: "1px solid rgba(255,255,255,0.65)",
+  },
+  schedulePublicHeader: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 14,
+    marginBottom: 18,
+  },
+  backBtn: {
+    border: "none",
+    background: "#0f172a",
+    color: "#fff",
+    padding: "12px 16px",
+    borderRadius: 999,
+    fontWeight: 900,
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  },
+  scheduleFilterGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gap: 12,
+    marginBottom: 16,
+  },
+  filterLabel: {
+    fontSize: 13,
+    fontWeight: 900,
+    color: "#334155",
+    marginBottom: 6,
+  },
+  scheduleInput: {
+    width: "100%",
+    boxSizing: "border-box",
+    border: "1px solid #cbd5e1",
+    borderRadius: 14,
+    padding: "13px 14px",
+    fontSize: 15,
+    outline: "none",
+    background: "#fff",
+  },
+  scheduleSummaryBar: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 10,
+    background: "#eff6ff",
+    color: "#1d4ed8",
+    border: "1px solid #bfdbfe",
+    borderRadius: 16,
+    padding: "12px 14px",
+    fontWeight: 900,
+    marginBottom: 16,
+  },
+  emptyScheduleBox: {
+    border: "1px dashed #cbd5e1",
+    background: "#f8fafc",
+    color: "#64748b",
+    borderRadius: 18,
+    padding: 28,
+    textAlign: "center",
+    fontWeight: 800,
+  },
+  publicScheduleList: {
+    display: "grid",
+    gap: 10,
+  },
+  publicScheduleRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: "16px",
+    borderRadius: 18,
+    background: "#ffffff",
+    border: "1px solid #e2e8f0",
+    boxShadow: "0 8px 22px rgba(15,23,42,0.05)",
+  },
+  publicScheduleName: {
+    fontSize: 18,
+    fontWeight: 950,
+    color: "#0f172a",
+  },
+  publicScheduleMeta: {
+    marginTop: 4,
+    color: "#64748b",
+    fontSize: 13,
+    fontWeight: 700,
+  },
+  publicScheduleTime: {
+    background: "linear-gradient(135deg, #dbeafe, #eff6ff)",
+    color: "#1d4ed8",
+    borderRadius: 999,
+    padding: "10px 14px",
+    fontWeight: 950,
+    whiteSpace: "nowrap",
+  },
+  shareLinkBox: {
+    marginTop: 0,
+    padding: "12px 14px",
+    borderRadius: 14,
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+    color: "#475569",
+    fontSize: 12,
+    lineHeight: 1.5,
+    wordBreak: "break-all",
+  },
+
+  scoreToastOverlay: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 9999,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 18,
+    background: "rgba(15,23,42,0.35)",
+    backdropFilter: "blur(6px)",
+  },
+  scoreToastCard: {
+    position: "relative",
+    width: "min(420px, 100%)",
+    borderRadius: 30,
+    background: "linear-gradient(180deg, #ffffff, #fff7ed)",
+    border: "1px solid rgba(251,146,60,0.35)",
+    boxShadow: "0 28px 80px rgba(15,23,42,0.28)",
+    padding: "34px 24px 24px",
+    textAlign: "center",
+  },
+  scoreToastClose: {
+    position: "absolute",
+    top: 14,
+    right: 16,
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    border: "none",
+    background: "#f1f5f9",
+    color: "#64748b",
+    fontSize: 24,
+    lineHeight: "30px",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  scoreToastIcon: {
+    width: 62,
+    height: 62,
+    borderRadius: 22,
+    margin: "0 auto 14px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "linear-gradient(135deg, #16a34a, #22c55e)",
+    color: "#fff",
+    fontSize: 34,
+    fontWeight: 950,
+    boxShadow: "0 14px 30px rgba(34,197,94,0.28)",
+  },
+  scoreToastTitle: {
+    fontSize: 24,
+    fontWeight: 950,
+    color: "#0f172a",
+    letterSpacing: "-0.02em",
+  },
+  scoreToastSub: {
+    marginTop: 6,
+    color: "#94a3b8",
+    fontSize: 13,
+    fontWeight: 800,
+  },
+  scoreToastScoreBox: {
+    marginTop: 18,
+    padding: 18,
+    borderRadius: 24,
+    background: "#fff",
+    border: "1px solid #fed7aa",
+    boxShadow: "0 12px 30px rgba(251,146,60,0.12)",
+  },
+  scoreToastLabel: {
+    color: "#ea580c",
+    fontSize: 13,
+    fontWeight: 950,
+    letterSpacing: "0.08em",
+  },
+  scoreToastScore: {
+    marginTop: 4,
+    fontSize: 42,
+    lineHeight: 1.1,
+    fontWeight: 950,
+    color: "#c2410c",
+  },
+  scoreToastDetail: {
+    marginTop: 10,
+    color: "#64748b",
+    fontSize: 12,
+    fontWeight: 800,
+    lineHeight: 1.7,
+  },
+  scoreToastNotice: {
+    marginTop: 18,
+    padding: "16px 18px",
+    borderRadius: 20,
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+    color: "#475569",
+    fontSize: 15,
+    fontWeight: 900,
+  },
+};
