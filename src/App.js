@@ -1297,6 +1297,14 @@ ${url}`);
           dateKey,
           store: storeName,
           names: lateList.map((item) => item.name),
+          lateDetails: lateList.map((item) => ({
+            empId: item.empId,
+            name: item.name,
+            startTime: item.startTime,
+            actualTime: item.actualTime,
+            status: item.status,
+            lateMinutes: item.lateMinutes,
+          })),
           result: sent ? "已發送" : "發送失敗",
           reason,
           error: sent ? "" : (result?.error || result?.message || "LINE 發送失敗"),
@@ -1336,21 +1344,76 @@ ${url}`);
   const lateNoticeEntries = useMemo(() => {
     const attendanceSent = lineStatus?.attendance_sent || {};
     const manualChecks = lineStatus?.manual_late_checks || {};
+    const lateSent = lineStatus?.late_sent || {};
 
-    return [
-      ...Object.entries(attendanceSent).map(([key, value]) => ({
-        id: `attendance-${key}`,
-        dateKey: key,
-        type: "自動遲到通知",
-        ...value,
-      })),
-      ...Object.entries(manualChecks).map(([key, value]) => ({
+    const buildDetailText = (item = {}) => {
+      const actualText =
+        item.status === "not_checked"
+          ? "尚未打卡"
+          : `打卡 ${item.actualTime || "未記錄"}`;
+      const minuteText = item.lateMinutes !== undefined && item.lateMinutes !== null
+        ? `｜遲到 ${item.lateMinutes} 分鐘`
+        : "";
+      return `${item.name || item.empId || "未命名"}｜排班 ${item.startTime || "未填"}｜${actualText}${minuteText}`;
+    };
+
+    const entries = [];
+
+    const addGroupedPersonEntries = (source, type) => {
+      Object.entries(source || {}).forEach(([dateKey, dateValue]) => {
+        if (!dateValue || typeof dateValue !== "object") return;
+
+        // 舊資料可能本身就是一筆摘要紀錄
+        if (dateValue.sentAt || dateValue.checkedAt || Array.isArray(dateValue.names)) {
+          entries.push({
+            id: `${type}-${dateKey}`,
+            dateKey: dateValue.dateKey || dateKey,
+            type,
+            ...dateValue,
+          });
+          return;
+        }
+
+        Object.entries(dateValue).forEach(([storeKey, storeValue]) => {
+          if (!storeValue || typeof storeValue !== "object") return;
+
+          const people = Object.values(storeValue)
+            .filter((person) => person && typeof person === "object" && (person.name || person.empId))
+            .map((person) => ({
+              ...person,
+              detailText: buildDetailText(person),
+            }));
+
+          if (!people.length) return;
+
+          entries.push({
+            id: `${type}-${dateKey}-${storeKey}`,
+            dateKey,
+            type,
+            store: people[0]?.store || storeKey,
+            sentAt: Math.max(...people.map((person) => person.sentAt || 0)),
+            sent: people.some((person) => person.sent),
+            result: people.some((person) => person.sent) ? "已發送" : "未發送",
+            lateDetails: people,
+            names: people.map((person) => person.name || person.empId),
+          });
+        });
+      });
+    };
+
+    addGroupedPersonEntries(attendanceSent, "自動遲到通知");
+    addGroupedPersonEntries(lateSent, "後端遲到通知");
+
+    Object.entries(manualChecks).forEach(([key, value]) => {
+      entries.push({
         id: `manual-${key}`,
         dateKey: value?.dateKey || key,
         type: "手動遲到檢查",
         ...value,
-      })),
-    ].sort((a, b) => (b.sentAt || b.checkedAt || 0) - (a.sentAt || a.checkedAt || 0));
+      });
+    });
+
+    return entries.sort((a, b) => (b.sentAt || b.checkedAt || 0) - (a.sentAt || a.checkedAt || 0));
   }, [lineStatus]);
 
   const lineQueryEntries = useMemo(() => {
@@ -2280,7 +2343,7 @@ ${url}`);
             </button>
             {adminPanels.lateCheck ? (
               <div style={styles.collapseContent}>
-                <div style={styles.historyItem}>系統會依班表自動抓遲到，超過 1 分鐘未打上班卡就通知對應店長群組。</div>
+                <div style={styles.historyItem}>系統會依班表自動抓遲到，超過 5 分鐘未打上班卡就通知對應店長群組，並顯示每位員工遲到分鐘數。</div>
                 <div style={{ ...styles.deviceLabel, marginTop: 14 }}>遲到通知紀錄</div>
                 {lateNoticeEntries.length === 0 ? (
                   <div style={styles.emptyText}>目前沒有遲到通知紀錄</div>
@@ -2292,7 +2355,24 @@ ${url}`);
                       </div>
                       <div style={styles.historyItem}>時間：{formatDateTime(item.sentAt || item.checkedAt)}</div>
                       <div style={styles.historyItem}>結果：{item.result || (item.sent ? "已發送" : "未發送")}</div>
-                      {Array.isArray(item.names) && item.names.length ? (
+                      {Array.isArray(item.lateDetails) && item.lateDetails.length ? (
+                        <div style={styles.historyItem}>
+                          名單：
+                          {item.lateDetails.map((person, index) => {
+                            const actualText = person.status === "not_checked"
+                              ? "尚未打卡"
+                              : `打卡 ${person.actualTime || "未記錄"}`;
+                            const lateText = person.lateMinutes !== undefined && person.lateMinutes !== null
+                              ? `遲到 ${person.lateMinutes} 分鐘`
+                              : "遲到分鐘未記錄";
+                            return (
+                              <div key={`${person.empId || person.name || index}-${index}`}>
+                                {index + 1}. {person.name || person.empId || "未命名"}｜排班 {person.startTime || "未填"}｜{actualText}｜{lateText}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : Array.isArray(item.names) && item.names.length ? (
                         <div style={styles.historyItem}>名單：{item.names.join("、")}</div>
                       ) : null}
                     </div>
