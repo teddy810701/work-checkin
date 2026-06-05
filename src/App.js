@@ -1154,6 +1154,117 @@ ${url}`);
     URL.revokeObjectURL(link.href);
   };
 
+  const downloadExcelHtml = (filename, html) => {
+    const excelFile = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office"
+            xmlns:x="urn:schemas-microsoft-com:office:excel"
+            xmlns="http://www.w3.org/TR/REC-html40">
+        <head>
+          <meta charset="UTF-8" />
+          <!--[if gte mso 9]>
+          <xml>
+            <x:ExcelWorkbook>
+              <x:ExcelWorksheets>
+                <x:ExcelWorksheet>
+                  <x:Name>薪資核對</x:Name>
+                  <x:WorksheetOptions>
+                    <x:FreezePanes />
+                    <x:FrozenNoSplit />
+                    <x:SplitHorizontal>1</x:SplitHorizontal>
+                    <x:SplitVertical>3</x:SplitVertical>
+                    <x:TopRowBottomPane>1</x:TopRowBottomPane>
+                    <x:LeftColumnRightPane>3</x:LeftColumnRightPane>
+                    <x:ActivePane>0</x:ActivePane>
+                  </x:WorksheetOptions>
+                </x:ExcelWorksheet>
+              </x:ExcelWorksheets>
+            </x:ExcelWorkbook>
+          </xml>
+          <![endif]-->
+          <style>
+            table { border-collapse: collapse; font-family: Arial, 'Microsoft JhengHei', sans-serif; font-size: 11pt; }
+            th, td { border: 1px solid #999; padding: 5px 7px; text-align: center; white-space: nowrap; mso-number-format:'\@'; }
+            th { background: #d9ead3; font-weight: bold; }
+            .name, .role { font-weight: bold; background: #f7f7f7; }
+            .item { background: #eef2ff; font-weight: bold; }
+            .off { background: #f3f4f6; color: #666; }
+            .late { background: #ffffff; color: #8b0000; font-weight: bold; }
+            .missing { background: #fce4ec; color: #b91c1c; font-weight: bold; }
+            .longBreak { background: #fde68a; color: #92400e; font-weight: bold; }
+            .hours { mso-number-format:'0.00'; }
+            .total { background: #fff2cc; font-weight: bold; mso-number-format:'0.00'; }
+            .gap td { height: 8px; background: #ffffff; border-left: none; border-right: none; }
+          </style>
+        </head>
+        <body>${html}</body>
+      </html>`;
+
+    const blob = new Blob(["\uFEFF" + excelFile], {
+      type: "application/vnd.ms-excel;charset=utf-8;",
+    });
+
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  const escapeExcelText = (value) => String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+  const formatExcelTime = (timestamp) => {
+    if (!timestamp) return "";
+    const d = new Date(timestamp);
+    if (Number.isNaN(d.getTime())) return "";
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  };
+
+  const getDaysInSelectedMonth = (monthKey) => {
+    const [year, month] = String(monthKey || getMonthValue()).split("-").map(Number);
+    const lastDay = new Date(year, month, 0).getDate();
+    return Array.from({ length: lastDay }, (_, index) => {
+      const day = index + 1;
+      return {
+        day,
+        dateKey: `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+        label: `${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}`,
+      };
+    });
+  };
+
+  const getAllSchedulesForMonth = async (monthKey) => {
+    const snap = await get(ref(db, "schedules"));
+    const data = snap.val() || {};
+    return Object.fromEntries(
+      Object.entries(data).filter(([dateKey]) => String(dateKey || "").startsWith(monthKey))
+    );
+  };
+
+  const getFirstRecord = (recordsOfDay, type) => {
+    return recordsOfDay
+      .filter((r) => r.type === type)
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))[0] || null;
+  };
+
+  const getLastRecord = (recordsOfDay, type) => {
+    return recordsOfDay
+      .filter((r) => r.type === type)
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0] || null;
+  };
+
+  const minutesBetween = (startTs, endTs) => {
+    if (!startTs || !endTs || endTs <= startTs) return 0;
+    return Math.round((endTs - startTs) / 60000);
+  };
+
+  const buildCell = (value, className = "") => `<td class="${className}">${escapeExcelText(value)}</td>`;
+
   const exportAllCSV = async () => {
     try {
       const allRecords = await getAllRecordsForExport();
@@ -1202,74 +1313,163 @@ ${url}`);
         return;
       }
 
-      const map = {};
+      const schedulesByDate = await getAllSchedulesForMonth(selectedMonth);
+      const days = getDaysInSelectedMonth(selectedMonth);
+      const employeeMap = {};
 
       employees.forEach((emp) => {
         const key = emp.empId || emp.id;
-        map[key] = {
+        employeeMap[key] = {
           empId: key,
           name: emp.name || "",
           store: emp.store || "",
           role: emp.role || "",
-          workIn: 0,
-          workOut: 0,
-          breakStart: 0,
-          breakEnd: 0,
-          totalRecords: 0,
-          lastRecordAt: 0,
         };
       });
 
       targetMonthRecords.forEach((r) => {
         const key = r.empId || r.id || "UNKNOWN";
-        if (!map[key]) {
-          map[key] = {
+        if (!employeeMap[key]) {
+          employeeMap[key] = {
             empId: key,
-            name: r.name || "",
+            name: r.name || key,
             store: r.store || "",
             role: r.role || "",
-            workIn: 0,
-            workOut: 0,
-            breakStart: 0,
-            breakEnd: 0,
-            totalRecords: 0,
-            lastRecordAt: 0,
           };
         }
-
-        map[key].totalRecords += 1;
-        map[key].lastRecordAt = Math.max(map[key].lastRecordAt, r.createdAt || 0);
-
-        if (r.type === "上班") map[key].workIn += 1;
-        if (r.type === "下班") map[key].workOut += 1;
-        if (r.type === "休息開始") map[key].breakStart += 1;
-        if (r.type === "休息結束") map[key].breakEnd += 1;
       });
 
-      const stats = Object.values(map).sort((a, b) => {
-        if (b.totalRecords !== a.totalRecords) return b.totalRecords - a.totalRecords;
-        return a.empId.localeCompare(b.empId);
+      const recordsByEmployeeDate = {};
+      targetMonthRecords.forEach((r) => {
+        const empKey = r.empId || r.id || "UNKNOWN";
+        const dateKey = r.dateKey || formatTaipeiDateKey(r.createdAt || Date.now());
+        const key = `${empKey}__${dateKey}`;
+        if (!recordsByEmployeeDate[key]) recordsByEmployeeDate[key] = [];
+        recordsByEmployeeDate[key].push(r);
       });
 
-      const header = ["月份", "員工姓名", "工號", "店名", "身分", "上班次數", "下班次數", "休息開始", "休息結束", "總筆數", "最後打卡日"];
-      const rows = stats.map((item) => [
-        selectedMonth,
-        item.name,
-        item.empId,
-        item.store,
-        item.role,
-        item.workIn,
-        item.workOut,
-        item.breakStart,
-        item.breakEnd,
-        item.totalRecords,
-        formatDate(item.lastRecordAt),
-      ]);
+      const headerHtml = [
+        "<tr>",
+        "<th>姓名</th><th>身分</th><th>項目</th>",
+        ...days.map((d) => `<th>${d.label}</th>`),
+        "<th>總工時</th>",
+        "</tr>",
+      ].join("");
 
-      downloadCsv(`打卡月報表-${selectedMonth}.csv`, header, rows);
+      const employeeList = Object.values(employeeMap).sort((a, b) => {
+        if ((a.store || "") !== (b.store || "")) return String(a.store || "").localeCompare(String(b.store || ""), "zh-Hant");
+        return String(a.name || a.empId).localeCompare(String(b.name || b.empId), "zh-Hant");
+      });
+
+      const bodyRows = [];
+
+      employeeList.forEach((emp) => {
+        const rowData = {
+          workIn: [],
+          breakStart: [],
+          breakEnd: [],
+          workOut: [],
+          hours: [],
+        };
+        let totalHours = 0;
+
+        days.forEach((day) => {
+          const dayRecords = (recordsByEmployeeDate[`${emp.empId}__${day.dateKey}`] || [])
+            .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+          const schedule = schedulesByDate?.[day.dateKey]?.[emp.empId] || null;
+          const workIn = getFirstRecord(dayRecords, "上班");
+          const breakStart = getFirstRecord(dayRecords, "休息開始");
+          const breakEnd = getFirstRecord(dayRecords, "休息結束");
+          const workOut = getLastRecord(dayRecords, "下班");
+          const hasAnyRecord = dayRecords.length > 0;
+
+          if (!hasAnyRecord) {
+            rowData.workIn.push(buildCell("休假", "off"));
+            rowData.breakStart.push(buildCell(""));
+            rowData.breakEnd.push(buildCell(""));
+            rowData.workOut.push(buildCell(""));
+            rowData.hours.push(buildCell(""));
+            return;
+          }
+
+          const breakMinutes = minutesBetween(breakStart?.createdAt, breakEnd?.createdAt);
+          const isLongBreak = breakMinutes > 30;
+          const isLate = Boolean(
+            schedule?.working &&
+            schedule?.startTime &&
+            workIn?.createdAt &&
+            workIn.createdAt > getTaipeiTimestampFromDateTime(day.dateKey, schedule.startTime)
+          );
+          const missingWorkIn = !workIn;
+          const missingWorkOut = !workOut;
+          const breakPairMissing = Boolean((breakStart && !breakEnd) || (!breakStart && breakEnd));
+
+          rowData.workIn.push(buildCell(
+            missingWorkIn ? "未打卡" : formatExcelTime(workIn.createdAt),
+            missingWorkIn ? "missing" : (isLate ? "late" : "")
+          ));
+          rowData.breakStart.push(buildCell(
+            breakStart ? formatExcelTime(breakStart.createdAt) : (breakEnd ? "未打卡" : ""),
+            breakEnd && !breakStart ? "missing" : (isLongBreak ? "longBreak" : "")
+          ));
+          rowData.breakEnd.push(buildCell(
+            breakEnd ? formatExcelTime(breakEnd.createdAt) : (breakStart ? "未打卡" : ""),
+            breakStart && !breakEnd ? "missing" : (isLongBreak ? "longBreak" : "")
+          ));
+          rowData.workOut.push(buildCell(
+            missingWorkOut ? "未打卡" : formatExcelTime(workOut.createdAt),
+            missingWorkOut ? "missing" : ""
+          ));
+
+          if (missingWorkIn || missingWorkOut || breakPairMissing) {
+            rowData.hours.push(buildCell("異常", "missing"));
+            return;
+          }
+
+          const totalMinutes = minutesBetween(workIn.createdAt, workOut.createdAt) - breakMinutes;
+          const hours = Math.max(0, totalMinutes / 60);
+          totalHours += hours;
+          rowData.hours.push(buildCell(hours.toFixed(2), "hours"));
+        });
+
+        bodyRows.push(`
+          <tr>
+            <td class="name">${escapeExcelText(emp.name || emp.empId)}</td>
+            <td class="role">${escapeExcelText(emp.role || "")}</td>
+            <td class="item">上班</td>
+            ${rowData.workIn.join("")}
+            <td></td>
+          </tr>
+          <tr>
+            <td></td><td></td><td class="item">休息</td>
+            ${rowData.breakStart.join("")}
+            <td></td>
+          </tr>
+          <tr>
+            <td></td><td></td><td class="item">休息結束</td>
+            ${rowData.breakEnd.join("")}
+            <td></td>
+          </tr>
+          <tr>
+            <td></td><td></td><td class="item">下班</td>
+            ${rowData.workOut.join("")}
+            <td></td>
+          </tr>
+          <tr>
+            <td></td><td></td><td class="item">工時</td>
+            ${rowData.hours.join("")}
+            <td class="total">${totalHours ? totalHours.toFixed(2) : ""}</td>
+          </tr>
+          <tr class="gap"><td colspan="${days.length + 4}"></td></tr>
+        `);
+      });
+
+      const html = `<table>${headerHtml}${bodyRows.join("")}</table>`;
+      downloadExcelHtml(`薪資核對版-${selectedMonth}.xls`, html);
     } catch (error) {
-      console.error("匯出月報表失敗：", error);
-      alert("匯出月報表失敗，請稍後再試");
+      console.error("匯出薪資核對版失敗：", error);
+      alert("匯出薪資核對版失敗，請稍後再試");
     }
   };
 
@@ -2453,7 +2653,7 @@ ${url}`);
             />
 
             <button style={styles.fullOrangeBtn} onClick={exportMonthlyCSV}>
-              匯出月報表 Excel
+              匯出薪資核對版 Excel
             </button>
           </div>
 
