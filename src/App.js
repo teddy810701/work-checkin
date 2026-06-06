@@ -578,21 +578,8 @@ ${message}
     });
   }, [authReady, publicScheduleDate]);
 
-  useEffect(() => {
-    if (!authReady) return;
-    triggerAutoLateCheck("app-open");
-  }, [authReady]);
-
-  useEffect(() => {
-    if (!authReady) return;
-
-    const timer = setInterval(() => {
-      triggerAutoLateCheck("auto-timer");
-    }, 60000);
-
-    return () => clearInterval(timer);
-  }, [authReady]);
-
+  // 遲到通知已改由後端 /api/auto-check-late + Vercel Cron 統一處理。
+  // 這裡停用前端 app-open / auto-timer 自動檢查，避免有人開網頁時重複發送 LINE 遲到通知。
 
   const todayRecords = useMemo(() => {
     return records.filter((r) => {
