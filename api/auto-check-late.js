@@ -1,21 +1,12 @@
 // api/auto-check-late.js
-// 遲到自動檢查：超過 10 分鐘才通知，同一天同一人只通知一次。
-// 注意：此檔案使用 CommonJS，避免 Vercel 出現 Failed to load the ES module。
+// 遲到自動通知：超過 10 分鐘才通知，同一天同一人只通知一次
+// 使用 Realtime Database REST API，不需要 firebase-admin，也不需要 Firebase Web SDK 環境變數。
 
-const { initializeApp, getApps } = require("firebase/app");
-const { getAuth, signInAnonymously } = require("firebase/auth");
-const {
-  getDatabase,
-  ref,
-  get,
-  update,
-  push,
-  set,
-  remove,
-  runTransaction,
-} = require("firebase/database");
+const DATABASE_URL =
+  process.env.FIREBASE_DATABASE_URL ||
+  "https://work-checkin-77acf-default-rtdb.asia-southeast1.firebasedatabase.app";
 
-const LATE_GRACE_MINUTES = 10;
+const LATE_MINUTES_THRESHOLD = 10;
 
 function normalizeStoreName(value = "") {
   const text = String(value || "").trim();
@@ -53,8 +44,10 @@ function formatTaipeiDateTime(date = Date.now()) {
 
 function parseWorkDateTime(now, timeText) {
   if (!timeText || !String(timeText).includes(":")) return null;
+
   const [hh, mm] = String(timeText).split(":").map(Number);
   if (Number.isNaN(hh) || Number.isNaN(mm)) return null;
+
   const workDate = new Date(now);
   workDate.setHours(hh, mm, 0, 0);
   return workDate;
@@ -62,13 +55,57 @@ function parseWorkDateTime(now, timeText) {
 
 function getManagerGroupIdByStore(store) {
   const normalized = normalizeStoreName(store);
-  if (normalized === "斗南站前店") return process.env.LINE_GROUP_ID_MANAGER_DOUNAN;
-  if (normalized === "西螺文昌店") return process.env.LINE_GROUP_ID_MANAGER_XILUO;
+
+  if (normalized === "斗南站前店") {
+    return (
+      process.env.LINE_GROUP_ID_MANAGER_DOUNAN ||
+      process.env.LINE_GROUP_ID_DOUNAN ||
+      ""
+    );
+  }
+
+  if (normalized === "西螺文昌店") {
+    return (
+      process.env.LINE_GROUP_ID_MANAGER_XILUO ||
+      process.env.LINE_GROUP_ID_XILUO ||
+      ""
+    );
+  }
+
   return "";
 }
 
+async function readDb(path) {
+  const url = `${DATABASE_URL.replace(/\/$/, "")}/${path}.json`;
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Firebase 讀取失敗：${path} ${response.status} ${text}`);
+  }
+
+  return await response.json();
+}
+
+async function updateDb(updates) {
+  const url = `${DATABASE_URL.replace(/\/$/, "")}/.json`;
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Firebase 更新失敗：${response.status} ${text}`);
+  }
+
+  return await response.json();
+}
+
 async function pushLineMessage(groupId, text) {
-  const token = process.env.LINE_TOKEN;
+  const token = process.env.LINE_TOKEN || process.env.LINE_CHANNEL_ACCESS_TOKEN;
+
   if (!token) throw new Error("缺少 LINE_TOKEN");
   if (!groupId) throw new Error("缺少店長群組 ID");
 
@@ -85,6 +122,7 @@ async function pushLineMessage(groupId, text) {
   });
 
   const raw = await response.text();
+
   if (!response.ok) {
     throw new Error(raw || "LINE 推播失敗");
   }
@@ -92,161 +130,90 @@ async function pushLineMessage(groupId, text) {
   return raw;
 }
 
-async function getFirebaseDb() {
-  const firebaseConfig = {
-    apiKey: process.env.FIREBASE_API_KEY,
-    authDomain: process.env.FIREBASE_AUTH_DOMAIN,
-    databaseURL: process.env.FIREBASE_DATABASE_URL,
-    projectId: process.env.FIREBASE_PROJECT_ID,
-    storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-    messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
-    appId: process.env.FIREBASE_APP_ID,
-  };
-
-  const missing = Object.entries(firebaseConfig)
-    .filter(([, value]) => !value)
-    .map(([key]) => key);
-
-  if (missing.length) {
-    throw new Error(`缺少 Firebase 環境變數：${missing.join(", ")}`);
-  }
-
-  const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
-  const auth = getAuth(app);
-
-  if (!auth.currentUser) {
-    await signInAnonymously(auth);
-  }
-
-  return getDatabase(app);
-}
-
-function getFirstWorkInRecord(todayRecords, empId, name) {
-  const normalizedEmpId = String(empId || "").trim();
-  const normalizedName = String(name || "").trim();
-
-  return todayRecords
-    .filter((record) => record?.type === "上班")
-    .filter((record) => {
-      const recordEmpId = String(record?.empId || "").trim();
-      const recordName = String(record?.name || "").trim();
-      return (
-        (normalizedEmpId && recordEmpId === normalizedEmpId) ||
-        (normalizedName && recordName === normalizedName)
-      );
-    })
-    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))[0] || null;
-}
-
 module.exports = async function handler(req, res) {
   if (!["GET", "POST"].includes(req.method)) {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
 
-  const lockedRefs = [];
-
   try {
-    const db = await getFirebaseDb();
     const now = getTaipeiNow();
     const nowTs = Date.now();
     const today = formatTaipeiDateKey(nowTs);
 
-    const [scheduleSnap, recordsSnap] = await Promise.all([
-      get(ref(db, `schedules/${today}`)),
-      get(ref(db, "records")),
+    const [scheduleMap, recordsMap, sentMap] = await Promise.all([
+      readDb(`schedules/${today}`),
+      readDb("records"),
+      readDb(`line_status/late_sent/${today}`),
     ]);
 
-    const scheduleMap = scheduleSnap.val() || {};
-    const recordsMap = recordsSnap.val() || {};
+    const schedules = scheduleMap || {};
+    const records = recordsMap || {};
+    const alreadySent = sentMap || {};
 
-    const todayRecords = Object.values(recordsMap).filter((item) => {
-      const dateKey = item?.dateKey || (item?.createdAt ? formatTaipeiDateKey(item.createdAt) : "");
-      return dateKey === today;
+    const todayWorkInRecords = Object.values(records)
+      .filter((item) => {
+        const dateKey =
+          item?.dateKey ||
+          (item?.createdAt ? formatTaipeiDateKey(item.createdAt) : "");
+        return dateKey === today && item?.type === "上班";
+      })
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+    const firstWorkInByEmp = {};
+
+    todayWorkInRecords.forEach((record) => {
+      const empId = String(record?.empId || "").trim();
+      if (!empId) return;
+      if (!firstWorkInByEmp[empId]) firstWorkInByEmp[empId] = record;
     });
 
     const lateByStore = {};
-    const skipped = [];
 
-    for (const [empIdFromKey, item] of Object.entries(scheduleMap)) {
-      if (!item?.working) continue;
+    Object.entries(schedules).forEach(([empIdFromKey, item]) => {
+      if (!item?.working) return;
 
-      const empId = String(item.empId || empIdFromKey || "").trim();
-      const name = item?.name || empId;
+      const empId = String(item?.empId || empIdFromKey || "").trim();
       const store = normalizeStoreName(item?.store);
       const startTime = item?.startTime;
       const workDate = parseWorkDateTime(now, startTime);
 
-      if (!empId || !store || !workDate) {
-        skipped.push({ empId, name, reason: "資料不完整" });
-        continue;
-      }
+      if (!empId || !store || !workDate) return;
 
-      const graceTs = workDate.getTime() + LATE_GRACE_MINUTES * 60 * 1000;
-      const workInRecord = getFirstWorkInRecord(todayRecords, empId, name);
+      const lateStartTs = workDate.getTime() + LATE_MINUTES_THRESHOLD * 60 * 1000;
 
-      let shouldNotify = false;
-      let status = "not_checked";
-      let actualTime = "未打卡";
-      let lateMinutes = 0;
-
-      if (workInRecord?.createdAt) {
-        const actualTs = Number(workInRecord.createdAt) || 0;
-        if (actualTs >= graceTs) {
-          shouldNotify = true;
-          status = "late_checked_in";
-          actualTime = workInRecord.time || formatTaipeiDateTime(actualTs);
-          lateMinutes = Math.floor((actualTs - workDate.getTime()) / 60000);
-        }
-      } else if (now.getTime() >= graceTs) {
-        shouldNotify = true;
-        status = "not_checked";
-        actualTime = "尚未打卡";
-        lateMinutes = Math.floor((now.getTime() - workDate.getTime()) / 60000);
-      }
-
-      if (!shouldNotify) continue;
+      if (now.getTime() < lateStartTs) return;
 
       const storeKey = safeFirebaseKey(store);
       const empKey = safeFirebaseKey(empId);
-      const lockRef = ref(db, `line_status/late_sent/${today}/${storeKey}/${empKey}`);
 
-      const lockResult = await runTransaction(lockRef, (current) => {
-        if (current?.sent === true || current?.locked === true) return;
-        return {
-          locked: true,
-          sent: false,
-          lockedAt: nowTs,
-          dateKey: today,
-          store,
-          empId,
-          name,
-          startTime,
-          actualTime,
-          status,
-          lateMinutes,
-        };
-      });
+      if (alreadySent?.[storeKey]?.[empKey]?.sent) return;
+      if (alreadySent?.[store]?.[empId]?.sent) return;
 
-      if (!lockResult.committed) {
-        skipped.push({ empId, name, reason: "今天已通知過或正在通知" });
-        continue;
-      }
+      const workInRecord = firstWorkInByEmp[empId];
+      const actualTs = workInRecord?.createdAt || 0;
 
-      lockedRefs.push(lockRef);
+      const isNotChecked = !workInRecord;
+      const isLateCheckedIn = actualTs >= lateStartTs;
+
+      if (!isNotChecked && !isLateCheckedIn) return;
+
+      const lateMinutes = isNotChecked
+        ? Math.floor((now.getTime() - workDate.getTime()) / 60000)
+        : Math.floor((actualTs - workDate.getTime()) / 60000);
 
       if (!lateByStore[store]) lateByStore[store] = [];
       lateByStore[store].push({
         empId,
         empKey,
-        lockRef,
-        name,
         store,
+        storeKey,
+        name: item?.name || empId,
         startTime: startTime || "未填",
-        actualTime,
-        status,
+        actualTime: workInRecord?.time || "尚未打卡",
+        status: isNotChecked ? "尚未打卡" : "已遲到打卡",
         lateMinutes,
       });
-    }
+    });
 
     const sentResults = [];
 
@@ -254,13 +221,15 @@ module.exports = async function handler(req, res) {
       if (!list.length) continue;
 
       const groupId = getManagerGroupIdByStore(store);
+
       const message = [
         `⚠️ ${today} ${store} 遲到名單`,
         "",
         ...list.map((item, index) => {
-          const actualText = item.status === "not_checked"
-            ? "尚未打卡"
-            : `打卡 ${item.actualTime}`;
+          const actualText =
+            item.status === "尚未打卡"
+              ? "尚未打卡"
+              : `打卡 ${item.actualTime}`;
           return `${index + 1}. ${item.name}｜排班 ${item.startTime}｜${actualText}｜遲到 ${item.lateMinutes} 分鐘`;
         }),
         "",
@@ -269,17 +238,14 @@ module.exports = async function handler(req, res) {
 
       await pushLineMessage(groupId, message);
 
-      const sentAt = Date.now();
       const updates = {};
 
       list.forEach((item) => {
-        const storeKey = safeFirebaseKey(store);
-        updates[`line_status/late_sent/${today}/${storeKey}/${item.empKey}`] = {
-          locked: false,
+        updates[`line_status/late_sent/${today}/${item.storeKey}/${item.empKey}`] = {
           sent: true,
-          sentAt,
+          sentAt: nowTs,
           dateKey: today,
-          store,
+          store: item.store,
           empId: item.empId,
           name: item.name,
           startTime: item.startTime,
@@ -290,18 +256,19 @@ module.exports = async function handler(req, res) {
         };
       });
 
-      await update(ref(db), updates);
-
-      const logRef = push(ref(db, "line_status/attendance_sent"));
-      await set(logRef, {
+      const logKey = `${today}_${safeFirebaseKey(store)}_${nowTs}`;
+      updates[`line_status/attendance_sent/${logKey}`] = {
         sent: true,
-        sentAt,
-        store,
+        sentAt: nowTs,
         dateKey: today,
+        store,
         names: list.map((item) => item.name),
         result: `${list.length} 人`,
         message,
-      });
+        source: "auto-check-late",
+      };
+
+      await updateDb(updates);
 
       sentResults.push({
         store,
@@ -314,17 +281,11 @@ module.exports = async function handler(req, res) {
       success: true,
       dateKey: today,
       checkedAt: nowTs,
-      graceMinutes: LATE_GRACE_MINUTES,
+      thresholdMinutes: LATE_MINUTES_THRESHOLD,
       sentCount: sentResults.reduce((sum, item) => sum + item.count, 0),
       stores: sentResults,
-      skipped,
     });
   } catch (error) {
-    // 如果 LINE 或其他流程失敗，把本次鎖定移除，避免之後永遠不通知。
-    await Promise.all(
-      lockedRefs.map((itemRef) => remove(itemRef).catch(() => null))
-    );
-
     return res.status(500).json({
       success: false,
       error: error?.message || "auto check failed",
