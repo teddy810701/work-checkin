@@ -1,18 +1,31 @@
 // api/auto-check-late.js
-// 修正版：遲到通知「同一天、同一人、同一班表時間」只發一次
-// 使用方式：把本檔內容複製後，覆蓋你的 api/auto-check-late.js
+// 修正版：遲到超過 10 分鐘才通知，且同一天、同一人、同一班表時間只通知一次
 
 import admin from "firebase-admin";
+
+// ===== 設定 =====
+const LATE_NOTIFY_MINUTES = 10;
 
 // ===== Firebase Admin 初始化 =====
 function initFirebase() {
   if (admin.apps.length) return admin.app();
 
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+  const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+  const databaseURL = process.env.FIREBASE_DATABASE_URL;
+
+  if (!serviceAccountRaw) {
+    throw new Error("缺少 FIREBASE_SERVICE_ACCOUNT_KEY");
+  }
+
+  if (!databaseURL) {
+    throw new Error("缺少 FIREBASE_DATABASE_URL");
+  }
+
+  const serviceAccount = JSON.parse(serviceAccountRaw);
 
   return admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: process.env.FIREBASE_DATABASE_URL,
+    databaseURL,
   });
 }
 
@@ -27,19 +40,20 @@ function getTaiwanDateParts(date = new Date()) {
   const ss = String(taiwan.getSeconds()).padStart(2, "0");
 
   return {
-    yyyy,
-    mm,
-    dd,
     dateKey: `${yyyy}-${mm}-${dd}`,
     timeText: `${hh}:${min}:${ss}`,
     minutesOfDay: taiwan.getHours() * 60 + taiwan.getMinutes(),
-    taiwanDate: taiwan,
   };
 }
 
 function timeToMinutes(time) {
   if (!time || typeof time !== "string") return null;
-  const [h, m] = time.split(":").map(Number);
+  const match = String(time).match(/(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+
   if (Number.isNaN(h) || Number.isNaN(m)) return null;
   return h * 60 + m;
 }
@@ -49,15 +63,20 @@ function normalizeTime(time) {
   return String(time).replace(":", "");
 }
 
+function safeKey(value) {
+  return String(value || "unknown").replace(/[.#$/\[\]]/g, "_");
+}
+
 function getEmployeeId(employee) {
-  return String(
-    employee.id ||
+  return safeKey(
+    employee.empId ||
+      employee.id ||
       employee.employeeId ||
       employee.uid ||
       employee.name ||
       employee.displayName ||
       "unknown"
-  ).replace(/[.#$/\[\]]/g, "_");
+  );
 }
 
 function getEmployeeName(employee) {
@@ -93,16 +112,57 @@ function getCheckInTime(checkin) {
   );
 }
 
-async function sendLineMessage(text) {
-  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN || process.env.LINE_ACCESS_TOKEN || process.env.LINE_TOKEN;
-  const to = process.env.LINE_GROUP_ID || process.env.LINE_TO;
+function normalizeStoreName(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.includes("斗南")) return "斗南站前店";
+  if (text.includes("西螺")) return "西螺文昌店";
+  return text;
+}
 
-  if (!token || !to) {
-    console.log("缺少 LINE_CHANNEL_ACCESS_TOKEN/LINE_GROUP_ID，略過發送：", text);
-    return;
+function getLineGroupIdByStore(store) {
+  const normalized = normalizeStoreName(store);
+
+  if (normalized === "斗南站前店") {
+    return (
+      process.env.LINE_GROUP_ID_MANAGER_DOUNAN ||
+      process.env.LINE_GROUP_ID_DOUNAN ||
+      process.env.LINE_GROUP_DOUNAN ||
+      process.env.LINE_GROUP_ID ||
+      process.env.LINE_TO
+    );
   }
 
-  const res = await fetch("https://api.line.me/v2/bot/message/push", {
+  if (normalized === "西螺文昌店") {
+    return (
+      process.env.LINE_GROUP_ID_MANAGER_XILUO ||
+      process.env.LINE_GROUP_ID_XILUO ||
+      process.env.LINE_GROUP_XILUO ||
+      process.env.LINE_GROUP_ID ||
+      process.env.LINE_TO
+    );
+  }
+
+  return process.env.LINE_GROUP_ID || process.env.LINE_TO;
+}
+
+async function sendLineMessage(text, store) {
+  const token =
+    process.env.LINE_CHANNEL_ACCESS_TOKEN ||
+    process.env.LINE_ACCESS_TOKEN ||
+    process.env.LINE_TOKEN;
+
+  const to = getLineGroupIdByStore(store);
+
+  if (!token) {
+    throw new Error("缺少 LINE_TOKEN / LINE_CHANNEL_ACCESS_TOKEN");
+  }
+
+  if (!to) {
+    throw new Error(`缺少 ${store || "對應店別"} 的 LINE 群組 ID`);
+  }
+
+  const response = await fetch("https://api.line.me/v2/bot/message/push", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -114,15 +174,14 @@ async function sendLineMessage(text) {
     }),
   });
 
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`LINE 發送失敗：${res.status} ${body}`);
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`LINE 發送失敗：${response.status} ${body}`);
   }
 }
 
-// ===== 依你的資料庫結構讀取班表 =====
+// ===== 讀取今日班表 =====
 async function readTodaySchedule(db, dateKey) {
-  // 這裡放多個可能路徑，避免你原本資料路徑不同時直接壞掉
   const possiblePaths = [
     `schedules/${dateKey}`,
     `schedule/${dateKey}`,
@@ -133,50 +192,82 @@ async function readTodaySchedule(db, dateKey) {
   for (const path of possiblePaths) {
     const snap = await db.ref(path).once("value");
     if (snap.exists()) {
-      const val = snap.val();
-      return { path, data: val };
+      return { path, data: snap.val() };
     }
   }
 
   return { path: null, data: null };
 }
 
+// ===== 讀取今日打卡紀錄 =====
+// 你的系統目前 records 是扁平資料：records/{recordId}
+// 所以這裡會讀全部 records，再篩選今天的「上班」紀錄。
 async function readTodayCheckins(db, dateKey) {
-  const possiblePaths = [
-    `checkins/${dateKey}`,
-    `checkIn/${dateKey}`,
-    `attendance/${dateKey}`,
-    `records/${dateKey}`,
-  ];
+  const snap = await db.ref("records").once("value");
+  const records = snap.val() || {};
+  const result = {};
 
-  for (const path of possiblePaths) {
-    const snap = await db.ref(path).once("value");
-    if (snap.exists()) return snap.val();
-  }
+  Object.entries(records).forEach(([recordId, record]) => {
+    if (!record || typeof record !== "object") return;
+    if (record.type !== "上班") return;
 
-  return {};
+    const recordDateKey = record.dateKey || "";
+    if (recordDateKey !== dateKey) return;
+
+    const empId = safeKey(record.empId || record.employeeId || record.id || "");
+    const name = record.name || record.employeeName || record.displayName || "";
+    const createdAt = Number(record.createdAt || 0);
+
+    const normalizedRecord = {
+      id: recordId,
+      ...record,
+      time: record.time || record.checkInTime || record.createdAtText || "",
+    };
+
+    if (empId) {
+      if (!result[empId] || createdAt < Number(result[empId].createdAt || Infinity)) {
+        result[empId] = normalizedRecord;
+      }
+    }
+
+    if (name) {
+      const nameKey = safeKey(name);
+      if (!result[nameKey] || createdAt < Number(result[nameKey].createdAt || Infinity)) {
+        result[nameKey] = normalizedRecord;
+      }
+    }
+  });
+
+  return result;
 }
 
 function flattenEmployees(scheduleData) {
   if (!scheduleData) return [];
 
-  if (Array.isArray(scheduleData)) return scheduleData.filter(Boolean);
+  if (Array.isArray(scheduleData)) {
+    return scheduleData.filter(Boolean).filter((item) => item.working !== false);
+  }
 
   const result = [];
 
   Object.entries(scheduleData).forEach(([key, value]) => {
     if (!value) return;
 
-    // 形式一：{ employeeId: { name, startTime } }
-    if (typeof value === "object" && (value.name || value.startTime || value.workStart || value.scheduledStart)) {
-      result.push({ id: key, ...value });
+    // 形式一：{ employeeId: { name, startTime, working } }
+    if (
+      typeof value === "object" &&
+      (value.name || value.startTime || value.workStart || value.scheduledStart || value.empId)
+    ) {
+      if (value.working !== false) {
+        result.push({ id: key, ...value });
+      }
       return;
     }
 
     // 形式二：{ storeName: { employeeId: {...} } }
     if (typeof value === "object") {
       Object.entries(value).forEach(([subKey, subValue]) => {
-        if (subValue && typeof subValue === "object") {
+        if (subValue && typeof subValue === "object" && subValue.working !== false) {
           result.push({ id: subKey, store: key, ...subValue });
         }
       });
@@ -187,20 +278,13 @@ function flattenEmployees(scheduleData) {
 }
 
 function findCheckin(checkins, employee) {
-  const id = getEmployeeId(employee);
-  const name = getEmployeeName(employee);
-
   if (!checkins) return null;
 
-  if (checkins[id]) return checkins[id];
+  const id = getEmployeeId(employee);
+  const empId = safeKey(employee.empId || employee.id || employee.employeeId || "");
+  const name = safeKey(getEmployeeName(employee));
 
-  const entries = Object.entries(checkins);
-  for (const [, value] of entries) {
-    if (!value || typeof value !== "object") continue;
-    if (value.name === name || value.employeeName === name || value.displayName === name) return value;
-  }
-
-  return null;
+  return checkins[id] || checkins[empId] || checkins[name] || null;
 }
 
 export default async function handler(req, res) {
@@ -215,7 +299,11 @@ export default async function handler(req, res) {
     const scheduleData = scheduleResult.data;
 
     if (!scheduleData) {
-      return res.status(200).json({ ok: true, message: `找不到 ${dateKey} 班表，不執行遲到檢查` });
+      return res.status(200).json({
+        ok: true,
+        dateKey,
+        message: `找不到 ${dateKey} 班表，不執行遲到檢查`,
+      });
     }
 
     const checkins = await readTodayCheckins(db, dateKey);
@@ -236,7 +324,7 @@ export default async function handler(req, res) {
         continue;
       }
 
-      // 還沒到上班時間，略過
+      // 還沒到上班時間，不檢查
       if (minutesOfDay <= startMinutes) {
         skipped.push({ name, reason: "尚未到上班時間" });
         continue;
@@ -257,19 +345,19 @@ export default async function handler(req, res) {
         statusText = "尚未打卡";
       }
 
-      // 遲到未滿 10 分鐘不通知
-      // 例如 05:00 上班，05:01~05:09 不通知，05:10 起才通知一次。
-      if (lateMinutes < 10) {
-        skipped.push({ name, reason: "遲到未滿10分鐘" });
+      // 重點：遲到未滿 10 分鐘不通知
+      if (lateMinutes < LATE_NOTIFY_MINUTES) {
+        skipped.push({ name, reason: `遲到未滿 ${LATE_NOTIFY_MINUTES} 分鐘` });
         continue;
       }
 
-      // 核心：同一天、同一人、同一班表時間，只允許成功發一次
+      // 同一天、同一人、同一班表時間，只允許成功發送一次
       const lockKey = `${employeeId}_${normalizeTime(scheduleStart)}`;
       const lockRef = db.ref(`lateNotifications/${dateKey}/${lockKey}`);
 
       const lockResult = await lockRef.transaction((current) => {
         if (current && current.sent === true) return;
+
         return {
           sent: true,
           lockedAt: admin.database.ServerValue.TIMESTAMP,
@@ -295,17 +383,19 @@ export default async function handler(req, res) {
         `遲到：${lateMinutes} 分鐘`;
 
       try {
-        await sendLineMessage(message);
+        await sendLineMessage(message, store);
+
         await lockRef.update({
           lineSent: true,
           sentAtText: now.timeText,
           sentAt: admin.database.ServerValue.TIMESTAMP,
         });
-        sent.push({ name, lateMinutes });
-      } catch (err) {
-        // 如果 LINE 發送失敗，把鎖解除，避免真的沒發出去卻永遠不補發
+
+        sent.push({ name, store, lateMinutes });
+      } catch (error) {
+        // LINE 沒發出去就解除鎖，避免之後永遠不補發
         await lockRef.remove();
-        throw err;
+        throw error;
       }
     }
 
@@ -313,11 +403,15 @@ export default async function handler(req, res) {
       ok: true,
       dateKey,
       schedulePath: scheduleResult.path,
+      notifyAfterMinutes: LATE_NOTIFY_MINUTES,
       sent,
       skipped,
     });
   } catch (error) {
     console.error("auto-check-late error:", error);
-    return res.status(500).json({ ok: false, error: error.message });
+    return res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
   }
 }
