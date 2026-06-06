@@ -257,9 +257,10 @@ export default async function handler(req, res) {
         statusText = "尚未打卡";
       }
 
-      // 沒遲到不發
-      if (lateMinutes <= 0) {
-        skipped.push({ name, reason: "未遲到" });
+      // 遲到未滿 10 分鐘不通知
+      // 例如 05:00 上班，05:01~05:09 不通知，05:10 起才通知一次。
+      if (lateMinutes < 10) {
+        skipped.push({ name, reason: "遲到未滿10分鐘" });
         continue;
       }
 
