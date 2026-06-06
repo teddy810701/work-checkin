@@ -578,8 +578,21 @@ ${message}
     });
   }, [authReady, publicScheduleDate]);
 
-  // 遲到通知已改由後端 /api/auto-check-late + Vercel Cron 統一處理。
-  // 這裡停用前端 app-open / auto-timer 自動檢查，避免有人開網頁時重複發送 LINE 遲到通知。
+  useEffect(() => {
+    if (!authReady) return;
+    triggerAutoLateCheck("app-open");
+  }, [authReady]);
+
+  useEffect(() => {
+    if (!authReady) return;
+
+    const timer = setInterval(() => {
+      triggerAutoLateCheck("auto-timer");
+    }, 60000);
+
+    return () => clearInterval(timer);
+  }, [authReady]);
+
 
   const todayRecords = useMemo(() => {
     return records.filter((r) => {
@@ -1630,8 +1643,9 @@ ${url}`);
       console.error("auto-check-late api failed:", error);
     }
 
-    // 已改由後端 /api/auto-check-late 統一處理遲到通知，避免前端與後端重複發送。
-    // await runClientLateCheck(reason);
+    // 前端補強：即使 Vercel /api/auto-check-late 尚未建立或沒有排程，
+    // 只要有人打開打卡頁或有人上班打卡，就會立即檢查當天班表並發送遲到通知。
+    await runClientLateCheck(reason);
   };
 
   const historyScheduleDates = useMemo(() => {
