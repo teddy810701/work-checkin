@@ -1643,9 +1643,8 @@ ${url}`);
       console.error("auto-check-late api failed:", error);
     }
 
-    // 前端補強：即使 Vercel /api/auto-check-late 尚未建立或沒有排程，
-    // 只要有人打開打卡頁或有人上班打卡，就會立即檢查當天班表並發送遲到通知。
-    await runClientLateCheck(reason);
+    // 已改由後端 /api/auto-check-late 統一處理遲到通知，避免前端與後端重複發送。
+    // await runClientLateCheck(reason);
   };
 
   const historyScheduleDates = useMemo(() => {

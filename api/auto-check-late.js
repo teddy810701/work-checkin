@@ -137,13 +137,13 @@ export default async function handler(req, res) {
       const workDate = parseWorkDateTime(now, startTime);
       if (!store || !workDate) return;
 
-      const isLate = now.getTime() >= workDate.getTime() + 5 * 60 * 1000;
+      const isLate = now.getTime() >= workDate.getTime() + 10 * 60 * 1000;
       if (!isLate) return;
 
       const hasCheckin = todayRecords.some((r) => r?.empId === empId && r?.type === "上班");
       if (hasCheckin) return;
 
-      if (sentMap?.[store]?.[empId]?.sent) return;
+      if (sentMap?.[store]?.sent) return;
 
       if (!lateByStore[store]) lateByStore[store] = [];
       lateByStore[store].push({
@@ -171,16 +171,21 @@ export default async function handler(req, res) {
       await pushLineMessage(groupId, message);
 
       const updates = {};
-      list.forEach((item) => {
-        updates[`line_status/late_sent/${today}/${store}/${item.empId}`] = {
-          sent: true,
-          sentAt: nowTs,
+
+      updates[`line_status/late_sent/${today}/${store}`] = {
+        sent: true,
+        sentAt: nowTs,
+        store,
+        dateKey: today,
+        count: list.length,
+        names: list.map((item) => item.name),
+        startTimes: list.map((item) => ({
+          empId: item.empId,
           name: item.name,
           startTime: item.startTime,
-          store,
-          dateKey: today,
-        };
-      });
+        })),
+      };
+
       await update(ref(db), updates);
 
       const logRef = push(ref(db, "line_status/attendance_sent"));
