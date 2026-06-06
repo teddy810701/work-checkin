@@ -578,17 +578,6 @@ ${message}
     });
   }, [authReady, publicScheduleDate]);
 
-  useEffect(() => {
-    if (!authReady) return;
-
-    const timer = setInterval(() => {
-      triggerAutoLateCheck("auto-timer");
-    }, 60000);
-
-    return () => clearInterval(timer);
-  }, [authReady]);
-
-
   const todayRecords = useMemo(() => {
     return records.filter((r) => {
       if (r.dateKey) return r.dateKey === todayKey;
@@ -1626,9 +1615,20 @@ ${url}`);
   };
 
   const triggerAutoLateCheck = async (reason = "") => {
-    // 只保留前端檢查，避免同時呼叫 /api/auto-check-late 和前端檢查造成 LINE 重複發送。
-    // 規則：超過 10 分鐘才通知；line_status/attendance_sent 會記錄同一天同一人已通知，避免重複發送。
-    await runClientLateCheck(reason);
+    try {
+      await fetch("/api/auto-check-late", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ reason }),
+      });
+    } catch (error) {
+      console.error("auto-check-late api failed:", error);
+    }
+
+    // 不再由前端補發 LINE，避免開頁面或多台設備造成重複通知。
+    // 遲到通知改由 Vercel Cron 呼叫 /api/auto-check-late 統一處理。
   };
 
   const historyScheduleDates = useMemo(() => {
