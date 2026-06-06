@@ -1,6 +1,15 @@
+// api/auto-check-late.js
+// 遲到通知修正版：
+// 1. 不使用 firebase-admin，避免 Vercel 出現 Cannot find module 'firebase-admin'
+// 2. 超過 10 分鐘才通知
+// 3. 同一天、同一員工、同一班表時間只通知一次
+// 4. 支援「尚未打卡」與「已打卡但遲到超過 10 分鐘」
+
 import { initializeApp, getApps } from "firebase/app";
 import { getAuth, signInAnonymously } from "firebase/auth";
-import { getDatabase, ref, get, update, push, set } from "firebase/database";
+import { getDatabase, ref, get, update, push, set, runTransaction } from "firebase/database";
+
+const LATE_GRACE_MINUTES = 10;
 
 function normalizeStoreName(value = "") {
   const text = String(value || "").trim();
@@ -8,6 +17,12 @@ function normalizeStoreName(value = "") {
   if (text.includes("斗南")) return "斗南站前店";
   if (text.includes("西螺")) return "西螺文昌店";
   return text;
+}
+
+function safeFirebaseKey(value) {
+  return String(value || "")
+    .replace(/[.#$\[\]/]/g, "_")
+    .replace(/\s+/g, "_");
 }
 
 function getTaipeiNow() {
@@ -41,8 +56,12 @@ function parseWorkDateTime(now, timeText) {
 
 function getManagerGroupIdByStore(store) {
   const normalized = normalizeStoreName(store);
-  if (normalized === "斗南站前店") return process.env.LINE_GROUP_ID_MANAGER_DOUNAN;
-  if (normalized === "西螺文昌店") return process.env.LINE_GROUP_ID_MANAGER_XILUO;
+  if (normalized === "斗南站前店") {
+    return process.env.LINE_GROUP_ID_MANAGER_DOUNAN || process.env.LINE_GROUP_ID_DOUNAN || "";
+  }
+  if (normalized === "西螺文昌店") {
+    return process.env.LINE_GROUP_ID_MANAGER_XILUO || process.env.LINE_GROUP_ID_XILUO || "";
+  }
   return "";
 }
 
@@ -92,6 +111,7 @@ async function getFirebaseDb() {
 
   const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
   const auth = getAuth(app);
+
   try {
     if (!auth.currentUser) {
       await signInAnonymously(auth);
@@ -99,7 +119,24 @@ async function getFirebaseDb() {
   } catch (error) {
     throw new Error(`Firebase 匿名登入失敗：${error.message}`);
   }
+
   return getDatabase(app);
+}
+
+function buildLateMessage(store, list, today, nowTs) {
+  return [
+    `⚠️ ${today} ${store} 遲到名單`,
+    "",
+    ...list.map((item, index) => {
+      const actualText = item.status === "not_checked"
+        ? "尚未打卡"
+        : `打卡 ${item.actualTime || "未記錄"}`;
+      return `${index + 1}. ${item.name}｜排班 ${item.startTime}｜${actualText}｜遲到 ${item.lateMinutes} 分鐘`;
+    }),
+    "",
+    `共 ${list.length} 人`,
+    `檢查時間：${formatTaipeiDateTime(nowTs)}`,
+  ].join("\n");
 }
 
 export default async function handler(req, res) {
@@ -113,45 +150,114 @@ export default async function handler(req, res) {
     const nowTs = Date.now();
     const today = formatTaipeiDateKey(nowTs);
 
-    const [scheduleSnap, recordsSnap, sentSnap] = await Promise.all([
+    const [scheduleSnap, recordsSnap] = await Promise.all([
       get(ref(db, `schedules/${today}`)),
       get(ref(db, "records")),
-      get(ref(db, `line_status/late_sent/${today}`)),
     ]);
 
     const scheduleMap = scheduleSnap.val() || {};
     const recordsMap = recordsSnap.val() || {};
-    const sentMap = sentSnap.val() || {};
 
-    const todayRecords = Object.values(recordsMap).filter((item) => {
-      const dateKey = item?.dateKey || (item?.createdAt ? formatTaipeiDateKey(item.createdAt) : "");
-      return dateKey === today;
+    const todayWorkInRecords = Object.values(recordsMap)
+      .filter((item) => {
+        const dateKey = item?.dateKey || (item?.createdAt ? formatTaipeiDateKey(item.createdAt) : "");
+        return dateKey === today && item?.type === "上班";
+      })
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+    const firstWorkInByEmp = {};
+    todayWorkInRecords.forEach((record) => {
+      const empId = String(record?.empId || "").trim();
+      if (!empId) return;
+      if (!firstWorkInByEmp[empId]) {
+        firstWorkInByEmp[empId] = record;
+      }
     });
 
     const lateByStore = {};
+    const skipped = [];
 
-    Object.entries(scheduleMap).forEach(([empId, item]) => {
-      if (!item?.working) return;
-      const store = normalizeStoreName(item?.store);
-      const startTime = item?.startTime;
+    for (const [empIdFromKey, item] of Object.entries(scheduleMap)) {
+      if (!item?.working) continue;
+
+      const empId = item.empId || empIdFromKey;
+      const name = item.name || empId;
+      const store = normalizeStoreName(item.store || "未填店名");
+      const startTime = item.startTime || "05:00";
       const workDate = parseWorkDateTime(now, startTime);
-      if (!store || !workDate) return;
 
-      const isLate = now.getTime() >= workDate.getTime() + 5 * 60 * 1000;
-      if (!isLate) return;
+      if (!store || !workDate) {
+        skipped.push({ empId, name, reason: "缺少店別或班表時間" });
+        continue;
+      }
 
-      const hasCheckin = todayRecords.some((r) => r?.empId === empId && r?.type === "上班");
-      if (hasCheckin) return;
+      const scheduledTs = workDate.getTime();
+      const notifyTs = scheduledTs + LATE_GRACE_MINUTES * 60 * 1000;
+      const workInRecord = firstWorkInByEmp[empId];
 
-      if (sentMap?.[store]?.[empId]?.sent) return;
+      let lateMinutes = 0;
+      let status = "";
+      let actualTime = "未打卡";
+
+      if (workInRecord) {
+        lateMinutes = Math.floor(((workInRecord.createdAt || 0) - scheduledTs) / 60000);
+        status = "late_checked_in";
+        actualTime = workInRecord.time || formatTaipeiDateTime(workInRecord.createdAt || nowTs);
+      } else {
+        lateMinutes = Math.floor((nowTs - scheduledTs) / 60000);
+        status = "not_checked";
+      }
+
+      if (lateMinutes < LATE_GRACE_MINUTES) {
+        skipped.push({ empId, name, reason: `遲到未滿 ${LATE_GRACE_MINUTES} 分鐘` });
+        continue;
+      }
+
+      if (!workInRecord && nowTs < notifyTs) {
+        skipped.push({ empId, name, reason: "尚未到通知時間" });
+        continue;
+      }
+
+      const storeKey = safeFirebaseKey(store);
+      const empKey = safeFirebaseKey(empId);
+      const startKey = safeFirebaseKey(startTime);
+      const lockRef = ref(db, `line_status/late_sent/${today}/${storeKey}/${empKey}_${startKey}`);
+
+      const lockResult = await runTransaction(lockRef, (current) => {
+        if (current?.sent === true || current?.locked === true) return current;
+        return {
+          locked: true,
+          sent: false,
+          lockedAt: nowTs,
+          dateKey: today,
+          store,
+          empId,
+          name,
+          startTime,
+          actualTime,
+          status,
+          lateMinutes,
+        };
+      });
+
+      const lockValue = lockResult.snapshot.val();
+      if (!lockResult.committed || lockValue?.sent === true) {
+        skipped.push({ empId, name, reason: "今日已通知過" });
+        continue;
+      }
 
       if (!lateByStore[store]) lateByStore[store] = [];
       lateByStore[store].push({
         empId,
-        name: item?.name || empId,
-        startTime: startTime || "未填",
+        name,
+        store,
+        startTime,
+        actualTime,
+        status,
+        lateMinutes,
+        lockPath: `line_status/late_sent/${today}/${storeKey}/${empKey}_${startKey}`,
       });
-    });
+    }
 
     const sentResults = [];
 
@@ -159,50 +265,84 @@ export default async function handler(req, res) {
       if (!list.length) continue;
 
       const groupId = getManagerGroupIdByStore(store);
-      const message = [
-        `【遲到通知】`,
-        `日期：${today}`,
-        `店別：${store}`,
-        `時間：${formatTaipeiDateTime(nowTs)}`,
-        "",
-        ...list.map((item) => `${item.name}｜上班 ${item.startTime}｜目前未打上班卡`),
-      ].join("\n");
+      const message = buildLateMessage(store, list, today, nowTs);
 
-      await pushLineMessage(groupId, message);
+      try {
+        await pushLineMessage(groupId, message);
 
-      const updates = {};
-      list.forEach((item) => {
-        updates[`line_status/late_sent/${today}/${store}/${item.empId}`] = {
-          sent: true,
-          sentAt: nowTs,
-          name: item.name,
-          startTime: item.startTime,
-          store,
-          dateKey: today,
-        };
-      });
-      await update(ref(db), updates);
+        const updates = {};
+        list.forEach((item) => {
+          updates[item.lockPath] = {
+            locked: false,
+            sent: true,
+            sentAt: nowTs,
+            dateKey: today,
+            store,
+            empId: item.empId,
+            name: item.name,
+            startTime: item.startTime,
+            actualTime: item.actualTime,
+            status: item.status,
+            lateMinutes: item.lateMinutes,
+            result: "已發送",
+          };
+        });
 
-      const logRef = push(ref(db, "line_status/attendance_sent"));
-      await set(logRef, {
-        sent: true,
-        sentAt: nowTs,
-        store,
-        dateKey: today,
-        names: list.map((item) => item.name),
-        result: `${list.length} 人`,
-        message,
-      });
+        const logRef = push(ref(db, `line_status/attendance_sent/${today}`));
+        await Promise.all([
+          update(ref(db), updates),
+          set(logRef, {
+            sent: true,
+            sentAt: nowTs,
+            store,
+            dateKey: today,
+            names: list.map((item) => item.name),
+            lateDetails: list.map((item) => ({
+              empId: item.empId,
+              name: item.name,
+              startTime: item.startTime,
+              actualTime: item.actualTime,
+              status: item.status,
+              lateMinutes: item.lateMinutes,
+            })),
+            result: `${list.length} 人`,
+            message,
+          }),
+        ]);
 
-      sentResults.push({ store, count: list.length, names: list.map((item) => item.name) });
+        sentResults.push({ store, count: list.length, names: list.map((item) => item.name) });
+      } catch (error) {
+        const updates = {};
+        list.forEach((item) => {
+          updates[item.lockPath] = {
+            locked: false,
+            sent: false,
+            error: error?.message || "LINE 發送失敗",
+            failedAt: nowTs,
+            dateKey: today,
+            store,
+            empId: item.empId,
+            name: item.name,
+            startTime: item.startTime,
+            actualTime: item.actualTime,
+            status: item.status,
+            lateMinutes: item.lateMinutes,
+            result: "發送失敗",
+          };
+        });
+        await update(ref(db), updates);
+        throw error;
+      }
     }
 
     return res.status(200).json({
       success: true,
       dateKey: today,
       checkedAt: nowTs,
+      graceMinutes: LATE_GRACE_MINUTES,
       sentCount: sentResults.reduce((sum, item) => sum + item.count, 0),
       stores: sentResults,
+      skipped,
     });
   } catch (error) {
     return res.status(500).json({

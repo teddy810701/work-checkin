@@ -578,20 +578,8 @@ ${message}
     });
   }, [authReady, publicScheduleDate]);
 
-  useEffect(() => {
-    if (!authReady) return;
-    triggerAutoLateCheck("app-open");
-  }, [authReady]);
-
-  useEffect(() => {
-    if (!authReady) return;
-
-    const timer = setInterval(() => {
-      triggerAutoLateCheck("auto-timer");
-    }, 60000);
-
-    return () => clearInterval(timer);
-  }, [authReady]);
+  // 已停用前端自動遲到檢查，避免開網頁或每分鐘重複發送 LINE。
+  // 遲到通知改由 Vercel Cron 呼叫 /api/auto-check-late 統一處理。
 
 
   const todayRecords = useMemo(() => {
@@ -1488,7 +1476,7 @@ ${url}`);
     try {
       const dateKey = formatTaipeiDateKey();
       const nowTs = Date.now();
-      const graceMs = 5 * 60 * 1000;
+      const graceMs = 10 * 60 * 1000;
 
       const [scheduleSnap, recordsSnap, sentSnap] = await Promise.all([
         get(ref(db, `schedules/${dateKey}`)),
@@ -1643,9 +1631,8 @@ ${url}`);
       console.error("auto-check-late api failed:", error);
     }
 
-    // 前端補強：即使 Vercel /api/auto-check-late 尚未建立或沒有排程，
-    // 只要有人打開打卡頁或有人上班打卡，就會立即檢查當天班表並發送遲到通知。
-    await runClientLateCheck(reason);
+    // 已改由後端 /api/auto-check-late 統一處理遲到通知，避免前端與後端重複發送。
+    // await runClientLateCheck(reason);
   };
 
   const historyScheduleDates = useMemo(() => {
@@ -2709,7 +2696,7 @@ ${url}`);
             </button>
             {adminPanels.lateCheck ? (
               <div style={styles.collapseContent}>
-                <div style={styles.historyItem}>系統會依班表自動抓遲到，超過 5 分鐘未打上班卡就通知對應店長群組，並顯示每位員工遲到分鐘數。</div>
+                <div style={styles.historyItem}>系統會依班表自動抓遲到，超過 10 分鐘未打上班卡就通知對應店長群組，並顯示每位員工遲到分鐘數。</div>
                 <div style={{ ...styles.deviceLabel, marginTop: 14 }}>遲到通知紀錄</div>
                 {lateNoticeEntries.length === 0 ? (
                   <div style={styles.emptyText}>目前沒有遲到通知紀錄</div>
