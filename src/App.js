@@ -398,6 +398,7 @@ export default function App() {
   );
   const [publicEmployeeKeyword, setPublicEmployeeKeyword] = useState("");
   const [publicScheduleData, setPublicScheduleData] = useState({});
+  const [todayScheduleData, setTodayScheduleData] = useState({});
   const [scheduleLinkCopied, setScheduleLinkCopied] = useState(false);
 
   useEffect(() => {
@@ -500,6 +501,14 @@ ${message}
   }, []);
 
   const todayKey = useMemo(() => formatTaipeiDateKey(), [nowTime]);
+
+  useEffect(() => {
+    if (!authReady || !todayKey) return;
+    const schedRef = ref(db, `schedules/${todayKey}`);
+    return onValue(schedRef, (snap) => {
+      setTodayScheduleData(snap.val() || {});
+    });
+  }, [authReady, todayKey]);
 
   const storeGroups = useMemo(() => {
     const groups = {};
@@ -1905,6 +1914,87 @@ ${url}`);
     }
   };
 
+
+  const todayScheduleList = useMemo(() => {
+    return Object.entries(todayScheduleData || {})
+      .map(([empKey, item]) => ({
+        empId: item?.empId || empKey,
+        name: item?.name || empKey,
+        store: item?.store || "未填店名",
+        startTime: item?.startTime || "",
+        endTime: item?.endTime || "",
+        working: !!item?.working,
+      }))
+      .filter((item) => item.working)
+      .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")));
+  }, [todayScheduleData]);
+
+  const firstWorkInByEmpToday = useMemo(() => {
+    const map = {};
+    todayRecords
+      .filter((record) => record?.type === "上班")
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+      .forEach((record) => {
+        const empId = String(record?.empId || "").trim();
+        if (!empId) return;
+        if (!map[empId]) map[empId] = record;
+      });
+    return map;
+  }, [todayRecords]);
+
+  const lateDashboardList = useMemo(() => {
+    const nowTs = Date.now();
+    return todayScheduleList
+      .map((item) => {
+        const startTs = getTaipeiTimestampFromDateTime(todayKey, item.startTime);
+        if (!startTs) return null;
+
+        const workIn = firstWorkInByEmpToday[item.empId];
+        const actualTs = workIn?.createdAt || 0;
+
+        let lateMinutes = 0;
+        let actualTime = workIn?.time || "尚未打卡";
+        let status = "準時";
+
+        if (actualTs) {
+          lateMinutes = Math.max(0, Math.floor((actualTs - startTs) / 60000));
+          status = lateMinutes > 0 ? "已遲到" : "準時";
+        } else if (nowTs > startTs) {
+          lateMinutes = Math.max(0, Math.floor((nowTs - startTs) / 60000));
+          status = "尚未打卡";
+        }
+
+        if (lateMinutes <= 0) return null;
+
+        return {
+          ...item,
+          actualTime,
+          lateMinutes,
+          status,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.lateMinutes - a.lateMinutes);
+  }, [todayScheduleList, firstWorkInByEmpToday, todayKey, nowTime]);
+
+  const dashboardStats = useMemo(() => {
+    const scheduledCount = todayScheduleList.length;
+    const checkedInCount = todayScheduleList.filter((item) => firstWorkInByEmpToday[item.empId]).length;
+    const lateCount = lateDashboardList.length;
+    const notCheckedCount = todayScheduleList.filter((item) => {
+      const startTs = getTaipeiTimestampFromDateTime(todayKey, item.startTime);
+      return startTs && Date.now() > startTs && !firstWorkInByEmpToday[item.empId];
+    }).length;
+
+    return {
+      scheduledCount,
+      checkedInCount,
+      lateCount,
+      notCheckedCount,
+    };
+  }, [todayScheduleList, firstWorkInByEmpToday, lateDashboardList, todayKey, nowTime]);
+
+
   const recentRecords = records.slice(0, 8);
 
   if (!authReady) {
@@ -2099,10 +2189,9 @@ ${url}`);
       </div>
     );
   }
-
-  if (!isAdmin) {
+            if (!isAdmin) {
     return (
-      <div style={styles.page}>
+      <div style={styles.tabletPage}>
         {scoreToast && (
           <div style={styles.scoreToastOverlay}>
             <div style={styles.scoreToastCard}>
@@ -2124,6 +2213,7 @@ ${url}`);
             </div>
           </div>
         )}
+
         {mealModalData && (
           <div style={styles.modalOverlay}>
             <div style={styles.mealModalCard}>
@@ -2171,33 +2261,6 @@ ${url}`);
             </div>
           </div>
         )}
-        <div style={styles.overlay} />
-
-        <div style={styles.topRightBar}>
-          <button
-            style={{
-              ...styles.adminTopBtn,
-              marginRight: 10,
-              background: "#16a34a",
-            }}
-            onClick={() =>
-              window.open(
-                "https://staff-meal-system.vercel.app/",
-                "_blank",
-                "noopener,noreferrer"
-              )
-            }
-          >
-            員工餐
-          </button>
-
-          <button
-            style={styles.adminTopBtn}
-            onClick={() => setShowLoginModal(true)}
-          >
-            管理員
-          </button>
-        </div>
 
         {showLoginModal && (
           <div style={styles.modalOverlay}>
@@ -2231,37 +2294,130 @@ ${url}`);
           </div>
         )}
 
-        <div style={styles.mainWrap}>
-          <div style={styles.brandBar}>
-            <div style={styles.brandDot} />
-            <div>
-              <div style={styles.brandTitle}>店面打卡系統</div>
-              <div style={styles.brandSub}>Store Check-in Terminal</div>
-            </div>
+        <aside style={styles.tabletSidebar}>
+          <div style={styles.sidebarLogoBox}>
+            <div style={styles.sidebarLogo}>MWD</div>
+            <div style={styles.sidebarBrand}>麥味登<br />打卡系統</div>
           </div>
 
-          <div style={styles.kioskCard}>
-            <div style={styles.kioskHeader}>
-              <h1 style={styles.kioskTitle}>員工打卡入口</h1>
-              <p style={styles.kioskDesc}>請輸入員工工號後打卡</p>
-              <button
-                style={styles.scheduleEntryBtn}
-                onClick={() => openPublicSchedule("全部", getTomorrowTaipeiDateKey())}
-              >
-                📅 查看明日班表
-              </button>
+          <button
+            style={styles.sidebarNavActive}
+            onClick={() => openPublicSchedule("全部", getTomorrowTaipeiDateKey())}
+          >
+            📅 查看班表
+          </button>
+
+          <button
+            style={styles.sidebarNav}
+            onClick={() =>
+              window.open(
+                "https://staff-meal-system.vercel.app/",
+                "_blank",
+                "noopener,noreferrer"
+              )
+            }
+          >
+            🍱 員工餐
+          </button>
+
+          <button
+            style={styles.sidebarNav}
+            onClick={() =>
+              window.open(
+                "https://breakfast-system.vercel.app/",
+                "_blank",
+                "noopener,noreferrer"
+              )
+            }
+          >
+            ⭐ 積分系統
+          </button>
+
+          <button
+            style={styles.sidebarAdminBtn}
+            onClick={() => setShowLoginModal(true)}
+          >
+            管理員
+          </button>
+        </aside>
+
+        <main style={styles.tabletMain}>
+          <section style={styles.dashboardHeader}>
+            <div>
+              <div style={styles.dashboardHello}>早安，店長 👋</div>
+              <div style={styles.dashboardSub}>今天也一起加油！</div>
             </div>
 
-            <div style={styles.timeBox}>台北標準時間：{nowTime}</div>
+            <div style={styles.clockBox}>
+              <div style={styles.clockTime}>{nowTime ? nowTime.split(" ")[1] : "--:--:--"}</div>
+              <div style={styles.clockDate}>{todayKey.replace(/-/g, "/")}</div>
+            </div>
 
-            {!isAuthorizedDevice && (
-              <div style={styles.warningBox}>
-                此設備尚未授權，請先由管理員進入後台綁定西螺或斗南設備。
+            <div style={styles.headerActions}>
+              <button style={styles.refreshMiniBtn} onClick={() => triggerAutoLateCheck("manual_dashboard")}>
+                重新整理
+              </button>
+              <button style={styles.headerScheduleBtn} onClick={() => openPublicSchedule("全部", getTomorrowTaipeiDateKey())}>
+                查看班表
+              </button>
+            </div>
+          </section>
+
+          {!isAuthorizedDevice && (
+            <div style={styles.dashboardWarning}>
+              此設備尚未授權，請先由管理員進入後台綁定西螺或斗南設備。
+            </div>
+          )}
+
+          <section style={styles.dashboardTopGrid}>
+            <div style={styles.latePanel}>
+              <div style={styles.cardTitleRed}>⚠ 今日遲到看板</div>
+              {lateDashboardList.length === 0 ? (
+                <div style={styles.noLateBox}>🎉 今日目前沒有遲到紀錄</div>
+              ) : (
+                <>
+                  <div style={styles.lateCountText}>遲到 {lateDashboardList.length} 人</div>
+                  {lateDashboardList.slice(0, 3).map((item) => (
+                    <div key={`${item.empId}-${item.startTime}`} style={styles.latePersonRow}>
+                      <div>
+                        <div style={styles.latePersonName}>{item.name}</div>
+                        <div style={styles.latePersonMeta}>
+                          {item.store}｜排班 {item.startTime}｜{item.actualTime === "尚未打卡" ? "尚未打卡" : `打卡 ${item.actualTime}`}
+                        </div>
+                      </div>
+                      <div style={styles.lateMinutes}>遲到 {item.lateMinutes} 分</div>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+
+            <div style={styles.statsPanel}>
+              <div style={styles.cardTitleGreen}>今日出勤狀況</div>
+              <div style={styles.statsGrid}>
+                <div style={styles.statBox}>
+                  <div style={styles.statValue}>{dashboardStats.checkedInCount}</div>
+                  <div style={styles.statLabel}>已打卡</div>
+                </div>
+                <div style={styles.statBox}>
+                  <div style={styles.statValue}>{dashboardStats.scheduledCount}</div>
+                  <div style={styles.statLabel}>排班</div>
+                </div>
+                <div style={styles.statBox}>
+                  <div style={{ ...styles.statValue, color: "#dc2626" }}>{dashboardStats.lateCount}</div>
+                  <div style={styles.statLabel}>遲到</div>
+                </div>
+                <div style={styles.statBox}>
+                  <div style={{ ...styles.statValue, color: "#f97316" }}>{dashboardStats.notCheckedCount}</div>
+                  <div style={styles.statLabel}>未打卡</div>
+                </div>
               </div>
-            )}
+            </div>
+          </section>
 
+          <section style={styles.checkinPanel}>
             <input
-              style={styles.bigInput}
+              style={styles.dashboardInput}
               placeholder="請輸入工號"
               value={employeeId}
               onChange={(e) => setEmployeeId(e.target.value)}
@@ -2270,124 +2426,84 @@ ${url}`);
               }}
             />
 
-            <div style={styles.btnGridFour}>
+            <div style={styles.dashboardButtonGrid}>
               <button
-                style={{
-                  ...styles.actionBtn,
-                  ...styles.primaryBtn,
-                  opacity: !isAuthorizedDevice ? 0.5 : 1,
-                }}
+                style={{ ...styles.dashboardActionBtn, ...styles.dashboardBlueBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }}
                 onClick={() => checkIn("上班")}
               >
-                上班打卡
+                ⬆ 上班打卡
+                <span>開始今天的工作</span>
               </button>
-
               <button
-                style={{
-                  ...styles.actionBtn,
-                  ...styles.darkBtn,
-                  opacity: !isAuthorizedDevice ? 0.5 : 1,
-                }}
+                style={{ ...styles.dashboardActionBtn, ...styles.dashboardDarkBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }}
                 onClick={() => checkIn("下班")}
               >
-                下班打卡
+                ⬇ 下班打卡
+                <span>下班時登記員工餐</span>
               </button>
-
               <button
-                style={{
-                  ...styles.actionBtn,
-                  ...styles.orangeBtn,
-                  opacity: !isAuthorizedDevice ? 0.5 : 1,
-                }}
+                style={{ ...styles.dashboardActionBtn, ...styles.dashboardOrangeBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }}
                 onClick={() => checkIn("休息開始")}
               >
-                休息開始
+                ☕ 休息開始
+                <span>開始休息時間</span>
               </button>
-
               <button
-                style={{
-                  ...styles.actionBtn,
-                  ...styles.greenBtn,
-                  opacity: !isAuthorizedDevice ? 0.5 : 1,
-                }}
+                style={{ ...styles.dashboardActionBtn, ...styles.dashboardGreenBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }}
                 onClick={() => checkIn("休息結束")}
               >
-                休息結束
+                🍵 休息結束
+                <span>結束休息時間</span>
               </button>
             </div>
-          </div>
+          </section>
 
-          <div style={styles.liveStatusCard}>
-            <div style={styles.sectionTitle}>今日上班／休息狀態</div>
-            {liveStatusList.length === 0 ? (
-              <div style={styles.emptyText}>目前沒有員工資料</div>
-            ) : (
-              liveStatusList.map((emp) => {
-                const statusStyle = getStatusStyle(emp.status);
-                return (
-                  <div
-                    key={emp.empId}
-                    style={{
-                      ...styles.liveStatusRow,
-                      borderColor: statusStyle.border,
-                      background: statusStyle.background,
-                    }}
-                  >
-                    <div style={styles.liveStatusLeft}>
-                      <span
-                        style={{
-                          ...styles.statusDot,
-                          background: statusStyle.dot,
-                          boxShadow: `0 0 14px ${statusStyle.dot}`,
-                        }}
-                      />
+          <section style={styles.dashboardBottomGrid}>
+            <div style={styles.dashboardCard}>
+              <div style={styles.sectionTitle}>今日上班／休息狀態</div>
+              <div style={styles.staffMiniGrid}>
+                {liveStatusList.slice(0, 8).map((emp) => {
+                  const statusStyle = getStatusStyle(emp.status);
+                  return (
+                    <div key={emp.empId} style={styles.staffMiniCard}>
                       <div>
-                        <div style={styles.employeeName}>{emp.name}</div>
-                        <div style={styles.employeeId}>
-                          {emp.empId} ・ {emp.store || "未填店名"} ・ {emp.role || "未設定"}
-                        </div>
+                        <div style={styles.staffMiniName}>{emp.name}</div>
+                        <div style={styles.staffMiniMeta}>{emp.empId}｜{emp.store || "未填店名"}</div>
                       </div>
+                      <span style={{ ...styles.staffMiniBadge, color: statusStyle.color, background: statusStyle.background }}>
+                        {emp.status}
+                      </span>
                     </div>
-                    <div
-                      style={{
-                        ...styles.statusBadge,
-                        background: "#ffffffcc",
-                        color: statusStyle.color,
-                      }}
-                    >
-                      {emp.status}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
+                  );
+                })}
+              </div>
+            </div>
 
-          <div style={styles.recentCard}>
-            <div style={styles.sectionTitle}>近期打卡紀錄</div>
-            {recentRecords.length === 0 ? (
-              <div style={styles.emptyText}>目前尚無紀錄</div>
-            ) : (
-              recentRecords.map((r) => (
-                <div key={r.id} style={styles.recordRow}>
+            <div style={styles.dashboardCard}>
+              <div style={styles.sectionTitle}>近期打卡紀錄</div>
+              {recentRecords.slice(0, 6).map((r) => (
+                <div key={r.id} style={styles.compactRecordRow}>
                   <div>
                     <div style={styles.recordName}>{r.name}</div>
-                    <div style={styles.recordMeta}>
-                      {r.empId} ・ {r.date} ・ {r.store || "未填店名"}
-                    </div>
+                    <div style={styles.recordMeta}>{r.empId}・{r.store || "未填店名"}</div>
                   </div>
                   <div style={styles.recordRight}>
                     <div style={styles.recordType}>{r.type}</div>
                     <div style={styles.recordTime}>{r.time}</div>
                   </div>
                 </div>
-              ))
-            )}
+              ))}
+            </div>
+          </section>
+
+          <div style={styles.systemNotice}>
+            📣 系統公告：請大家準時打卡，遲到超過 10 分鐘將自動通知店長群組。
           </div>
-        </div>
+        </main>
       </div>
     );
   }
+
 
   return (
     <div style={styles.adminPage}>
@@ -3040,6 +3156,370 @@ ${url}`);
 }
 
 const styles = {
+
+  tabletPage: {
+    minHeight: "100vh",
+    display: "grid",
+    gridTemplateColumns: "170px 1fr",
+    background: "linear-gradient(135deg, #e8f5ef 0%, #f8fafc 45%, #eef6ff 100%)",
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  },
+  tabletSidebar: {
+    minHeight: "100vh",
+    background: "linear-gradient(180deg, #064e3b 0%, #047857 100%)",
+    color: "#fff",
+    padding: "20px 14px",
+    boxSizing: "border-box",
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+    boxShadow: "10px 0 30px rgba(15,23,42,0.12)",
+  },
+  sidebarLogoBox: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "6px 4px 20px",
+    marginBottom: 6,
+  },
+  sidebarLogo: {
+    width: 52,
+    height: 52,
+    borderRadius: 18,
+    background: "rgba(255,255,255,0.16)",
+    border: "1px solid rgba(255,255,255,0.28)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 14,
+    fontWeight: 950,
+  },
+  sidebarBrand: {
+    fontSize: 14,
+    fontWeight: 950,
+    lineHeight: 1.25,
+  },
+  sidebarNav: {
+    width: "100%",
+    border: "none",
+    borderRadius: 16,
+    padding: "14px 12px",
+    background: "rgba(255,255,255,0.10)",
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: 900,
+    textAlign: "left",
+    cursor: "pointer",
+  },
+  sidebarNavActive: {
+    width: "100%",
+    border: "none",
+    borderRadius: 16,
+    padding: "14px 12px",
+    background: "#ffffff",
+    color: "#047857",
+    fontSize: 15,
+    fontWeight: 950,
+    textAlign: "left",
+    cursor: "pointer",
+    boxShadow: "0 12px 26px rgba(0,0,0,0.16)",
+  },
+  sidebarAdminBtn: {
+    marginTop: "auto",
+    border: "1px solid rgba(255,255,255,0.24)",
+    borderRadius: 999,
+    padding: "11px 12px",
+    background: "rgba(255,255,255,0.12)",
+    color: "#fff",
+    fontWeight: 950,
+    cursor: "pointer",
+  },
+  tabletMain: {
+    padding: "24px 26px",
+    boxSizing: "border-box",
+    minWidth: 0,
+  },
+  dashboardHeader: {
+    display: "grid",
+    gridTemplateColumns: "1fr 260px 230px",
+    gap: 16,
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  dashboardHello: {
+    fontSize: 26,
+    fontWeight: 950,
+    color: "#0f172a",
+  },
+  dashboardSub: {
+    marginTop: 4,
+    color: "#64748b",
+    fontWeight: 800,
+  },
+  clockBox: {
+    textAlign: "center",
+    background: "#ffffff",
+    borderRadius: 24,
+    padding: "12px 18px",
+    boxShadow: "0 14px 34px rgba(15,23,42,0.08)",
+    border: "1px solid #e2e8f0",
+  },
+  clockTime: {
+    fontSize: 38,
+    lineHeight: 1,
+    color: "#047857",
+    fontWeight: 950,
+    letterSpacing: 1,
+  },
+  clockDate: {
+    marginTop: 6,
+    color: "#475569",
+    fontSize: 13,
+    fontWeight: 900,
+  },
+  headerActions: {
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: 10,
+  },
+  refreshMiniBtn: {
+    border: "none",
+    borderRadius: 999,
+    background: "#f1f5f9",
+    color: "#334155",
+    padding: "11px 14px",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  headerScheduleBtn: {
+    border: "none",
+    borderRadius: 999,
+    background: "#2563eb",
+    color: "#fff",
+    padding: "11px 14px",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  dashboardWarning: {
+    background: "#fff7ed",
+    color: "#c2410c",
+    border: "1px solid #fdba74",
+    padding: 13,
+    borderRadius: 18,
+    marginBottom: 14,
+    fontWeight: 900,
+    textAlign: "center",
+  },
+  dashboardTopGrid: {
+    display: "grid",
+    gridTemplateColumns: "1.15fr 1fr",
+    gap: 16,
+    marginBottom: 16,
+  },
+  latePanel: {
+    background: "linear-gradient(180deg, #fff7f7, #ffffff)",
+    border: "1px solid #fecaca",
+    borderRadius: 26,
+    padding: 18,
+    boxShadow: "0 16px 36px rgba(220,38,38,0.08)",
+    minHeight: 150,
+  },
+  statsPanel: {
+    background: "linear-gradient(180deg, #f0fdf4, #ffffff)",
+    border: "1px solid #bbf7d0",
+    borderRadius: 26,
+    padding: 18,
+    boxShadow: "0 16px 36px rgba(22,163,74,0.08)",
+  },
+  cardTitleRed: {
+    color: "#b91c1c",
+    fontSize: 16,
+    fontWeight: 950,
+    marginBottom: 10,
+  },
+  cardTitleGreen: {
+    color: "#047857",
+    fontSize: 16,
+    fontWeight: 950,
+    marginBottom: 12,
+  },
+  noLateBox: {
+    background: "#fff",
+    borderRadius: 18,
+    padding: 18,
+    color: "#166534",
+    fontWeight: 950,
+    textAlign: "center",
+    border: "1px solid #dcfce7",
+  },
+  lateCountText: {
+    fontSize: 26,
+    fontWeight: 950,
+    color: "#dc2626",
+    marginBottom: 8,
+  },
+  latePersonRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+    padding: "10px 0",
+    borderTop: "1px solid #fee2e2",
+  },
+  latePersonName: {
+    fontSize: 16,
+    fontWeight: 950,
+    color: "#0f172a",
+  },
+  latePersonMeta: {
+    marginTop: 3,
+    color: "#64748b",
+    fontSize: 12,
+    fontWeight: 800,
+  },
+  lateMinutes: {
+    color: "#dc2626",
+    fontWeight: 950,
+    whiteSpace: "nowrap",
+  },
+  statsGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, 1fr)",
+    gap: 10,
+  },
+  statBox: {
+    background: "#fff",
+    borderRadius: 18,
+    padding: "16px 8px",
+    textAlign: "center",
+    border: "1px solid #e2e8f0",
+  },
+  statValue: {
+    fontSize: 30,
+    fontWeight: 950,
+    color: "#047857",
+  },
+  statLabel: {
+    marginTop: 4,
+    color: "#64748b",
+    fontSize: 12,
+    fontWeight: 900,
+  },
+  checkinPanel: {
+    background: "#fff",
+    borderRadius: 28,
+    padding: 18,
+    boxShadow: "0 16px 38px rgba(15,23,42,0.08)",
+    border: "1px solid #e2e8f0",
+    marginBottom: 16,
+  },
+  dashboardInput: {
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "20px 18px",
+    borderRadius: 22,
+    border: "2px solid #dbeafe",
+    background: "#f8fafc",
+    fontSize: 28,
+    fontWeight: 950,
+    textAlign: "center",
+    outline: "none",
+    marginBottom: 14,
+  },
+  dashboardButtonGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, 1fr)",
+    gap: 12,
+  },
+  dashboardActionBtn: {
+    border: "none",
+    borderRadius: 20,
+    padding: "18px 10px",
+    color: "#fff",
+    fontSize: 20,
+    fontWeight: 950,
+    cursor: "pointer",
+    boxShadow: "0 14px 26px rgba(15,23,42,0.12)",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 5,
+  },
+  dashboardBlueBtn: {
+    background: "linear-gradient(135deg, #2563eb, #3b82f6)",
+  },
+  dashboardDarkBtn: {
+    background: "linear-gradient(135deg, #334155, #0f172a)",
+  },
+  dashboardOrangeBtn: {
+    background: "linear-gradient(135deg, #f59e0b, #f97316)",
+  },
+  dashboardGreenBtn: {
+    background: "linear-gradient(135deg, #10b981, #22c55e)",
+  },
+  dashboardBottomGrid: {
+    display: "grid",
+    gridTemplateColumns: "1.3fr 0.85fr",
+    gap: 16,
+  },
+  dashboardCard: {
+    background: "#fff",
+    borderRadius: 26,
+    padding: 18,
+    boxShadow: "0 16px 38px rgba(15,23,42,0.08)",
+    border: "1px solid #e2e8f0",
+  },
+  staffMiniGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, 1fr)",
+    gap: 10,
+  },
+  staffMiniCard: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 8,
+    alignItems: "center",
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+    borderRadius: 18,
+    padding: "12px 14px",
+  },
+  staffMiniName: {
+    fontSize: 15,
+    fontWeight: 950,
+    color: "#0f172a",
+  },
+  staffMiniMeta: {
+    marginTop: 3,
+    fontSize: 11,
+    color: "#64748b",
+    fontWeight: 800,
+  },
+  staffMiniBadge: {
+    borderRadius: 999,
+    padding: "6px 9px",
+    fontSize: 12,
+    fontWeight: 950,
+    whiteSpace: "nowrap",
+  },
+  compactRecordRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+    padding: "10px 0",
+    borderBottom: "1px solid #eef2f7",
+  },
+  systemNotice: {
+    marginTop: 16,
+    background: "#ecfdf5",
+    color: "#047857",
+    border: "1px solid #bbf7d0",
+    borderRadius: 18,
+    padding: "12px 16px",
+    fontWeight: 900,
+  },
+
   loadingPage: {
     minHeight: "100vh",
     display: "flex",
