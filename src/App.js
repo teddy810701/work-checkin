@@ -328,6 +328,9 @@ export default function App() {
   const [records, setRecords] = useState([]);
   const [employeeId, setEmployeeId] = useState("");
   const [scoreToast, setScoreToast] = useState(null);
+  const [mealModalData, setMealModalData] = useState(null);
+  const [mealAmount, setMealAmount] = useState("");
+  const [mealSaving, setMealSaving] = useState(false);
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [password, setPassword] = useState("");
@@ -369,7 +372,6 @@ export default function App() {
   const lateCheckRunningRef = useRef(false);
 
   const [scheduleItems, setScheduleItems] = useState({});
-  const [todayScheduleData, setTodayScheduleData] = useState({});
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleSent, setScheduleSent] = useState(false);
   const [scheduleDate, setScheduleDate] = useState(formatTaipeiDateKey());
@@ -498,15 +500,6 @@ ${message}
   }, []);
 
   const todayKey = useMemo(() => formatTaipeiDateKey(), [nowTime]);
-
-  useEffect(() => {
-    if (!authReady) return;
-
-    const todayScheduleRef = ref(db, `schedules/${todayKey}`);
-    return onValue(todayScheduleRef, (snap) => {
-      setTodayScheduleData(snap.val() || {});
-    });
-  }, [authReady, todayKey]);
 
   const storeGroups = useMemo(() => {
     const groups = {};
@@ -665,60 +658,6 @@ ${message}
       return (a.empId || "").localeCompare(b.empId || "");
     });
   }, [employees, todayRecords]);
-
-  const todayLateList = useMemo(() => {
-    const nowTs = Date.now();
-
-    return Object.entries(todayScheduleData || {})
-      .map(([empIdFromKey, sched]) => {
-        if (!sched?.working) return null;
-
-        const empId = String(sched.empId || empIdFromKey || "").trim();
-        const emp = employees.find((e) => {
-          const id = String(e.empId || e.id || "").trim();
-          return id === empId || String(e.name || "").trim() === String(sched.name || "").trim();
-        });
-
-        const name = sched.name || emp?.name || empId;
-        const storeName = sched.store || emp?.store || "";
-        const startTime = sched.startTime || "";
-        const startTs = getTaipeiTimestampFromDateTime(todayKey, startTime);
-
-        if (!empId || !startTs) return null;
-
-        const workIn =
-          latestWorkInMap[empId] ||
-          latestWorkInMap[name] ||
-          latestWorkInMap[String(emp?.empId || emp?.id || "").trim()] ||
-          null;
-
-        let lateMinutes = 0;
-        let actualTime = "尚未打卡";
-        let status = "尚未打卡";
-
-        if (workIn?.createdAt) {
-          lateMinutes = Math.floor(((workIn.createdAt || 0) - startTs) / 60000);
-          actualTime = workIn.time || formatExcelTime(workIn.createdAt);
-          status = "已打卡";
-        } else {
-          lateMinutes = Math.floor((nowTs - startTs) / 60000);
-        }
-
-        if (lateMinutes <= 0) return null;
-
-        return {
-          empId,
-          name,
-          store: storeName,
-          startTime,
-          actualTime,
-          status,
-          lateMinutes,
-        };
-      })
-      .filter(Boolean)
-      .sort((a, b) => b.lateMinutes - a.lateMinutes);
-  }, [todayScheduleData, employees, latestWorkInMap, todayKey, nowTime]);
 
   const toggleScheduleWorking = (empId) => {
     setScheduleItems((prev) => ({
@@ -1006,6 +945,56 @@ ${url}`);
     setScoreToast(null);
   };
 
+  const saveCheckoutMeal = async (amountValue = mealAmount) => {
+    if (!mealModalData || mealSaving) return;
+
+    const rawAmount = String(amountValue ?? "").trim();
+    const amount = rawAmount === "" ? 0 : Number(rawAmount);
+
+    if (Number.isNaN(amount) || amount < 0) {
+      alert("請輸入正確的員工餐金額");
+      return;
+    }
+
+    setMealSaving(true);
+
+    try {
+      const nowTs = Date.now();
+
+      await set(ref(db, `staffMeals/${mealModalData.dateKey}/${mealModalData.empId}`), {
+        empId: mealModalData.empId,
+        name: mealModalData.name,
+        store: mealModalData.store,
+        role: mealModalData.role,
+        amount,
+        dateKey: mealModalData.dateKey,
+        checkoutAt: mealModalData.checkoutAt,
+        createdAt: nowTs,
+        updatedAt: nowTs,
+        source: "checkout",
+      });
+
+      setMealModalData(null);
+      setMealAmount("");
+      alert(amount > 0 ? `員工餐已記錄：${amount} 元` : "已記錄今日沒有吃員工餐");
+    } catch (error) {
+      console.error("員工餐記錄失敗：", error);
+      alert(`員工餐記錄失敗：${error.message || "請稍後再試"}`);
+    } finally {
+      setMealSaving(false);
+    }
+  };
+
+  const skipCheckoutMeal = () => {
+    saveCheckoutMeal(0);
+  };
+
+  const closeMealModalWithoutSaving = () => {
+    if (mealSaving) return;
+    setMealModalData(null);
+    setMealAmount("");
+  };
+
   const checkIn = async (type) => {
     if (!isAuthorizedDevice) {
       alert("此設備未授權");
@@ -1065,6 +1054,19 @@ ${url}`);
     });
 
     setEmployeeId("");
+
+    if (type === "下班") {
+      setMealModalData({
+        empId: emp.empId || emp.id,
+        name: emp.name,
+        store: emp.store || "",
+        role: emp.role || "",
+        dateKey: formatTaipeiDateKey(createdAt),
+        checkoutAt: createdAt,
+      });
+      setMealAmount("");
+    }
+
     // 改為由自動排程統一檢查遲到，避免重複 LINE 通知
 
     try {
@@ -1905,92 +1907,6 @@ ${url}`);
 
   const recentRecords = records.slice(0, 8);
 
-
-  const todayDashboardItems = useMemo(() => {
-    const nowTs = Date.now();
-
-    return Object.entries(todayScheduleData || {})
-      .filter(([, item]) => item?.working)
-      .map(([empIdFromKey, item]) => {
-        const empId = String(item?.empId || empIdFromKey || "").trim();
-        const emp = employees.find((e) => {
-          const id = String(e.empId || e.id || "").trim();
-          return id === empId || String(e.name || "").trim() === String(item?.name || "").trim();
-        });
-        const name = item?.name || emp?.name || empId || "未命名";
-        const storeName = item?.store || emp?.store || "未填店名";
-        const roleName = item?.role || emp?.role || "";
-        const startTime = item?.startTime || "";
-        const startTs = getTaipeiTimestampFromDateTime(todayKey, startTime);
-        const workIn =
-          latestWorkInMap[empId] ||
-          latestWorkInMap[name] ||
-          latestWorkInMap[String(emp?.empId || emp?.id || "").trim()] ||
-          null;
-
-        let status = "未打卡";
-        let actualTime = "—";
-        let lateMinutes = 0;
-
-        if (workIn?.createdAt) {
-          actualTime = workIn.time || formatExcelTime(workIn.createdAt);
-          lateMinutes = startTs ? Math.max(0, Math.floor(((workIn.createdAt || 0) - startTs) / 60000)) : 0;
-          status = lateMinutes > 0 ? "遲到" : "已打卡";
-        } else if (startTs && nowTs > startTs) {
-          lateMinutes = Math.max(0, Math.floor((nowTs - startTs) / 60000));
-          status = "未打卡";
-        }
-
-        return {
-          empId,
-          name,
-          store: storeName,
-          role: roleName,
-          startTime,
-          actualTime,
-          status,
-          lateMinutes,
-          checked: Boolean(workIn?.createdAt),
-        };
-      })
-      .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")) || String(a.empId || "").localeCompare(String(b.empId || "")));
-  }, [todayScheduleData, employees, latestWorkInMap, todayKey, nowTime]);
-
-  const dashboardStats = useMemo(() => {
-    const scheduled = todayDashboardItems.length;
-    const checked = todayDashboardItems.filter((item) => item.checked).length;
-    const late = todayDashboardItems.filter((item) => item.lateMinutes > 0).length;
-    const missing = todayDashboardItems.filter((item) => !item.checked).length;
-    const attendanceRate = scheduled ? Math.round((checked / scheduled) * 100) : 0;
-
-    return { scheduled, checked, late, missing, attendanceRate };
-  }, [todayDashboardItems]);
-
-  const storeDashboardStats = useMemo(() => {
-    const map = {};
-    todayDashboardItems.forEach((item) => {
-      const storeName = item.store || "未填店名";
-      if (!map[storeName]) {
-        map[storeName] = { store: storeName, scheduled: 0, checked: 0, late: 0, missing: 0 };
-      }
-      map[storeName].scheduled += 1;
-      if (item.checked) map[storeName].checked += 1;
-      if (item.lateMinutes > 0) map[storeName].late += 1;
-      if (!item.checked) map[storeName].missing += 1;
-    });
-    return Object.values(map).sort((a, b) => String(a.store).localeCompare(String(b.store)));
-  }, [todayDashboardItems]);
-
-  const checkedDashboardItems = useMemo(() => {
-    return todayDashboardItems.filter((item) => item.checked).slice(0, 8);
-  }, [todayDashboardItems]);
-
-  const missingDashboardItems = useMemo(() => {
-    return todayDashboardItems.filter((item) => !item.checked).slice(0, 4);
-  }, [todayDashboardItems]);
-
-  const topLateItem = todayLateList[0] || null;
-
   if (!authReady) {
     return (
       <div style={styles.loadingPage}>
@@ -2186,7 +2102,7 @@ ${url}`);
 
   if (!isAdmin) {
     return (
-      <div style={styles.tabletPage}>
+      <div style={styles.page}>
         {scoreToast && (
           <div style={styles.scoreToastOverlay}>
             <div style={styles.scoreToastCard}>
@@ -2208,6 +2124,80 @@ ${url}`);
             </div>
           </div>
         )}
+        {mealModalData && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.mealModalCard}>
+              <div style={styles.mealModalIcon}>🍽️</div>
+              <div style={styles.modalTitle}>下班員工餐登記</div>
+              <div style={styles.mealModalDesc}>
+                {mealModalData.name} 今天有吃員工餐嗎？請輸入金額，沒有吃就按「沒有吃」。
+              </div>
+              <input
+                style={styles.mealAmountInput}
+                type="number"
+                inputMode="numeric"
+                min="0"
+                placeholder="輸入員工餐金額，例如 80"
+                value={mealAmount}
+                onChange={(e) => setMealAmount(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveCheckoutMeal();
+                }}
+                autoFocus
+              />
+              <div style={styles.mealModalActions}>
+                <button
+                  style={styles.mealNoBtn}
+                  onClick={skipCheckoutMeal}
+                  disabled={mealSaving}
+                >
+                  沒有吃
+                </button>
+                <button
+                  style={styles.mealSaveBtn}
+                  onClick={() => saveCheckoutMeal()}
+                  disabled={mealSaving}
+                >
+                  {mealSaving ? "儲存中…" : "確認登記"}
+                </button>
+              </div>
+              <button
+                style={styles.mealLaterBtn}
+                onClick={closeMealModalWithoutSaving}
+                disabled={mealSaving}
+              >
+                稍後再填
+              </button>
+            </div>
+          </div>
+        )}
+        <div style={styles.overlay} />
+
+        <div style={styles.topRightBar}>
+          <button
+            style={{
+              ...styles.adminTopBtn,
+              marginRight: 10,
+              background: "#16a34a",
+            }}
+            onClick={() =>
+              window.open(
+                "https://staff-meal-system.vercel.app/",
+                "_blank",
+                "noopener,noreferrer"
+              )
+            }
+          >
+            員工餐
+          </button>
+
+          <button
+            style={styles.adminTopBtn}
+            onClick={() => setShowLoginModal(true)}
+          >
+            管理員
+          </button>
+        </div>
 
         {showLoginModal && (
           <div style={styles.modalOverlay}>
@@ -2241,169 +2231,159 @@ ${url}`);
           </div>
         )}
 
-        <div style={styles.tabletShell}>
-          <aside style={styles.tabletSidebar}>
-            <button style={styles.sidebarLogoBtn} onDoubleClick={() => setShowLoginModal(true)} title="快速點兩下可進入管理員">
-              <div style={styles.sidebarLogoCircle}>MWD</div>
-              <div style={styles.sidebarBrandName}>麥味登</div>
-              <div style={styles.sidebarBrandSub}>Cafe & Brunch</div>
-            </button>
+        <div style={styles.mainWrap}>
+          <div style={styles.brandBar}>
+            <div style={styles.brandDot} />
+            <div>
+              <div style={styles.brandTitle}>店面打卡系統</div>
+              <div style={styles.brandSub}>Store Check-in Terminal</div>
+            </div>
+          </div>
 
-            <button style={styles.sidebarNavBtn} onClick={() => openPublicSchedule("全部", getTomorrowTaipeiDateKey())}>
-              <span style={styles.sidebarNavIcon}>📅</span>
-              <span>查看班表</span>
-            </button>
-
-            <button
-              style={{ ...styles.sidebarNavBtn, ...styles.sidebarNavOrange }}
-              onClick={() => window.open("https://staff-meal-system.vercel.app/", "_blank", "noopener,noreferrer")}
-            >
-              <span style={styles.sidebarNavIcon}>🍴</span>
-              <span>員工餐</span>
-            </button>
-
-            <button
-              style={{ ...styles.sidebarNavBtn, ...styles.sidebarNavPurple }}
-              onClick={() => window.open("https://breakfast-system.vercel.app/", "_blank", "noopener,noreferrer")}
-            >
-              <span style={styles.sidebarNavIcon}>⭐</span>
-              <span>積分系統</span>
-            </button>
-
-            <button style={styles.sidebarAdminMini} onClick={() => setShowLoginModal(true)}>管理員</button>
-          </aside>
-
-          <main style={styles.tabletMain}>
-            <div style={styles.tabletTopBar}>
-              <div>
-                <div style={styles.tabletGreeting}>早安，店長！👋</div>
-                <div style={styles.tabletGreetingSub}>今天也一起加油吧！</div>
-              </div>
-
-              <div style={styles.tabletClockBox}>
-                <div style={styles.tabletClock}>{nowTime.split(" ").pop()}</div>
-                <div style={styles.tabletDate}>{formatTaipeiDateKey()}　星期{['日','一','二','三','四','五','六'][new Date().getDay()]}</div>
-              </div>
-
-              <div style={styles.tabletTopActions}>
-                <button style={styles.tabletGhostBtn} onClick={() => window.location.reload()}>↻ 重新整理</button>
-                <button style={styles.tabletScheduleBtn} onClick={() => openPublicSchedule("全部", getTomorrowTaipeiDateKey())}>📅 查看班表</button>
-              </div>
+          <div style={styles.kioskCard}>
+            <div style={styles.kioskHeader}>
+              <h1 style={styles.kioskTitle}>員工打卡入口</h1>
+              <p style={styles.kioskDesc}>請輸入員工工號後打卡</p>
+              <button
+                style={styles.scheduleEntryBtn}
+                onClick={() => openPublicSchedule("全部", getTomorrowTaipeiDateKey())}
+              >
+                📅 查看明日班表
+              </button>
             </div>
 
-            <section style={styles.dashboardTopGrid}>
-              <div style={styles.lateSummaryCard}>
-                <div style={styles.cardTitleRed}>🔔 今日遲到看板</div>
-                {topLateItem ? (
-                  <div style={styles.lateMainBox}>
-                    <div>
-                      <div style={styles.lateCountText}>遲到 {todayLateList.length} 人</div>
-                      <div style={styles.latePersonLine}>{topLateItem.name}</div>
-                      <div style={styles.lateSubLine}>{topLateItem.store || "未填店名"}{topLateItem.role ? `・${topLateItem.role}` : ""}</div>
-                      <div style={styles.lateSubLine}>排班 {topLateItem.startTime}｜{topLateItem.status === "尚未打卡" ? "尚未打卡" : `打卡 ${topLateItem.actualTime}`}</div>
-                    </div>
-                    <div style={styles.lateMinutePill}>遲到 {topLateItem.lateMinutes} 分鐘</div>
-                  </div>
-                ) : (
-                  <div style={styles.noLateBox}>🎉 今日目前沒有遲到</div>
-                )}
-              </div>
-
-              <div style={styles.statCardWide}>
-                <div style={styles.cardTitleGreen}>👥 今日出勤狀況</div>
-                <div style={styles.statGridFour}>
-                  <div style={styles.statMiniBlock}><div style={styles.statMiniLabel}>排班人數</div><div style={styles.statMiniNum}>{dashboardStats.scheduled}<span>人</span></div></div>
-                  <div style={styles.statMiniBlock}><div style={styles.statMiniLabel}>已打卡</div><div style={styles.statMiniNum}>{dashboardStats.checked}<span>人</span></div></div>
-                  <div style={styles.statMiniBlock}><div style={styles.statMiniLabel}>遲到人數</div><div style={{ ...styles.statMiniNum, color: "#dc2626" }}>{dashboardStats.late}<span>人</span></div></div>
-                  <div style={styles.statMiniBlock}><div style={styles.statMiniLabel}>未打卡</div><div style={{ ...styles.statMiniNum, color: "#334155" }}>{dashboardStats.missing}<span>人</span></div></div>
-                </div>
-              </div>
-            </section>
+            <div style={styles.timeBox}>台北標準時間：{nowTime}</div>
 
             {!isAuthorizedDevice && (
-              <div style={styles.tabletWarningBox}>此設備尚未授權，請先由管理員進入後台綁定西螺或斗南設備。</div>
+              <div style={styles.warningBox}>
+                此設備尚未授權，請先由管理員進入後台綁定西螺或斗南設備。
+              </div>
             )}
 
-            <div style={styles.tabletInputRow}>
-              <div style={styles.inputIconBlock}>👤</div>
-              <input
-                style={styles.tabletEmpInput}
-                placeholder="請輸入您的工號後按 Enter"
-                value={employeeId}
-                onChange={(e) => setEmployeeId(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") checkIn("上班");
+            <input
+              style={styles.bigInput}
+              placeholder="請輸入工號"
+              value={employeeId}
+              onChange={(e) => setEmployeeId(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") checkIn("上班");
+              }}
+            />
+
+            <div style={styles.btnGridFour}>
+              <button
+                style={{
+                  ...styles.actionBtn,
+                  ...styles.primaryBtn,
+                  opacity: !isAuthorizedDevice ? 0.5 : 1,
                 }}
-              />
-              <button style={styles.clearInputBtn} onClick={() => setEmployeeId("")}>清除</button>
-            </div>
+                onClick={() => checkIn("上班")}
+              >
+                上班打卡
+              </button>
 
-            <div style={styles.tabletActionGrid}>
-              <button style={{ ...styles.tabletActionBtn, ...styles.tabletBlueBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }} onClick={() => checkIn("上班")}>
-                <span style={styles.tabletActionIcon}>↑</span><span><b>上班打卡</b><small>開始今天的工作</small></span>
+              <button
+                style={{
+                  ...styles.actionBtn,
+                  ...styles.darkBtn,
+                  opacity: !isAuthorizedDevice ? 0.5 : 1,
+                }}
+                onClick={() => checkIn("下班")}
+              >
+                下班打卡
               </button>
-              <button style={{ ...styles.tabletActionBtn, ...styles.tabletDarkBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }} onClick={() => checkIn("下班")}>
-                <span style={styles.tabletActionIcon}>↓</span><span><b>下班打卡</b><small>結束今天的工作</small></span>
+
+              <button
+                style={{
+                  ...styles.actionBtn,
+                  ...styles.orangeBtn,
+                  opacity: !isAuthorizedDevice ? 0.5 : 1,
+                }}
+                onClick={() => checkIn("休息開始")}
+              >
+                休息開始
               </button>
-              <button style={{ ...styles.tabletActionBtn, ...styles.tabletOrangeBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }} onClick={() => checkIn("休息開始")}>
-                <span style={styles.tabletActionIcon}>☕</span><span><b>休息開始</b><small>開始休息時間</small></span>
-              </button>
-              <button style={{ ...styles.tabletActionBtn, ...styles.tabletGreenBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }} onClick={() => checkIn("休息結束")}>
-                <span style={styles.tabletActionIcon}>☕</span><span><b>休息結束</b><small>結束休息時間</small></span>
+
+              <button
+                style={{
+                  ...styles.actionBtn,
+                  ...styles.greenBtn,
+                  opacity: !isAuthorizedDevice ? 0.5 : 1,
+                }}
+                onClick={() => checkIn("休息結束")}
+              >
+                休息結束
               </button>
             </div>
+          </div>
 
-            <section style={styles.dashboardBottomGrid}>
-              <div style={styles.dashboardPanel}>
-                <div style={styles.panelHeaderBlue}>今日上班人員（{checkedDashboardItems.length}人）<button style={styles.panelLinkBtn}>查看全部</button></div>
-                <div style={styles.employeeCardGrid}>
-                  {checkedDashboardItems.length === 0 ? (
-                    <div style={styles.emptyDashboardText}>目前尚無上班打卡</div>
-                  ) : (
-                    checkedDashboardItems.map((item) => (
-                      <div key={`${item.empId}-${item.startTime}`} style={styles.employeeMiniCard}>
-                        <div style={styles.employeeAvatar}>{String(item.name || "?").slice(0, 1)}</div>
-                        <div style={styles.employeeMiniName}>{item.name}</div>
-                        <div style={styles.employeeMiniStore}>{item.store}</div>
-                        <div style={styles.employeeMiniTime}>{item.actualTime}</div>
-                        <div style={item.status === "遲到" ? styles.miniBadgeLate : styles.miniBadgeOk}>{item.status}</div>
+          <div style={styles.liveStatusCard}>
+            <div style={styles.sectionTitle}>今日上班／休息狀態</div>
+            {liveStatusList.length === 0 ? (
+              <div style={styles.emptyText}>目前沒有員工資料</div>
+            ) : (
+              liveStatusList.map((emp) => {
+                const statusStyle = getStatusStyle(emp.status);
+                return (
+                  <div
+                    key={emp.empId}
+                    style={{
+                      ...styles.liveStatusRow,
+                      borderColor: statusStyle.border,
+                      background: statusStyle.background,
+                    }}
+                  >
+                    <div style={styles.liveStatusLeft}>
+                      <span
+                        style={{
+                          ...styles.statusDot,
+                          background: statusStyle.dot,
+                          boxShadow: `0 0 14px ${statusStyle.dot}`,
+                        }}
+                      />
+                      <div>
+                        <div style={styles.employeeName}>{emp.name}</div>
+                        <div style={styles.employeeId}>
+                          {emp.empId} ・ {emp.store || "未填店名"} ・ {emp.role || "未設定"}
+                        </div>
                       </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <div style={styles.dashboardPanel}>
-                <div style={styles.panelHeaderOrange}>尚未打卡人員（{dashboardStats.missing}人）<button style={styles.panelLinkBtn}>查看全部</button></div>
-                {missingDashboardItems.length === 0 ? (
-                  <div style={styles.emptyDashboardText}>目前沒有未打卡人員</div>
-                ) : (
-                  missingDashboardItems.map((item) => (
-                    <div key={`${item.empId}-missing`} style={styles.missingRow}>
-                      <div><div style={styles.missingName}>{item.name}</div><div style={styles.missingMeta}>{item.store}{item.role ? `・${item.role}` : ""}</div></div>
-                      <div style={styles.missingTime}>排班 {item.startTime || "未填"}</div>
                     </div>
-                  ))
-                )}
-              </div>
-            </section>
+                    <div
+                      style={{
+                        ...styles.statusBadge,
+                        background: "#ffffffcc",
+                        color: statusStyle.color,
+                      }}
+                    >
+                      {emp.status}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
 
-            <section style={styles.storeStatsRow}>
-              {storeDashboardStats.map((storeItem) => (
-                <div key={storeItem.store} style={styles.storeStatCard}>
-                  <div style={styles.storeStatTitle}>🏪 {storeItem.store}</div>
-                  <div style={styles.storeStatLine}><span>出勤中</span><b>{storeItem.checked} 人</b></div>
-                  <div style={styles.storeStatLine}><span>遲到</span><b style={{ color: "#dc2626" }}>{storeItem.late} 人</b></div>
-                  <div style={styles.storeStatLine}><span>未打卡</span><b style={{ color: "#f97316" }}>{storeItem.missing} 人</b></div>
+          <div style={styles.recentCard}>
+            <div style={styles.sectionTitle}>近期打卡紀錄</div>
+            {recentRecords.length === 0 ? (
+              <div style={styles.emptyText}>目前尚無紀錄</div>
+            ) : (
+              recentRecords.map((r) => (
+                <div key={r.id} style={styles.recordRow}>
+                  <div>
+                    <div style={styles.recordName}>{r.name}</div>
+                    <div style={styles.recordMeta}>
+                      {r.empId} ・ {r.date} ・ {r.store || "未填店名"}
+                    </div>
+                  </div>
+                  <div style={styles.recordRight}>
+                    <div style={styles.recordType}>{r.type}</div>
+                    <div style={styles.recordTime}>{r.time}</div>
+                  </div>
                 </div>
-              ))}
-            </section>
-
-            <div style={styles.tabletNoticeBar}>
-              <div><b>📢 系統公告</b>　請大家準時打卡，遲到超過 10 分鐘將自動通知店長群組！</div>
-              <div>{todayKey}</div>
-            </div>
-          </main>
+              ))
+            )}
+          </div>
         </div>
       </div>
     );
@@ -3974,6 +3954,82 @@ const styles = {
     lineHeight: 1.5,
     wordBreak: "break-all",
   },
+  mealModalCard: {
+    width: "100%",
+    maxWidth: 430,
+    background: "#fff",
+    borderRadius: 28,
+    padding: 24,
+    boxShadow: "0 24px 70px rgba(15,23,42,0.28)",
+    textAlign: "center",
+  },
+  mealModalIcon: {
+    width: 58,
+    height: 58,
+    borderRadius: 20,
+    margin: "0 auto 12px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#fff7ed",
+    fontSize: 32,
+  },
+  mealModalDesc: {
+    color: "#64748b",
+    fontSize: 14,
+    fontWeight: 700,
+    lineHeight: 1.7,
+    marginBottom: 16,
+  },
+  mealAmountInput: {
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "18px 16px",
+    borderRadius: 18,
+    border: "2px solid #fed7aa",
+    outline: "none",
+    fontSize: 24,
+    fontWeight: 900,
+    textAlign: "center",
+    marginBottom: 14,
+    background: "#fff7ed",
+    color: "#0f172a",
+  },
+  mealModalActions: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 10,
+  },
+  mealNoBtn: {
+    border: "none",
+    background: "#e2e8f0",
+    color: "#334155",
+    padding: "14px 16px",
+    borderRadius: 16,
+    fontWeight: 900,
+    cursor: "pointer",
+    fontSize: 16,
+  },
+  mealSaveBtn: {
+    border: "none",
+    background: "linear-gradient(135deg, #ea580c, #f97316)",
+    color: "#fff",
+    padding: "14px 16px",
+    borderRadius: 16,
+    fontWeight: 900,
+    cursor: "pointer",
+    fontSize: 16,
+  },
+  mealLaterBtn: {
+    marginTop: 10,
+    border: "none",
+    background: "transparent",
+    color: "#64748b",
+    padding: "10px 12px",
+    borderRadius: 14,
+    fontWeight: 800,
+    cursor: "pointer",
+  },
 
   scoreToastOverlay: {
     position: "fixed",
@@ -4075,453 +4131,4 @@ const styles = {
     fontSize: 15,
     fontWeight: 900,
   },
-  tabletPage: {
-    minHeight: "100vh",
-    background: "linear-gradient(135deg, #f8fafc 0%, #eef6f2 42%, #eaf2ff 100%)",
-    color: "#0f172a",
-    fontFamily: "Inter, 'Noto Sans TC', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-  },
-  tabletShell: {
-    minHeight: "100vh",
-    display: "grid",
-    gridTemplateColumns: "180px 1fr",
-    gap: 0,
-  },
-  tabletSidebar: {
-    background: "linear-gradient(180deg, #065f46 0%, #064e3b 100%)",
-    padding: "26px 18px",
-    color: "#fff",
-    display: "flex",
-    flexDirection: "column",
-    gap: 18,
-    boxShadow: "12px 0 30px rgba(6,95,70,0.18)",
-    borderTopRightRadius: 32,
-    borderBottomRightRadius: 32,
-  },
-  sidebarLogoBtn: {
-    border: "none",
-    background: "transparent",
-    color: "#fff",
-    cursor: "pointer",
-    padding: "0 0 18px",
-    textAlign: "center",
-  },
-  sidebarLogoCircle: {
-    width: 86,
-    height: 58,
-    borderRadius: 22,
-    margin: "0 auto 8px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    border: "2px solid rgba(255,255,255,0.75)",
-    fontWeight: 950,
-    fontSize: 24,
-    letterSpacing: "-0.08em",
-    boxShadow: "inset 0 0 0 4px rgba(255,255,255,0.12)",
-  },
-  sidebarBrandName: {
-    fontSize: 28,
-    lineHeight: 1,
-    fontWeight: 950,
-  },
-  sidebarBrandSub: {
-    marginTop: 4,
-    fontSize: 12,
-    fontWeight: 800,
-    opacity: 0.92,
-  },
-  sidebarNavBtn: {
-    minHeight: 74,
-    border: "1px solid rgba(255,255,255,0.28)",
-    borderRadius: 18,
-    background: "rgba(255,255,255,0.95)",
-    color: "#065f46",
-    fontSize: 19,
-    fontWeight: 950,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-    cursor: "pointer",
-    boxShadow: "0 14px 28px rgba(15,23,42,0.08)",
-  },
-  sidebarNavOrange: {
-    color: "#ea580c",
-  },
-  sidebarNavPurple: {
-    color: "#6d28d9",
-  },
-  sidebarNavIcon: {
-    fontSize: 30,
-    lineHeight: 1,
-  },
-  sidebarAdminMini: {
-    marginTop: "auto",
-    border: "1px solid rgba(255,255,255,0.25)",
-    borderRadius: 14,
-    background: "rgba(255,255,255,0.10)",
-    color: "rgba(255,255,255,0.78)",
-    padding: "10px 12px",
-    fontWeight: 900,
-    cursor: "pointer",
-  },
-  tabletMain: {
-    padding: "24px 32px 24px",
-    overflow: "auto",
-  },
-  tabletTopBar: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1.1fr 1fr",
-    alignItems: "center",
-    gap: 18,
-    marginBottom: 18,
-  },
-  tabletGreeting: {
-    fontSize: 24,
-    fontWeight: 950,
-    color: "#0f172a",
-  },
-  tabletGreetingSub: {
-    marginTop: 6,
-    fontSize: 16,
-    fontWeight: 800,
-    color: "#64748b",
-  },
-  tabletClockBox: {
-    textAlign: "center",
-  },
-  tabletClock: {
-    fontSize: 58,
-    lineHeight: 0.95,
-    letterSpacing: "-0.05em",
-    fontWeight: 950,
-    color: "#065f46",
-  },
-  tabletDate: {
-    marginTop: 8,
-    fontSize: 18,
-    fontWeight: 850,
-    color: "#334155",
-  },
-  tabletTopActions: {
-    display: "flex",
-    justifyContent: "flex-end",
-    gap: 12,
-  },
-  tabletGhostBtn: {
-    border: "1px solid #e2e8f0",
-    borderRadius: 16,
-    background: "rgba(255,255,255,0.82)",
-    padding: "14px 18px",
-    fontSize: 15,
-    fontWeight: 900,
-    color: "#475569",
-    cursor: "pointer",
-    boxShadow: "0 10px 24px rgba(15,23,42,0.06)",
-  },
-  tabletScheduleBtn: {
-    border: "1px solid #dbeafe",
-    borderRadius: 16,
-    background: "#fff",
-    padding: "14px 22px",
-    fontSize: 16,
-    fontWeight: 950,
-    color: "#1d4ed8",
-    cursor: "pointer",
-    boxShadow: "0 10px 24px rgba(37,99,235,0.10)",
-  },
-  dashboardTopGrid: {
-    display: "grid",
-    gridTemplateColumns: "1.05fr 1.45fr",
-    gap: 18,
-    marginBottom: 18,
-  },
-  lateSummaryCard: {
-    border: "1px solid #fecaca",
-    borderRadius: 22,
-    overflow: "hidden",
-    background: "linear-gradient(180deg, #fff1f2 0%, #fff 100%)",
-    boxShadow: "0 14px 32px rgba(239,68,68,0.10)",
-  },
-  cardTitleRed: {
-    padding: "16px 20px",
-    color: "#dc2626",
-    fontSize: 19,
-    fontWeight: 950,
-    borderBottom: "1px solid #fecaca",
-  },
-  lateMainBox: {
-    padding: 18,
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 16,
-  },
-  lateCountText: {
-    fontSize: 30,
-    fontWeight: 950,
-    color: "#dc2626",
-    marginBottom: 8,
-  },
-  latePersonLine: {
-    fontSize: 20,
-    fontWeight: 950,
-    color: "#111827",
-  },
-  lateSubLine: {
-    marginTop: 4,
-    color: "#475569",
-    fontSize: 13,
-    fontWeight: 850,
-  },
-  lateMinutePill: {
-    flexShrink: 0,
-    color: "#dc2626",
-    background: "#fee2e2",
-    border: "1px solid #fecaca",
-    borderRadius: 16,
-    padding: "12px 14px",
-    fontSize: 18,
-    fontWeight: 950,
-  },
-  noLateBox: {
-    padding: 24,
-    fontSize: 22,
-    fontWeight: 950,
-    color: "#16a34a",
-  },
-  statCardWide: {
-    border: "1px solid #bbf7d0",
-    borderRadius: 22,
-    background: "linear-gradient(180deg, #f0fdf4 0%, #fff 100%)",
-    boxShadow: "0 14px 32px rgba(22,163,74,0.08)",
-    overflow: "hidden",
-  },
-  cardTitleGreen: {
-    padding: "16px 20px",
-    color: "#166534",
-    fontSize: 19,
-    fontWeight: 950,
-    borderBottom: "1px solid #dcfce7",
-  },
-  statGridFour: {
-    display: "grid",
-    gridTemplateColumns: "repeat(4, 1fr)",
-    padding: 18,
-  },
-  statMiniBlock: {
-    minHeight: 84,
-    display: "flex",
-    flexDirection: "column",
-    justifyContent: "center",
-    alignItems: "center",
-    borderRight: "1px solid #e5e7eb",
-  },
-  statMiniLabel: {
-    fontSize: 13,
-    fontWeight: 900,
-    color: "#334155",
-    marginBottom: 8,
-  },
-  statMiniNum: {
-    fontSize: 42,
-    lineHeight: 1,
-    fontWeight: 950,
-    color: "#065f46",
-  },
-  tabletWarningBox: {
-    background: "#fff7ed",
-    border: "1px solid #fed7aa",
-    borderRadius: 18,
-    color: "#c2410c",
-    padding: "14px 18px",
-    marginBottom: 16,
-    fontWeight: 900,
-    textAlign: "center",
-  },
-  tabletInputRow: {
-    display: "grid",
-    gridTemplateColumns: "90px 1fr 110px",
-    alignItems: "center",
-    gap: 0,
-    border: "1px solid #bfdbfe",
-    background: "rgba(255,255,255,0.92)",
-    borderRadius: 22,
-    overflow: "hidden",
-    marginBottom: 18,
-    boxShadow: "0 12px 28px rgba(37,99,235,0.08)",
-  },
-  inputIconBlock: {
-    height: 76,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: 36,
-    borderRight: "1px solid #cbd5e1",
-    color: "#475569",
-  },
-  tabletEmpInput: {
-    border: "none",
-    outline: "none",
-    background: "transparent",
-    height: 76,
-    padding: "0 28px",
-    fontSize: 28,
-    fontWeight: 850,
-    color: "#0f172a",
-  },
-  clearInputBtn: {
-    marginRight: 18,
-    border: "1px solid #86efac",
-    background: "#f0fdf4",
-    color: "#166534",
-    borderRadius: 14,
-    padding: "12px 14px",
-    fontSize: 16,
-    fontWeight: 950,
-    cursor: "pointer",
-  },
-  tabletActionGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(4, 1fr)",
-    gap: 18,
-    marginBottom: 20,
-  },
-  tabletActionBtn: {
-    minHeight: 112,
-    border: "none",
-    borderRadius: 22,
-    color: "#fff",
-    cursor: "pointer",
-    boxShadow: "0 18px 32px rgba(15,23,42,0.16)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 16,
-    textAlign: "left",
-  },
-  tabletActionIcon: {
-    width: 58,
-    height: 58,
-    borderRadius: "50%",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    background: "rgba(255,255,255,0.24)",
-    fontSize: 38,
-    fontWeight: 950,
-  },
-  tabletBlueBtn: { background: "linear-gradient(135deg, #2563eb, #3b82f6)" },
-  tabletDarkBtn: { background: "linear-gradient(135deg, #1f2937, #64748b)" },
-  tabletOrangeBtn: { background: "linear-gradient(135deg, #f97316, #f59e0b)" },
-  tabletGreenBtn: { background: "linear-gradient(135deg, #16a34a, #22c55e)" },
-  dashboardBottomGrid: {
-    display: "grid",
-    gridTemplateColumns: "1.35fr 1fr",
-    gap: 18,
-    marginBottom: 16,
-  },
-  dashboardPanel: {
-    background: "rgba(255,255,255,0.9)",
-    border: "1px solid #e2e8f0",
-    borderRadius: 22,
-    overflow: "hidden",
-    boxShadow: "0 12px 28px rgba(15,23,42,0.07)",
-  },
-  panelHeaderBlue: {
-    padding: "15px 18px",
-    background: "#eff6ff",
-    color: "#1d4ed8",
-    fontSize: 18,
-    fontWeight: 950,
-    display: "flex",
-    justifyContent: "space-between",
-  },
-  panelHeaderOrange: {
-    padding: "15px 18px",
-    background: "#fff7ed",
-    color: "#ea580c",
-    fontSize: 18,
-    fontWeight: 950,
-    display: "flex",
-    justifyContent: "space-between",
-  },
-  panelLinkBtn: {
-    border: "none",
-    background: "transparent",
-    color: "inherit",
-    fontWeight: 950,
-    cursor: "pointer",
-  },
-  employeeCardGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(4, 1fr)",
-    gap: 10,
-    padding: 14,
-  },
-  employeeMiniCard: {
-    borderRadius: 16,
-    background: "#fff",
-    border: "1px solid #eef2f7",
-    padding: 12,
-    textAlign: "center",
-    boxShadow: "0 8px 18px rgba(15,23,42,0.05)",
-  },
-  employeeAvatar: {
-    width: 42,
-    height: 42,
-    borderRadius: "50%",
-    margin: "0 auto 6px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    background: "#dcfce7",
-    color: "#166534",
-    fontWeight: 950,
-  },
-  employeeMiniName: { fontSize: 15, fontWeight: 950, color: "#0f172a" },
-  employeeMiniStore: { marginTop: 2, fontSize: 11, fontWeight: 800, color: "#64748b" },
-  employeeMiniTime: { marginTop: 6, fontSize: 15, fontWeight: 950, color: "#111827" },
-  miniBadgeOk: { margin: "6px auto 0", width: "fit-content", padding: "5px 10px", borderRadius: 10, background: "#dcfce7", color: "#166534", fontSize: 12, fontWeight: 950 },
-  miniBadgeLate: { margin: "6px auto 0", width: "fit-content", padding: "5px 10px", borderRadius: 10, background: "#fee2e2", color: "#dc2626", fontSize: 12, fontWeight: 950 },
-  missingRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: "16px 18px",
-    borderBottom: "1px solid #f1f5f9",
-  },
-  missingName: { fontSize: 17, fontWeight: 950, color: "#0f172a" },
-  missingMeta: { marginTop: 4, fontSize: 12, fontWeight: 800, color: "#64748b" },
-  missingTime: { fontSize: 15, fontWeight: 950, color: "#334155" },
-  emptyDashboardText: { padding: 20, color: "#94a3b8", fontWeight: 900 },
-  storeStatsRow: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: 14,
-    marginBottom: 16,
-  },
-  storeStatCard: {
-    background: "rgba(255,255,255,0.88)",
-    border: "1px solid #e2e8f0",
-    borderRadius: 20,
-    padding: 16,
-    boxShadow: "0 10px 22px rgba(15,23,42,0.06)",
-  },
-  storeStatTitle: { fontSize: 18, fontWeight: 950, color: "#064e3b", marginBottom: 10 },
-  storeStatLine: { display: "flex", justifyContent: "space-between", padding: "7px 0", borderTop: "1px solid #f1f5f9", fontSize: 15, fontWeight: 850, color: "#334155" },
-  tabletNoticeBar: {
-    border: "1px solid #bbf7d0",
-    borderRadius: 18,
-    background: "linear-gradient(135deg, #f0fdf4, #ffffff)",
-    color: "#064e3b",
-    padding: "16px 20px",
-    fontSize: 16,
-    fontWeight: 850,
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-
 };
