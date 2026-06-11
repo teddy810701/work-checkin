@@ -396,6 +396,7 @@ export default function App() {
   const [publicEmployeeKeyword, setPublicEmployeeKeyword] = useState("");
   const [publicScheduleData, setPublicScheduleData] = useState({});
   const [scheduleLinkCopied, setScheduleLinkCopied] = useState(false);
+  const [todayScheduleData, setTodayScheduleData] = useState({});
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -578,6 +579,14 @@ ${message}
     });
   }, [authReady, publicScheduleDate]);
 
+  useEffect(() => {
+    if (!authReady) return;
+    const schedRef = ref(db, `schedules/${todayKey}`);
+    return onValue(schedRef, (snap) => {
+      setTodayScheduleData(snap.val() || {});
+    });
+  }, [authReady, todayKey]);
+
   const todayRecords = useMemo(() => {
     return records.filter((r) => {
       if (r.dateKey) return r.dateKey === todayKey;
@@ -605,6 +614,53 @@ ${message}
 
     return map;
   }, [todayRecords]);
+
+  const todayLateList = useMemo(() => {
+    const dateKey = todayKey || formatTaipeiDateKey();
+    const nowTs = Date.now();
+
+    const list = [];
+
+    Object.entries(todayScheduleData || {}).forEach(([empIdFromKey, sched]) => {
+      if (!sched?.working) return;
+
+      const empId = String(sched.empId || empIdFromKey || "").trim();
+      const emp = employees.find((item) => String(item.empId || item.id || "").trim() === empId);
+      const name = sched.name || emp?.name || empId || "未命名";
+      const storeName = sched.store || emp?.store || "未填店名";
+      const startTime = sched.startTime || "";
+      const startTs = getTaipeiTimestampFromDateTime(dateKey, startTime);
+
+      if (!empId || !startTs) return;
+
+      const workInRecord = latestWorkInMap[empId] || latestWorkInMap[name];
+      let actualTime = "尚未打卡";
+      let lateMinutes = 0;
+      let status = "not_checked";
+
+      if (workInRecord?.createdAt) {
+        lateMinutes = Math.max(0, Math.floor((workInRecord.createdAt - startTs) / 60000));
+        actualTime = workInRecord.time || formatExcelTime(workInRecord.createdAt) || "已打卡";
+        status = "late_checked_in";
+      } else {
+        lateMinutes = Math.max(0, Math.floor((nowTs - startTs) / 60000));
+      }
+
+      if (lateMinutes <= 0) return;
+
+      list.push({
+        empId,
+        name,
+        store: storeName,
+        startTime: startTime || "未填",
+        actualTime,
+        lateMinutes,
+        status,
+      });
+    });
+
+    return list.sort((a, b) => b.lateMinutes - a.lateMinutes);
+  }, [todayKey, todayScheduleData, employees, latestWorkInMap, nowTime]);
 
   const liveStatusList = useMemo(() => {
     const map = {};
@@ -2141,6 +2197,34 @@ ${url}`);
 
             <div style={styles.timeBox}>台北標準時間：{nowTime}</div>
 
+            <div style={styles.lateBoard}>
+              <div style={styles.lateBoardHeader}>
+                <div>
+                  <div style={styles.lateBoardTitle}>⚠️ 今日遲到看板</div>
+                  <div style={styles.lateBoardSub}>店長可依此名單核對今日扣分</div>
+                </div>
+                <div style={styles.lateBoardCount}>{todayLateList.length} 人</div>
+              </div>
+
+              {todayLateList.length === 0 ? (
+                <div style={styles.lateBoardEmpty}>目前沒有遲到紀錄</div>
+              ) : (
+                <div style={styles.lateBoardList}>
+                  {todayLateList.map((item) => (
+                    <div key={`${item.empId}-${item.startTime}`} style={styles.lateRow}>
+                      <div style={styles.lateInfo}>
+                        <div style={styles.lateName}>{item.name}</div>
+                        <div style={styles.lateMeta}>
+                          {item.store}｜排班 {item.startTime}｜{item.actualTime}
+                        </div>
+                      </div>
+                      <div style={styles.lateMinute}>遲到 {item.lateMinutes} 分鐘</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {!isAuthorizedDevice && (
               <div style={styles.warningBox}>
                 此設備尚未授權，請先由管理員進入後台綁定西螺或斗南設備。
@@ -3145,6 +3229,89 @@ const styles = {
     marginBottom: 18,
     fontWeight: 700,
     textAlign: "center",
+  },
+  lateBoard: {
+    background: "linear-gradient(135deg, #fff7ed, #fffbeb)",
+    border: "2px solid #fb923c",
+    borderRadius: 20,
+    padding: 16,
+    marginBottom: 18,
+    boxShadow: "0 12px 28px rgba(249,115,22,0.16)",
+  },
+  lateBoardHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 12,
+  },
+  lateBoardTitle: {
+    fontSize: 20,
+    fontWeight: 950,
+    color: "#c2410c",
+  },
+  lateBoardSub: {
+    marginTop: 3,
+    fontSize: 12,
+    color: "#9a3412",
+    fontWeight: 800,
+  },
+  lateBoardCount: {
+    minWidth: 54,
+    textAlign: "center",
+    background: "#fed7aa",
+    color: "#9a3412",
+    borderRadius: 999,
+    padding: "8px 12px",
+    fontSize: 14,
+    fontWeight: 950,
+  },
+  lateBoardEmpty: {
+    background: "rgba(255,255,255,0.72)",
+    border: "1px dashed #fdba74",
+    borderRadius: 14,
+    padding: "12px 14px",
+    color: "#92400e",
+    fontWeight: 900,
+    textAlign: "center",
+  },
+  lateBoardList: {
+    display: "grid",
+    gap: 10,
+  },
+  lateRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    padding: "12px 14px",
+    borderRadius: 16,
+    background: "rgba(255,255,255,0.86)",
+    border: "1px solid #fed7aa",
+    flexWrap: "wrap",
+  },
+  lateInfo: {
+    minWidth: 0,
+  },
+  lateName: {
+    fontSize: 17,
+    fontWeight: 950,
+    color: "#7c2d12",
+  },
+  lateMeta: {
+    marginTop: 4,
+    fontSize: 13,
+    color: "#9a3412",
+    fontWeight: 800,
+  },
+  lateMinute: {
+    background: "#fee2e2",
+    color: "#b91c1c",
+    border: "1px solid #fecaca",
+    borderRadius: 999,
+    padding: "8px 12px",
+    fontWeight: 950,
+    whiteSpace: "nowrap",
   },
   bigInput: {
     width: "100%",
