@@ -328,9 +328,6 @@ export default function App() {
   const [records, setRecords] = useState([]);
   const [employeeId, setEmployeeId] = useState("");
   const [scoreToast, setScoreToast] = useState(null);
-  const [mealModalData, setMealModalData] = useState(null);
-  const [mealAmount, setMealAmount] = useState("");
-  const [mealSaving, setMealSaving] = useState(false);
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [password, setPassword] = useState("");
@@ -372,6 +369,7 @@ export default function App() {
   const lateCheckRunningRef = useRef(false);
 
   const [scheduleItems, setScheduleItems] = useState({});
+  const [todayScheduleData, setTodayScheduleData] = useState({});
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleSent, setScheduleSent] = useState(false);
   const [scheduleDate, setScheduleDate] = useState(formatTaipeiDateKey());
@@ -500,6 +498,15 @@ ${message}
   }, []);
 
   const todayKey = useMemo(() => formatTaipeiDateKey(), [nowTime]);
+
+  useEffect(() => {
+    if (!authReady) return;
+
+    const todayScheduleRef = ref(db, `schedules/${todayKey}`);
+    return onValue(todayScheduleRef, (snap) => {
+      setTodayScheduleData(snap.val() || {});
+    });
+  }, [authReady, todayKey]);
 
   const storeGroups = useMemo(() => {
     const groups = {};
@@ -658,6 +665,60 @@ ${message}
       return (a.empId || "").localeCompare(b.empId || "");
     });
   }, [employees, todayRecords]);
+
+  const todayLateList = useMemo(() => {
+    const nowTs = Date.now();
+
+    return Object.entries(todayScheduleData || {})
+      .map(([empIdFromKey, sched]) => {
+        if (!sched?.working) return null;
+
+        const empId = String(sched.empId || empIdFromKey || "").trim();
+        const emp = employees.find((e) => {
+          const id = String(e.empId || e.id || "").trim();
+          return id === empId || String(e.name || "").trim() === String(sched.name || "").trim();
+        });
+
+        const name = sched.name || emp?.name || empId;
+        const storeName = sched.store || emp?.store || "";
+        const startTime = sched.startTime || "";
+        const startTs = getTaipeiTimestampFromDateTime(todayKey, startTime);
+
+        if (!empId || !startTs) return null;
+
+        const workIn =
+          latestWorkInMap[empId] ||
+          latestWorkInMap[name] ||
+          latestWorkInMap[String(emp?.empId || emp?.id || "").trim()] ||
+          null;
+
+        let lateMinutes = 0;
+        let actualTime = "尚未打卡";
+        let status = "尚未打卡";
+
+        if (workIn?.createdAt) {
+          lateMinutes = Math.floor(((workIn.createdAt || 0) - startTs) / 60000);
+          actualTime = workIn.time || formatExcelTime(workIn.createdAt);
+          status = "已打卡";
+        } else {
+          lateMinutes = Math.floor((nowTs - startTs) / 60000);
+        }
+
+        if (lateMinutes <= 0) return null;
+
+        return {
+          empId,
+          name,
+          store: storeName,
+          startTime,
+          actualTime,
+          status,
+          lateMinutes,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.lateMinutes - a.lateMinutes);
+  }, [todayScheduleData, employees, latestWorkInMap, todayKey, nowTime]);
 
   const toggleScheduleWorking = (empId) => {
     setScheduleItems((prev) => ({
@@ -945,55 +1006,6 @@ ${url}`);
     setScoreToast(null);
   };
 
-  const saveCheckoutMeal = async (amountValue = mealAmount) => {
-    if (!mealModalData || mealSaving) return;
-
-    const rawAmount = String(amountValue ?? "").trim();
-    const amount = rawAmount === "" ? 0 : Number(rawAmount);
-
-    if (Number.isNaN(amount) || amount < 0) {
-      alert("請輸入正確的員工餐金額");
-      return;
-    }
-
-    setMealSaving(true);
-
-    try {
-      const nowTs = Date.now();
-      await set(ref(db, `staffMeals/${mealModalData.dateKey}/${mealModalData.empId}`), {
-        empId: mealModalData.empId,
-        name: mealModalData.name,
-        store: mealModalData.store,
-        role: mealModalData.role,
-        amount,
-        dateKey: mealModalData.dateKey,
-        checkoutAt: mealModalData.checkoutAt,
-        createdAt: nowTs,
-        updatedAt: nowTs,
-        source: "checkout",
-      });
-
-      setMealModalData(null);
-      setMealAmount("");
-      alert(amount > 0 ? `員工餐已記錄：${amount} 元` : "已記錄今日沒有吃員工餐");
-    } catch (error) {
-      console.error("員工餐記錄失敗：", error);
-      alert(`員工餐記錄失敗：${error.message || "請稍後再試"}`);
-    } finally {
-      setMealSaving(false);
-    }
-  };
-
-  const skipCheckoutMeal = () => {
-    saveCheckoutMeal(0);
-  };
-
-  const closeMealModalWithoutSaving = () => {
-    if (mealSaving) return;
-    setMealModalData(null);
-    setMealAmount("");
-  };
-
   const checkIn = async (type) => {
     if (!isAuthorizedDevice) {
       alert("此設備未授權");
@@ -1053,19 +1065,6 @@ ${url}`);
     });
 
     setEmployeeId("");
-
-    if (type === "下班") {
-      setMealModalData({
-        empId: emp.empId || emp.id,
-        name: emp.name,
-        store: emp.store || "",
-        role: emp.role || "",
-        dateKey: formatTaipeiDateKey(createdAt),
-        checkoutAt: createdAt,
-      });
-      setMealAmount("");
-    }
-
     // 改為由自動排程統一檢查遲到，避免重複 LINE 通知
 
     try {
@@ -1238,7 +1237,6 @@ ${url}`);
             .item { background: #eef2ff; font-weight: bold; }
             .off { background: #f3f4f6; color: #666; }
             .late { background: #ffffff; color: #8b0000; font-weight: bold; }
-            .severeLate { background: #fecaca; color: #7f1d1d; font-weight: bold; }
             .missing { background: #fce4ec; color: #b91c1c; font-weight: bold; }
             .longBreak { background: #fde68a; color: #92400e; font-weight: bold; }
             .hours { mso-number-format:'0.00'; }
@@ -1520,223 +1518,6 @@ ${url}`);
     } catch (error) {
       console.error("匯出薪資核對版失敗：", error);
       alert("匯出薪資核對版失敗，請稍後再試");
-    }
-  };
-
-
-  const exportScheduleAttendanceAuditExcel = async () => {
-    try {
-      const allRecords = await getAllRecordsForExport();
-      const targetMonthRecords = allRecords.filter((r) => {
-        const key = r.monthKey || getMonthValue(r.createdAt || Date.now());
-        return key === selectedMonth;
-      });
-
-      const schedulesByDate = await getAllSchedulesForMonth(selectedMonth);
-      const days = getDaysInSelectedMonth(selectedMonth);
-      const employeeMap = {};
-
-      employees.forEach((emp) => {
-        const key = emp.empId || emp.id;
-        employeeMap[key] = {
-          empId: key,
-          name: emp.name || "",
-          store: emp.store || "",
-          role: emp.role || "",
-        };
-      });
-
-      targetMonthRecords.forEach((r) => {
-        const key = r.empId || r.id || "UNKNOWN";
-        if (!employeeMap[key]) {
-          employeeMap[key] = {
-            empId: key,
-            name: r.name || key,
-            store: r.store || "",
-            role: r.role || "",
-          };
-        }
-      });
-
-      Object.values(schedulesByDate || {}).forEach((daySchedule) => {
-        Object.entries(daySchedule || {}).forEach(([empId, sched]) => {
-          if (!sched?.working) return;
-          const key = sched.empId || empId;
-          if (!employeeMap[key]) {
-            employeeMap[key] = {
-              empId: key,
-              name: sched.name || key,
-              store: sched.store || "",
-              role: sched.role || "",
-            };
-          }
-        });
-      });
-
-      const recordsByEmployeeDate = {};
-      targetMonthRecords.forEach((r) => {
-        const empKey = r.empId || r.id || "UNKNOWN";
-        const dateKey = r.dateKey || formatTaipeiDateKey(r.createdAt || Date.now());
-        const key = `${empKey}__${dateKey}`;
-        if (!recordsByEmployeeDate[key]) recordsByEmployeeDate[key] = [];
-        recordsByEmployeeDate[key].push(r);
-      });
-
-      const headerHtml = [
-        "<tr>",
-        "<th>姓名</th><th>身分</th><th>項目</th>",
-        ...days.map((d) => `<th>${d.label}</th>`),
-        "<th>總工時</th>",
-        "</tr>",
-      ].join("");
-
-      const employeeList = Object.values(employeeMap).sort((a, b) => {
-        if ((a.store || "") !== (b.store || "")) return String(a.store || "").localeCompare(String(b.store || ""), "zh-Hant");
-        return String(a.name || a.empId).localeCompare(String(b.name || b.empId), "zh-Hant");
-      });
-
-      const bodyRows = [];
-
-      employeeList.forEach((emp) => {
-        const rowData = {
-          scheduleIn: [],
-          actualIn: [],
-          late: [],
-          scheduleOut: [],
-          actualOut: [],
-          breakStart: [],
-          breakEnd: [],
-          hours: [],
-        };
-        let totalHours = 0;
-
-        days.forEach((day) => {
-          const dayRecords = (recordsByEmployeeDate[`${emp.empId}__${day.dateKey}`] || [])
-            .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-
-          const schedule = schedulesByDate?.[day.dateKey]?.[emp.empId] || null;
-          const isScheduled = Boolean(schedule?.working);
-          const workIn = getFirstRecord(dayRecords, "上班");
-          const breakStart = getFirstRecord(dayRecords, "休息開始");
-          const breakEnd = getFirstRecord(dayRecords, "休息結束");
-          const workOut = getLastRecord(dayRecords, "下班");
-          const hasAnyRecord = dayRecords.length > 0;
-
-          if (!isScheduled && !hasAnyRecord) {
-            rowData.scheduleIn.push(buildCell("休假", "off"));
-            rowData.actualIn.push(buildCell(""));
-            rowData.late.push(buildCell(""));
-            rowData.scheduleOut.push(buildCell(""));
-            rowData.actualOut.push(buildCell(""));
-            rowData.breakStart.push(buildCell(""));
-            rowData.breakEnd.push(buildCell(""));
-            rowData.hours.push(buildCell(""));
-            return;
-          }
-
-          const startTime = schedule?.startTime || "";
-          const endTime = schedule?.endTime || "";
-          const startTs = isScheduled && startTime
-            ? getTaipeiTimestampFromDateTime(day.dateKey, startTime)
-            : 0;
-
-          const breakMinutes = minutesBetween(breakStart?.createdAt, breakEnd?.createdAt);
-          const isLongBreak = breakMinutes > 30;
-          const missingWorkIn = isScheduled && !workIn;
-          const missingWorkOut = isScheduled && !workOut;
-          const breakPairMissing = Boolean((breakStart && !breakEnd) || (!breakStart && breakEnd));
-
-          let lateMinutes = 0;
-          if (startTs && workIn?.createdAt) {
-            lateMinutes = Math.max(0, Math.floor((workIn.createdAt - startTs) / 60000));
-          }
-
-          rowData.scheduleIn.push(buildCell(startTime || (hasAnyRecord ? "未排班" : "休假"), startTime ? "item" : (hasAnyRecord ? "missing" : "off")));
-          rowData.actualIn.push(buildCell(
-            workIn ? formatExcelTime(workIn.createdAt) : (isScheduled ? "未打卡" : ""),
-            workIn ? (lateMinutes > 0 ? "late" : "") : (isScheduled ? "missing" : "")
-          ));
-          rowData.late.push(buildCell(
-            workIn ? (lateMinutes > 0 ? `${lateMinutes}分` : "0") : (isScheduled ? "缺卡" : ""),
-            workIn ? (lateMinutes > 10 ? "severeLate" : lateMinutes > 0 ? "late" : "") : (isScheduled ? "missing" : "")
-          ));
-          rowData.scheduleOut.push(buildCell(endTime || (isScheduled ? "未填" : ""), endTime ? "item" : (isScheduled ? "missing" : "")));
-          rowData.actualOut.push(buildCell(
-            workOut ? formatExcelTime(workOut.createdAt) : (isScheduled ? "未打卡" : ""),
-            workOut ? "" : (isScheduled ? "missing" : "")
-          ));
-          rowData.breakStart.push(buildCell(
-            breakStart ? formatExcelTime(breakStart.createdAt) : (breakEnd ? "未打卡" : ""),
-            breakEnd && !breakStart ? "missing" : (isLongBreak ? "longBreak" : "")
-          ));
-          rowData.breakEnd.push(buildCell(
-            breakEnd ? formatExcelTime(breakEnd.createdAt) : (breakStart ? "未打卡" : ""),
-            breakStart && !breakEnd ? "missing" : (isLongBreak ? "longBreak" : "")
-          ));
-
-          if (!workIn || !workOut || breakPairMissing) {
-            rowData.hours.push(buildCell(hasAnyRecord || isScheduled ? "異常" : "", hasAnyRecord || isScheduled ? "missing" : ""));
-            return;
-          }
-
-          const totalMinutes = minutesBetween(workIn.createdAt, workOut.createdAt) - breakMinutes;
-          const hours = Math.max(0, totalMinutes / 60);
-          totalHours += hours;
-          rowData.hours.push(buildCell(hours.toFixed(2), "hours"));
-        });
-
-        bodyRows.push(`
-          <tr>
-            <td class="name">${escapeExcelText(emp.name || emp.empId)}</td>
-            <td class="role">${escapeExcelText(emp.role || "")}</td>
-            <td class="item">排班上班</td>
-            ${rowData.scheduleIn.join("")}
-            <td></td>
-          </tr>
-          <tr>
-            <td></td><td></td><td class="item">實際上班</td>
-            ${rowData.actualIn.join("")}
-            <td></td>
-          </tr>
-          <tr>
-            <td></td><td></td><td class="item">遲到</td>
-            ${rowData.late.join("")}
-            <td></td>
-          </tr>
-          <tr>
-            <td></td><td></td><td class="item">排班下班</td>
-            ${rowData.scheduleOut.join("")}
-            <td></td>
-          </tr>
-          <tr>
-            <td></td><td></td><td class="item">實際下班</td>
-            ${rowData.actualOut.join("")}
-            <td></td>
-          </tr>
-          <tr>
-            <td></td><td></td><td class="item">休息</td>
-            ${rowData.breakStart.join("")}
-            <td></td>
-          </tr>
-          <tr>
-            <td></td><td></td><td class="item">休息結束</td>
-            ${rowData.breakEnd.join("")}
-            <td></td>
-          </tr>
-          <tr>
-            <td></td><td></td><td class="item">工時</td>
-            ${rowData.hours.join("")}
-            <td class="total">${totalHours ? totalHours.toFixed(2) : ""}</td>
-          </tr>
-          <tr class="gap"><td colspan="${days.length + 4}"></td></tr>
-        `);
-      });
-
-      const html = `<table>${headerHtml}${bodyRows.join("")}</table>`;
-      downloadExcelHtml(`班表打卡核對版-${selectedMonth}.xls`, html);
-    } catch (error) {
-      console.error("匯出班表打卡核對版失敗：", error);
-      alert("匯出班表打卡核對版失敗，請稍後再試");
     }
   };
 
@@ -2341,53 +2122,6 @@ ${url}`);
             </div>
           </div>
         )}
-        {mealModalData && (
-          <div style={styles.modalOverlay}>
-            <div style={styles.mealModalCard}>
-              <div style={styles.mealModalIcon}>🍽️</div>
-              <div style={styles.modalTitle}>下班員工餐登記</div>
-              <div style={styles.mealModalDesc}>
-                {mealModalData.name} 今天有吃員工餐嗎？請輸入金額，沒有吃就按「沒有吃」。
-              </div>
-              <input
-                style={styles.mealAmountInput}
-                type="number"
-                inputMode="numeric"
-                min="0"
-                placeholder="輸入員工餐金額，例如 80"
-                value={mealAmount}
-                onChange={(e) => setMealAmount(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") saveCheckoutMeal();
-                }}
-                autoFocus
-              />
-              <div style={styles.mealModalActions}>
-                <button
-                  style={styles.mealNoBtn}
-                  onClick={skipCheckoutMeal}
-                  disabled={mealSaving}
-                >
-                  沒有吃
-                </button>
-                <button
-                  style={styles.mealSaveBtn}
-                  onClick={() => saveCheckoutMeal()}
-                  disabled={mealSaving}
-                >
-                  {mealSaving ? "儲存中…" : "確認登記"}
-                </button>
-              </div>
-              <button
-                style={styles.mealLaterBtn}
-                onClick={closeMealModalWithoutSaving}
-                disabled={mealSaving}
-              >
-                稍後再填
-              </button>
-            </div>
-          </div>
-        )}
         <div style={styles.overlay} />
 
         <div style={styles.topRightBar}>
@@ -2470,6 +2204,25 @@ ${url}`);
             </div>
 
             <div style={styles.timeBox}>台北標準時間：{nowTime}</div>
+
+            {todayLateList.length > 0 && (
+              <div style={styles.lateBoard}>
+                <div style={styles.lateBoardTitle}>⚠️ 今日遲到看板</div>
+                {todayLateList.map((item) => (
+                  <div key={`${item.empId}-${item.startTime}`} style={styles.lateBoardRow}>
+                    <div>
+                      <div style={styles.lateBoardName}>
+                        {item.name}｜{item.store || "未填店名"}
+                      </div>
+                      <div style={styles.lateBoardMeta}>
+                        排班 {item.startTime}｜{item.status === "尚未打卡" ? "尚未打卡" : `打卡 ${item.actualTime}`}
+                      </div>
+                    </div>
+                    <div style={styles.lateBoardMinutes}>遲到 {item.lateMinutes} 分鐘</div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {!isAuthorizedDevice && (
               <div style={styles.warningBox}>
@@ -2968,10 +2721,6 @@ ${url}`);
             <button style={styles.fullOrangeBtn} onClick={exportMonthlyCSV}>
               匯出薪資核對版 Excel
             </button>
-
-            <button style={styles.fullBlueBtn} onClick={exportScheduleAttendanceAuditExcel}>
-              匯出班表＋打卡核對版 Excel
-            </button>
           </div>
 
           <div style={styles.panelCard}>
@@ -3020,6 +2769,73 @@ ${url}`);
             ) : null}
           </div>
 
+          <div style={styles.panelCard}>
+            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("lateCheck")}>
+              自動抓遲到 {adminPanels.lateCheck ? "－" : "＋"}
+            </button>
+            {adminPanels.lateCheck ? (
+              <div style={styles.collapseContent}>
+                <div style={styles.historyItem}>系統會依班表自動抓遲到，超過 10 分鐘未打上班卡就通知對應店長群組，並顯示每位員工遲到分鐘數。</div>
+                <div style={{ ...styles.deviceLabel, marginTop: 14 }}>遲到通知紀錄</div>
+                {lateNoticeEntries.length === 0 ? (
+                  <div style={styles.emptyText}>目前沒有遲到通知紀錄</div>
+                ) : (
+                  lateNoticeEntries.slice(0, 12).map((item) => (
+                    <div key={item.id} style={styles.historyBlock}>
+                      <div style={styles.historyDate}>
+                        {item.type}｜{item.store || item.dateKey || "未分類"}
+                      </div>
+                      <div style={styles.historyItem}>時間：{formatDateTime(item.sentAt || item.checkedAt)}</div>
+                      <div style={styles.historyItem}>結果：{item.result || (item.sent ? "已發送" : "未發送")}</div>
+                      {Array.isArray(item.lateDetails) && item.lateDetails.length ? (
+                        <div style={styles.historyItem}>
+                          名單：
+                          {item.lateDetails.map((person, index) => {
+                            const actualText = person.status === "not_checked"
+                              ? "尚未打卡"
+                              : `打卡 ${person.actualTime || "未記錄"}`;
+                            const computedLateMinutes = calculateLateMinutesFallback(person, item.sentAt || item.checkedAt || 0);
+                            const lateText = computedLateMinutes !== null
+                              ? `遲到 ${computedLateMinutes} 分鐘`
+                              : "遲到分鐘未記錄";
+                            return (
+                              <div key={`${person.empId || person.name || index}-${index}`}>
+                                {index + 1}. {person.name || person.empId || "未命名"}｜排班 {person.startTime || "未填"}｜{actualText}｜{lateText}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : Array.isArray(item.names) && item.names.length ? (
+                        <div style={styles.historyItem}>名單：{item.names.join("、")}</div>
+                      ) : null}
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          <div style={styles.panelCard}>
+            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("lineQuery")}>
+              LINE 查詢頁 {adminPanels.lineQuery ? "－" : "＋"}
+            </button>
+            {adminPanels.lineQuery ? (
+              <div style={styles.collapseContent}>
+                {lineQueryEntries.length === 0 ? (
+                  <div style={styles.emptyText}>目前沒有 LINE 發送紀錄</div>
+                ) : (
+                  lineQueryEntries.slice(0, 14).map((item) => (
+                    <div key={item.id} style={styles.historyBlock}>
+                      <div style={styles.historyDate}>{item.type}｜{item.targetStore || item.store || item.dateKey}</div>
+                      <div style={styles.historyItem}>時間：{formatDateTime(item.sentAt || item.createdAt)}</div>
+                      <div style={styles.historyItem}>狀態：{item.pending ? "待處理" : item.sent === false ? "未發送" : "已發送"}</div>
+                      {item.lastError ? <div style={styles.errorMini}>錯誤：{item.lastError}</div> : null}
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : null}
+          </div>
         </div>
 
         <div style={styles.rightCol}>
@@ -3634,17 +3450,6 @@ const styles = {
     cursor: "pointer",
     marginTop: 12,
   },
-  fullBlueBtn: {
-    width: "100%",
-    border: "none",
-    background: "#2563eb",
-    color: "#fff",
-    padding: "14px 16px",
-    borderRadius: 14,
-    fontWeight: 900,
-    cursor: "pointer",
-    marginTop: 12,
-  },
   collapseBtn: {
     width: "100%",
     border: "1px solid #dbeafe",
@@ -4118,82 +3923,6 @@ const styles = {
     fontSize: 12,
     lineHeight: 1.5,
     wordBreak: "break-all",
-  },
-  mealModalCard: {
-    width: "100%",
-    maxWidth: 430,
-    background: "#fff",
-    borderRadius: 28,
-    padding: 24,
-    boxShadow: "0 24px 70px rgba(15,23,42,0.28)",
-    textAlign: "center",
-  },
-  mealModalIcon: {
-    width: 58,
-    height: 58,
-    borderRadius: 20,
-    margin: "0 auto 12px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    background: "#fff7ed",
-    fontSize: 32,
-  },
-  mealModalDesc: {
-    color: "#64748b",
-    fontSize: 14,
-    fontWeight: 700,
-    lineHeight: 1.7,
-    marginBottom: 16,
-  },
-  mealAmountInput: {
-    width: "100%",
-    boxSizing: "border-box",
-    padding: "18px 16px",
-    borderRadius: 18,
-    border: "2px solid #fed7aa",
-    outline: "none",
-    fontSize: 24,
-    fontWeight: 900,
-    textAlign: "center",
-    marginBottom: 14,
-    background: "#fff7ed",
-    color: "#0f172a",
-  },
-  mealModalActions: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 10,
-  },
-  mealNoBtn: {
-    border: "none",
-    background: "#e2e8f0",
-    color: "#334155",
-    padding: "14px 16px",
-    borderRadius: 16,
-    fontWeight: 900,
-    cursor: "pointer",
-    fontSize: 16,
-  },
-  mealSaveBtn: {
-    border: "none",
-    background: "linear-gradient(135deg, #ea580c, #f97316)",
-    color: "#fff",
-    padding: "14px 16px",
-    borderRadius: 16,
-    fontWeight: 900,
-    cursor: "pointer",
-    fontSize: 16,
-  },
-  mealLaterBtn: {
-    marginTop: 10,
-    border: "none",
-    background: "transparent",
-    color: "#64748b",
-    padding: "10px 12px",
-    borderRadius: 14,
-    fontWeight: 800,
-    cursor: "pointer",
   },
 
   scoreToastOverlay: {
