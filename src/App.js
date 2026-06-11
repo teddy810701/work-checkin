@@ -328,6 +328,9 @@ export default function App() {
   const [records, setRecords] = useState([]);
   const [employeeId, setEmployeeId] = useState("");
   const [scoreToast, setScoreToast] = useState(null);
+  const [mealModalData, setMealModalData] = useState(null);
+  const [mealAmount, setMealAmount] = useState("");
+  const [mealSaving, setMealSaving] = useState(false);
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [password, setPassword] = useState("");
@@ -396,7 +399,6 @@ export default function App() {
   const [publicEmployeeKeyword, setPublicEmployeeKeyword] = useState("");
   const [publicScheduleData, setPublicScheduleData] = useState({});
   const [scheduleLinkCopied, setScheduleLinkCopied] = useState(false);
-  const [todayScheduleData, setTodayScheduleData] = useState({});
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -579,14 +581,6 @@ ${message}
     });
   }, [authReady, publicScheduleDate]);
 
-  useEffect(() => {
-    if (!authReady) return;
-    const schedRef = ref(db, `schedules/${todayKey}`);
-    return onValue(schedRef, (snap) => {
-      setTodayScheduleData(snap.val() || {});
-    });
-  }, [authReady, todayKey]);
-
   const todayRecords = useMemo(() => {
     return records.filter((r) => {
       if (r.dateKey) return r.dateKey === todayKey;
@@ -614,53 +608,6 @@ ${message}
 
     return map;
   }, [todayRecords]);
-
-  const todayLateList = useMemo(() => {
-    const dateKey = todayKey || formatTaipeiDateKey();
-    const nowTs = Date.now();
-
-    const list = [];
-
-    Object.entries(todayScheduleData || {}).forEach(([empIdFromKey, sched]) => {
-      if (!sched?.working) return;
-
-      const empId = String(sched.empId || empIdFromKey || "").trim();
-      const emp = employees.find((item) => String(item.empId || item.id || "").trim() === empId);
-      const name = sched.name || emp?.name || empId || "未命名";
-      const storeName = sched.store || emp?.store || "未填店名";
-      const startTime = sched.startTime || "";
-      const startTs = getTaipeiTimestampFromDateTime(dateKey, startTime);
-
-      if (!empId || !startTs) return;
-
-      const workInRecord = latestWorkInMap[empId] || latestWorkInMap[name];
-      let actualTime = "尚未打卡";
-      let lateMinutes = 0;
-      let status = "not_checked";
-
-      if (workInRecord?.createdAt) {
-        lateMinutes = Math.max(0, Math.floor((workInRecord.createdAt - startTs) / 60000));
-        actualTime = workInRecord.time || formatExcelTime(workInRecord.createdAt) || "已打卡";
-        status = "late_checked_in";
-      } else {
-        lateMinutes = Math.max(0, Math.floor((nowTs - startTs) / 60000));
-      }
-
-      if (lateMinutes <= 0) return;
-
-      list.push({
-        empId,
-        name,
-        store: storeName,
-        startTime: startTime || "未填",
-        actualTime,
-        lateMinutes,
-        status,
-      });
-    });
-
-    return list.sort((a, b) => b.lateMinutes - a.lateMinutes);
-  }, [todayKey, todayScheduleData, employees, latestWorkInMap, nowTime]);
 
   const liveStatusList = useMemo(() => {
     const map = {};
@@ -998,6 +945,55 @@ ${url}`);
     setScoreToast(null);
   };
 
+  const saveCheckoutMeal = async (amountValue = mealAmount) => {
+    if (!mealModalData || mealSaving) return;
+
+    const rawAmount = String(amountValue ?? "").trim();
+    const amount = rawAmount === "" ? 0 : Number(rawAmount);
+
+    if (Number.isNaN(amount) || amount < 0) {
+      alert("請輸入正確的員工餐金額");
+      return;
+    }
+
+    setMealSaving(true);
+
+    try {
+      const nowTs = Date.now();
+      await set(ref(db, `staffMeals/${mealModalData.dateKey}/${mealModalData.empId}`), {
+        empId: mealModalData.empId,
+        name: mealModalData.name,
+        store: mealModalData.store,
+        role: mealModalData.role,
+        amount,
+        dateKey: mealModalData.dateKey,
+        checkoutAt: mealModalData.checkoutAt,
+        createdAt: nowTs,
+        updatedAt: nowTs,
+        source: "checkout",
+      });
+
+      setMealModalData(null);
+      setMealAmount("");
+      alert(amount > 0 ? `員工餐已記錄：${amount} 元` : "已記錄今日沒有吃員工餐");
+    } catch (error) {
+      console.error("員工餐記錄失敗：", error);
+      alert(`員工餐記錄失敗：${error.message || "請稍後再試"}`);
+    } finally {
+      setMealSaving(false);
+    }
+  };
+
+  const skipCheckoutMeal = () => {
+    saveCheckoutMeal(0);
+  };
+
+  const closeMealModalWithoutSaving = () => {
+    if (mealSaving) return;
+    setMealModalData(null);
+    setMealAmount("");
+  };
+
   const checkIn = async (type) => {
     if (!isAuthorizedDevice) {
       alert("此設備未授權");
@@ -1057,6 +1053,19 @@ ${url}`);
     });
 
     setEmployeeId("");
+
+    if (type === "下班") {
+      setMealModalData({
+        empId: emp.empId || emp.id,
+        name: emp.name,
+        store: emp.store || "",
+        role: emp.role || "",
+        dateKey: formatTaipeiDateKey(createdAt),
+        checkoutAt: createdAt,
+      });
+      setMealAmount("");
+    }
+
     // 改為由自動排程統一檢查遲到，避免重複 LINE 通知
 
     try {
@@ -2114,6 +2123,53 @@ ${url}`);
             </div>
           </div>
         )}
+        {mealModalData && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.mealModalCard}>
+              <div style={styles.mealModalIcon}>🍽️</div>
+              <div style={styles.modalTitle}>下班員工餐登記</div>
+              <div style={styles.mealModalDesc}>
+                {mealModalData.name} 今天有吃員工餐嗎？請輸入金額，沒有吃就按「沒有吃」。
+              </div>
+              <input
+                style={styles.mealAmountInput}
+                type="number"
+                inputMode="numeric"
+                min="0"
+                placeholder="輸入員工餐金額，例如 80"
+                value={mealAmount}
+                onChange={(e) => setMealAmount(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveCheckoutMeal();
+                }}
+                autoFocus
+              />
+              <div style={styles.mealModalActions}>
+                <button
+                  style={styles.mealNoBtn}
+                  onClick={skipCheckoutMeal}
+                  disabled={mealSaving}
+                >
+                  沒有吃
+                </button>
+                <button
+                  style={styles.mealSaveBtn}
+                  onClick={() => saveCheckoutMeal()}
+                  disabled={mealSaving}
+                >
+                  {mealSaving ? "儲存中…" : "確認登記"}
+                </button>
+              </div>
+              <button
+                style={styles.mealLaterBtn}
+                onClick={closeMealModalWithoutSaving}
+                disabled={mealSaving}
+              >
+                稍後再填
+              </button>
+            </div>
+          </div>
+        )}
         <div style={styles.overlay} />
 
         <div style={styles.topRightBar}>
@@ -2196,34 +2252,6 @@ ${url}`);
             </div>
 
             <div style={styles.timeBox}>台北標準時間：{nowTime}</div>
-
-            <div style={styles.lateBoard}>
-              <div style={styles.lateBoardHeader}>
-                <div>
-                  <div style={styles.lateBoardTitle}>⚠️ 今日遲到看板</div>
-                  <div style={styles.lateBoardSub}>店長可依此名單核對今日扣分</div>
-                </div>
-                <div style={styles.lateBoardCount}>{todayLateList.length} 人</div>
-              </div>
-
-              {todayLateList.length === 0 ? (
-                <div style={styles.lateBoardEmpty}>目前沒有遲到紀錄</div>
-              ) : (
-                <div style={styles.lateBoardList}>
-                  {todayLateList.map((item) => (
-                    <div key={`${item.empId}-${item.startTime}`} style={styles.lateRow}>
-                      <div style={styles.lateInfo}>
-                        <div style={styles.lateName}>{item.name}</div>
-                        <div style={styles.lateMeta}>
-                          {item.store}｜排班 {item.startTime}｜{item.actualTime}
-                        </div>
-                      </div>
-                      <div style={styles.lateMinute}>遲到 {item.lateMinutes} 分鐘</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
 
             {!isAuthorizedDevice && (
               <div style={styles.warningBox}>
@@ -3230,89 +3258,6 @@ const styles = {
     fontWeight: 700,
     textAlign: "center",
   },
-  lateBoard: {
-    background: "linear-gradient(135deg, #fff7ed, #fffbeb)",
-    border: "2px solid #fb923c",
-    borderRadius: 20,
-    padding: 16,
-    marginBottom: 18,
-    boxShadow: "0 12px 28px rgba(249,115,22,0.16)",
-  },
-  lateBoardHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 12,
-    marginBottom: 12,
-  },
-  lateBoardTitle: {
-    fontSize: 20,
-    fontWeight: 950,
-    color: "#c2410c",
-  },
-  lateBoardSub: {
-    marginTop: 3,
-    fontSize: 12,
-    color: "#9a3412",
-    fontWeight: 800,
-  },
-  lateBoardCount: {
-    minWidth: 54,
-    textAlign: "center",
-    background: "#fed7aa",
-    color: "#9a3412",
-    borderRadius: 999,
-    padding: "8px 12px",
-    fontSize: 14,
-    fontWeight: 950,
-  },
-  lateBoardEmpty: {
-    background: "rgba(255,255,255,0.72)",
-    border: "1px dashed #fdba74",
-    borderRadius: 14,
-    padding: "12px 14px",
-    color: "#92400e",
-    fontWeight: 900,
-    textAlign: "center",
-  },
-  lateBoardList: {
-    display: "grid",
-    gap: 10,
-  },
-  lateRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 12,
-    padding: "12px 14px",
-    borderRadius: 16,
-    background: "rgba(255,255,255,0.86)",
-    border: "1px solid #fed7aa",
-    flexWrap: "wrap",
-  },
-  lateInfo: {
-    minWidth: 0,
-  },
-  lateName: {
-    fontSize: 17,
-    fontWeight: 950,
-    color: "#7c2d12",
-  },
-  lateMeta: {
-    marginTop: 4,
-    fontSize: 13,
-    color: "#9a3412",
-    fontWeight: 800,
-  },
-  lateMinute: {
-    background: "#fee2e2",
-    color: "#b91c1c",
-    border: "1px solid #fecaca",
-    borderRadius: 999,
-    padding: "8px 12px",
-    fontWeight: 950,
-    whiteSpace: "nowrap",
-  },
   bigInput: {
     width: "100%",
     boxSizing: "border-box",
@@ -4007,6 +3952,82 @@ const styles = {
     fontSize: 12,
     lineHeight: 1.5,
     wordBreak: "break-all",
+  },
+  mealModalCard: {
+    width: "100%",
+    maxWidth: 430,
+    background: "#fff",
+    borderRadius: 28,
+    padding: 24,
+    boxShadow: "0 24px 70px rgba(15,23,42,0.28)",
+    textAlign: "center",
+  },
+  mealModalIcon: {
+    width: 58,
+    height: 58,
+    borderRadius: 20,
+    margin: "0 auto 12px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#fff7ed",
+    fontSize: 32,
+  },
+  mealModalDesc: {
+    color: "#64748b",
+    fontSize: 14,
+    fontWeight: 700,
+    lineHeight: 1.7,
+    marginBottom: 16,
+  },
+  mealAmountInput: {
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "18px 16px",
+    borderRadius: 18,
+    border: "2px solid #fed7aa",
+    outline: "none",
+    fontSize: 24,
+    fontWeight: 900,
+    textAlign: "center",
+    marginBottom: 14,
+    background: "#fff7ed",
+    color: "#0f172a",
+  },
+  mealModalActions: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 10,
+  },
+  mealNoBtn: {
+    border: "none",
+    background: "#e2e8f0",
+    color: "#334155",
+    padding: "14px 16px",
+    borderRadius: 16,
+    fontWeight: 900,
+    cursor: "pointer",
+    fontSize: 16,
+  },
+  mealSaveBtn: {
+    border: "none",
+    background: "linear-gradient(135deg, #ea580c, #f97316)",
+    color: "#fff",
+    padding: "14px 16px",
+    borderRadius: 16,
+    fontWeight: 900,
+    cursor: "pointer",
+    fontSize: 16,
+  },
+  mealLaterBtn: {
+    marginTop: 10,
+    border: "none",
+    background: "transparent",
+    color: "#64748b",
+    padding: "10px 12px",
+    borderRadius: 14,
+    fontWeight: 800,
+    cursor: "pointer",
   },
 
   scoreToastOverlay: {
