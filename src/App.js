@@ -72,6 +72,11 @@ const getMonthValue = (ts = Date.now()) => {
   return `${year}-${month}`;
 };
 
+const getMonthKeyFromDateKey = (dateKey) => {
+  if (!dateKey || typeof dateKey !== "string") return getMonthValue();
+  return dateKey.slice(0, 7);
+};
+
 const normalizeEmpId = (value) => String(value || "").trim().toUpperCase();
 
 const getMonthKeyFromAnyDate = (value) => {
@@ -970,17 +975,53 @@ ${url}`);
     try {
       const nowTs = Date.now();
 
-      await set(ref(db, `meal_records/${mealModalData.dateKey}/${mealModalData.empId}`), {
+      const mealKey = `${mealModalData.dateKey}_${mealModalData.empId}`;
+      const monthKey = getMonthKeyFromDateKey(mealModalData.dateKey);
+
+      const todayEmpRecords = records
+        .filter((record) => {
+          const recordDateKey = record?.dateKey || (record?.createdAt ? formatTaipeiDateKey(record.createdAt) : "");
+          return String(record?.empId || "").trim().toUpperCase() === String(mealModalData.empId || "").trim().toUpperCase()
+            && recordDateKey === mealModalData.dateKey;
+        })
+        .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+      const workInRecord = todayEmpRecords.find((record) => record.type === "上班");
+      const breakStartRecord = todayEmpRecords.find((record) => record.type === "休息開始");
+      const breakEndRecord = todayEmpRecords.find((record) => record.type === "休息結束");
+      const breakMinutes = breakStartRecord?.createdAt && breakEndRecord?.createdAt
+        ? Math.max(0, Math.round((breakEndRecord.createdAt - breakStartRecord.createdAt) / 60000))
+        : 0;
+      const workMinutes = workInRecord?.createdAt
+        ? Math.max(0, Math.round((mealModalData.checkoutAt - workInRecord.createdAt) / 60000) - breakMinutes)
+        : 0;
+      const workHours = Number((workMinutes / 60).toFixed(2));
+      const breakHours = Number((breakMinutes / 60).toFixed(2));
+      const subsidyAmount = workHours >= 6 ? 100 : workHours >= 4 ? 60 : 0;
+      const overAmount = Math.max(0, amount - subsidyAmount);
+      const employeePay = Math.round(overAmount * 0.9);
+
+      await set(ref(db, `meal_records/${mealKey}`), {
         empId: mealModalData.empId,
         name: mealModalData.name,
         store: mealModalData.store,
         role: mealModalData.role,
-        amount,
         dateKey: mealModalData.dateKey,
+        monthKey,
+        workInAt: workInRecord?.createdAt || 0,
+        workOutAt: mealModalData.checkoutAt,
+        workHours,
+        breakHours,
+        mealAmount: amount,
+        subsidyAmount,
+        overAmount,
+        discountRate: 0.9,
+        employeePay,
         checkoutAt: mealModalData.checkoutAt,
         createdAt: nowTs,
         updatedAt: nowTs,
         source: "checkout",
+        rule: "未滿4小時0元；滿4小時未滿6小時60元；滿6小時以上100元；超出補貼部分打9折",
       });
 
       setMealModalData(null);
