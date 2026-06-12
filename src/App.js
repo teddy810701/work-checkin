@@ -970,7 +970,7 @@ ${url}`);
     try {
       const nowTs = Date.now();
 
-      await set(ref(db, `staffMeals/${mealModalData.dateKey}/${mealModalData.empId}`), {
+      await set(ref(db, `meal_records/${mealModalData.dateKey}/${mealModalData.empId}`), {
         empId: mealModalData.empId,
         name: mealModalData.name,
         store: mealModalData.store,
