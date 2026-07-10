@@ -336,6 +336,11 @@ export default function App() {
   const [mealModalData, setMealModalData] = useState(null);
   const [mealAmount, setMealAmount] = useState("");
   const [mealSaving, setMealSaving] = useState(false);
+  const [dailyAnnouncement, setDailyAnnouncement] = useState(null);
+  const [announcementModalData, setAnnouncementModalData] = useState(null);
+  const [announcementDate, setAnnouncementDate] = useState(formatTaipeiDateKey());
+  const [announcementContent, setAnnouncementContent] = useState("");
+  const [announcementSaving, setAnnouncementSaving] = useState(false);
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [password, setPassword] = useState("");
@@ -515,6 +520,24 @@ ${message}
     });
   }, [authReady, todayKey]);
 
+  useEffect(() => {
+    if (!authReady || !todayKey) return;
+    const announcementRef = ref(db, `announcements/${todayKey}`);
+    return onValue(announcementRef, (snap) => {
+      const data = snap.val() || null;
+      setDailyAnnouncement(data?.content ? data : null);
+    });
+  }, [authReady, todayKey]);
+
+  useEffect(() => {
+    if (!authReady || !isAdmin || !announcementDate) return;
+    const announcementRef = ref(db, `announcements/${announcementDate}`);
+    return onValue(announcementRef, (snap) => {
+      const data = snap.val() || {};
+      setAnnouncementContent(data.content || "");
+    });
+  }, [authReady, isAdmin, announcementDate]);
+
   const storeGroups = useMemo(() => {
     const groups = {};
     employees.forEach((emp) => {
@@ -532,7 +555,7 @@ ${message}
       employees.forEach((emp) => {
         const key = emp.empId || emp.id;
         if (!next[key]) {
-          next[key] = { working: false, startTime: "05:00", endTime: "14:00", isSupport: false };
+          next[key] = { working: false, startTime: "05:00", endTime: "14:00", isSupport: false, supportStore: "" };
         }
       });
       return next;
@@ -549,7 +572,7 @@ ${message}
         const next = {};
         employees.forEach((emp) => {
           const key = emp.empId || emp.id;
-          next[key] = { working: false, startTime: "05:00", endTime: "14:00", isSupport: false };
+          next[key] = { working: false, startTime: "05:00", endTime: "14:00", isSupport: false, supportStore: "" };
         });
         Object.entries(data).forEach(([empId, schedData]) => {
           next[empId] = {
@@ -557,6 +580,7 @@ ${message}
             startTime: schedData.startTime || "05:00",
             endTime: schedData.endTime || "14:00",
             isSupport: !!schedData.isSupport,
+            supportStore: schedData.supportStore || "",
           };
         });
         return next;
@@ -695,11 +719,24 @@ ${message}
     }));
   };
 
-  const toggleScheduleSupport = (empId) => {
-    setScheduleItems((prev) => ({
-      ...prev,
-      [empId]: { ...prev[empId], isSupport: !prev[empId]?.isSupport },
-    }));
+  const getOtherStoreName = (homeStore) => {
+    return homeStore === "西螺文昌店" ? "斗南站前店" : "西螺文昌店";
+  };
+
+  const toggleScheduleSupport = (empId, homeStore) => {
+    const supportStore = getOtherStoreName(homeStore);
+    setScheduleItems((prev) => {
+      const current = prev[empId] || {};
+      const nextIsSupport = !current.isSupport;
+      return {
+        ...prev,
+        [empId]: {
+          ...current,
+          isSupport: nextIsSupport,
+          supportStore: nextIsSupport ? supportStore : "",
+        },
+      };
+    });
   };
 
 
@@ -765,7 +802,8 @@ ${url}`);
             startTime: item.startTime || "05:00",
             endTime: item.endTime || "14:00",
             working: true,
-            isSupport: !!item.isSupport,
+            isSupport: !!item.supportStore,
+            supportStore: item.supportStore || "",
           };
         }
       });
@@ -781,7 +819,7 @@ ${url}`);
 
       const targetStoreName = publishStore;
       const targetScheduleList = scheduleList.filter(
-        (item) => (item.store || "未填店名") === targetStoreName
+        (item) => ((item.isSupport && item.supportStore) ? item.supportStore : (item.store || "未填店名")) === targetStoreName
       );
       const shareUrl = getScheduleShareUrl(targetDate, targetStoreName);
 
@@ -1033,9 +1071,21 @@ ${url}`);
         rule: "未滿4小時0元；滿4小時未滿6小時60元；滿6小時以上100元；超出補貼部分打9折",
       });
 
+      const finishedMealData = { ...mealModalData };
       setMealModalData(null);
       setMealAmount("");
-      alert(amount > 0 ? `員工餐已記錄：${amount} 元` : "已記錄今日沒有吃員工餐");
+
+      if (dailyAnnouncement?.content) {
+        setAnnouncementModalData({
+          empId: finishedMealData.empId,
+          name: finishedMealData.name,
+          dateKey: finishedMealData.dateKey,
+          content: dailyAnnouncement.content,
+          title: dailyAnnouncement.title || "今日公告",
+        });
+      } else {
+        alert(amount > 0 ? `員工餐已記錄：${amount} 元` : "已記錄今日沒有吃員工餐");
+      }
     } catch (error) {
       console.error("員工餐記錄失敗：", error);
       alert(`員工餐記錄失敗：${error.message || "請稍後再試"}`);
@@ -1052,6 +1102,53 @@ ${url}`);
     if (mealSaving) return;
     setMealModalData(null);
     setMealAmount("");
+  };
+
+  const saveDailyAnnouncement = async () => {
+    const content = announcementContent.trim();
+    if (!announcementDate) {
+      alert("請先選擇公告日期");
+      return;
+    }
+
+    setAnnouncementSaving(true);
+    try {
+      if (!content) {
+        await remove(ref(db, `announcements/${announcementDate}`));
+        alert(`${announcementDate} 公告已清除`);
+        return;
+      }
+
+      await set(ref(db, `announcements/${announcementDate}`), {
+        title: "今日公告",
+        content,
+        dateKey: announcementDate,
+        updatedAt: Date.now(),
+      });
+      alert(`${announcementDate} 公告已儲存`);
+    } catch (error) {
+      console.error("儲存公告失敗：", error);
+      alert(`儲存公告失敗：${error.message || "請稍後再試"}`);
+    } finally {
+      setAnnouncementSaving(false);
+    }
+  };
+
+  const acknowledgeAnnouncement = async () => {
+    if (!announcementModalData) return;
+    try {
+      const empKey = safeFirebaseKey(announcementModalData.empId);
+      await set(ref(db, `announcement_reads/${announcementModalData.dateKey}/${empKey}`), {
+        empId: announcementModalData.empId,
+        name: announcementModalData.name,
+        dateKey: announcementModalData.dateKey,
+        readAt: Date.now(),
+      });
+    } catch (error) {
+      console.error("公告閱讀紀錄儲存失敗：", error);
+    } finally {
+      setAnnouncementModalData(null);
+    }
   };
 
   const checkIn = async (type) => {
@@ -1105,6 +1202,7 @@ ${url}`);
       dateKey,
       device: myDevice,
       isSupport: !!todaySchedule.isSupport,
+      supportStore: todaySchedule.supportStore || "",
       createdAt,
       monthKey: getMonthValue(createdAt),
     });
@@ -1377,7 +1475,7 @@ ${url}`);
     return Math.round((endTs - startTs) / 60000);
   };
 
-  const buildCell = (value, className = "") => `<td class="${className}">${escapeExcelText(value)}</td>`;
+  const buildCell = (value, className = "", title = "") => `<td class="${className}"${title ? ` title="${escapeExcelText(title)}"` : ""}>${escapeExcelText(value)}</td>`;
 
   const exportAllCSV = async () => {
     try {
@@ -1645,7 +1743,7 @@ ${url}`);
         const shouldCheckTs = startTs + graceMs;
         if (nowTs < shouldCheckTs) return;
 
-        const storeName = item.store || "未填店名";
+        const storeName = (item.isSupport && item.supportStore) ? item.supportStore : (item.store || "未填店名");
         const sentStoreKey = safeFirebaseKey(storeName);
         const sentEmpKey = safeFirebaseKey(empId);
         if (sentData?.[sentStoreKey]?.[sentEmpKey]?.sent) return;
@@ -1886,7 +1984,7 @@ ${url}`);
   const publicStoreOptions = useMemo(() => {
     const stores = Object.values(publicScheduleData || {})
       .filter((item) => item?.working)
-      .map((item) => item.store || "未填店名");
+      .map((item) => (item.isSupport && item.supportStore) ? item.supportStore : (item.store || "未填店名"));
     return ["全部", ...Array.from(new Set(stores))];
   }, [publicScheduleData]);
 
@@ -1894,7 +1992,7 @@ ${url}`);
     const keyword = publicEmployeeKeyword.trim().toLowerCase();
     return Object.values(publicScheduleData || {})
       .filter((item) => item?.working)
-      .filter((item) => publicScheduleStore === "全部" || (item.store || "未填店名") === publicScheduleStore)
+      .filter((item) => publicScheduleStore === "全部" || ((item.isSupport && item.supportStore) ? item.supportStore : (item.store || "未填店名")) === publicScheduleStore)
       .filter((item) => {
         if (!keyword) return true;
         return (
@@ -1982,6 +2080,7 @@ ${url}`);
         endTime: item?.endTime || "",
         working: !!item?.working,
         isSupport: !!item?.isSupport,
+        supportStore: item?.supportStore || "",
       }))
       .filter((item) => item.working)
       .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")));
@@ -2236,7 +2335,11 @@ ${url}`);
                   }}>
                     <div>
                       <div style={styles.publicScheduleName}>{item.name}</div>
-                      <div style={styles.publicScheduleMeta}>{item.empId} ・ {item.store || "未填店名"}</div>
+                      <div style={styles.publicScheduleMeta}>
+                        {item.empId} ・ {item.isSupport && item.supportStore
+                          ? `支援${item.supportStore}`
+                          : (item.store || "未填店名")}
+                      </div>
                     </div>
                     <div style={styles.publicScheduleTime}>
                       {item.startTime || "未填"} - {item.endTime || "未填"}
@@ -2318,6 +2421,24 @@ ${url}`);
                 disabled={mealSaving}
               >
                 稍後再填
+              </button>
+            </div>
+          </div>
+        )}
+
+        {announcementModalData && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.announcementModalCard}>
+              <div style={styles.announcementIcon}>📢</div>
+              <div style={styles.announcementTitle}>{announcementModalData.title}</div>
+              <div style={styles.announcementGreeting}>
+                {announcementModalData.name}，下班辛苦了！
+              </div>
+              <div style={styles.announcementContent}>
+                {announcementModalData.content}
+              </div>
+              <button style={styles.announcementConfirmBtn} onClick={acknowledgeAnnouncement}>
+                我知道了
               </button>
             </div>
           </div>
@@ -2443,7 +2564,7 @@ ${url}`);
                       <div>
                         <div style={styles.latePersonName}>{item.name}</div>
                         <div style={styles.latePersonMeta}>
-                          {item.store}｜排班 {item.startTime}｜{item.actualTime === "尚未打卡" ? "尚未打卡" : `打卡 ${item.actualTime}`}
+                          {item.isSupport && item.supportStore ? `支援${item.supportStore}` : item.store}｜排班 {item.startTime}｜{item.actualTime === "尚未打卡" ? "尚未打卡" : `打卡 ${item.actualTime}`}
                         </div>
                       </div>
                       <div style={styles.lateMinutes}>遲到 {item.lateMinutes} 分</div>
@@ -2549,7 +2670,9 @@ ${url}`);
                 }}>
                   <div>
                     <div style={styles.recordName}>{r.name}</div>
-                    <div style={styles.recordMeta}>{r.empId}・{r.store || "未填店名"}</div>
+                    <div style={styles.recordMeta}>
+                      {r.empId}・{r.isSupport && r.supportStore ? `支援${r.supportStore}` : (r.store || "未填店名")}
+                    </div>
                   </div>
                   <div style={styles.recordRight}>
                     <div style={styles.recordType}>{r.type}</div>
@@ -2755,6 +2878,45 @@ ${url}`);
         <div style={styles.leftCol}>
           <div style={styles.panelCard}>
             <div style={styles.listHeader}>
+              <div style={styles.panelTitle}>每日員工公告</div>
+              <div style={styles.badge}>📢</div>
+            </div>
+
+            <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, marginBottom: 12 }}>
+              員工下班打卡並完成員工餐登記後，系統會自動顯示當天公告。
+            </div>
+
+            <div style={styles.deviceLabel}>公告日期</div>
+            <input
+              type="date"
+              value={announcementDate}
+              onChange={(e) => setAnnouncementDate(e.target.value)}
+              style={styles.monthInput}
+            />
+
+            <div style={{ ...styles.deviceLabel, marginTop: 12 }}>公告內容</div>
+            <textarea
+              value={announcementContent}
+              onChange={(e) => setAnnouncementContent(e.target.value)}
+              placeholder="輸入今天要給員工看的公告，例如：明天新品上市，請大家先確認製作流程。"
+              rows={7}
+              style={styles.announcementTextarea}
+            />
+
+            <button
+              style={{ ...styles.fullMainBtn, marginTop: 12, opacity: announcementSaving ? 0.7 : 1 }}
+              onClick={saveDailyAnnouncement}
+              disabled={announcementSaving}
+            >
+              {announcementSaving ? "儲存中…" : "儲存當日公告"}
+            </button>
+            <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
+              將內容全部清空後再按儲存，可刪除該日公告。
+            </div>
+          </div>
+
+          <div style={styles.panelCard}>
+            <div style={styles.listHeader}>
               <div style={styles.panelTitle}>班表發布</div>
               <div style={styles.badge}>{adminStoreTab === "全部" ? publishStore : adminStoreTab}</div>
             </div>
@@ -2947,7 +3109,7 @@ ${url}`);
                     const storeMap = {};
                     Object.entries(dayData).forEach(([empId, item]) => {
                       if (!item?.working) return;
-                      const storeName = item.store || "未填店名";
+                      const storeName = (item.isSupport && item.supportStore) ? item.supportStore : (item.store || "未填店名");
                       if (!storeMap[storeName]) storeMap[storeName] = [];
                       storeMap[storeName].push({ empId, ...item });
                     });
@@ -2965,7 +3127,7 @@ ${url}`);
                                 .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")))
                                 .map((item) => (
                                   <div key={`${dateKey}-${storeName}-${item.empId}`} style={styles.historyItem}>
-                                    {item.name}｜{item.startTime || "未填"} - {item.endTime || "未填"}
+                                    {item.name}｜{item.startTime || "未填"} - {item.endTime || "未填"}{item.isSupport && item.supportStore ? `｜支援${item.supportStore}` : ""}
                                   </div>
                                 ))}
                             </div>
@@ -3118,7 +3280,7 @@ ${url}`);
                               </span>
                             </div>
                             <div style={styles.employeeId}>
-                              工號：{emp.empId || emp.id} ・ {emp.store || "未填店名"} ・ {emp.role || "未設定"}
+                              工號：{emp.empId || emp.id} ・ 所屬 {emp.store || "未填店名"} ・ {emp.role || "未設定"}
                             </div>
                           </div>
                         </div>
@@ -3139,26 +3301,29 @@ ${url}`);
                         </div>
 
                         <label style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
                           marginBottom: 12,
-                          padding: "10px 12px",
+                          padding: "12px 14px",
                           borderRadius: 14,
                           background: item.isSupport ? "#dbeafe" : "#f8fafc",
                           color: item.isSupport ? "#1d4ed8" : "#475569",
                           fontWeight: 900,
-                          cursor: item.working ? "pointer" : "not-allowed",
                           opacity: item.working ? 1 : 0.45,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                          cursor: item.working ? "pointer" : "not-allowed",
+                          border: item.isSupport ? "1px solid #93c5fd" : "1px solid #e2e8f0",
                         }}>
                           <input
                             type="checkbox"
                             checked={!!item.isSupport}
-                            onChange={() => toggleScheduleSupport(key)}
+                            onChange={() => toggleScheduleSupport(key, emp.store)}
                             disabled={!item.working}
-                            style={{ width: 18, height: 18, cursor: item.working ? "pointer" : "not-allowed" }}
+                            style={{ width: 19, height: 19, cursor: item.working ? "pointer" : "not-allowed" }}
                           />
-                          支援另一間店
+                          <span>
+                            支援{getOtherStoreName(emp.store)}
+                          </span>
                         </label>
 
                         <div style={styles.integratedTimeRow}>
@@ -3221,7 +3386,7 @@ ${url}`);
                   <div>
                     <div style={styles.employeeName}>{r.name}</div>
                     <div style={styles.employeeId}>
-                      {r.empId} ・ {r.store || "未填店名"} ・ {r.role || "未設定"} ・ {r.date}
+                      {r.empId} ・ {r.isSupport && r.supportStore ? `支援${r.supportStore}` : (r.store || "未填店名")} ・ {r.role || "未設定"} ・ {r.date}
                     </div>
                   </div>
                   <div style={styles.recordAdminActions}>
@@ -4524,6 +4689,75 @@ const styles = {
     fontSize: 12,
     lineHeight: 1.5,
     wordBreak: "break-all",
+  },
+  announcementModalCard: {
+    width: "100%",
+    maxWidth: 520,
+    background: "#fff",
+    borderRadius: 28,
+    padding: 26,
+    boxShadow: "0 24px 70px rgba(15,23,42,0.28)",
+    textAlign: "center",
+  },
+  announcementIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 22,
+    margin: "0 auto 12px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#eff6ff",
+    fontSize: 34,
+  },
+  announcementTitle: {
+    fontSize: 26,
+    fontWeight: 950,
+    color: "#0f172a",
+  },
+  announcementGreeting: {
+    marginTop: 8,
+    color: "#047857",
+    fontWeight: 900,
+  },
+  announcementContent: {
+    marginTop: 16,
+    padding: 18,
+    borderRadius: 20,
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+    color: "#334155",
+    fontSize: 17,
+    fontWeight: 800,
+    lineHeight: 1.8,
+    textAlign: "left",
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+  },
+  announcementConfirmBtn: {
+    width: "100%",
+    marginTop: 16,
+    border: "none",
+    borderRadius: 16,
+    padding: "15px 16px",
+    background: "linear-gradient(135deg, #2563eb, #3b82f6)",
+    color: "#fff",
+    fontSize: 17,
+    fontWeight: 950,
+    cursor: "pointer",
+  },
+  announcementTextarea: {
+    width: "100%",
+    boxSizing: "border-box",
+    border: "1px solid #cbd5e1",
+    borderRadius: 14,
+    padding: "13px 14px",
+    fontSize: 15,
+    lineHeight: 1.7,
+    resize: "vertical",
+    outline: "none",
+    fontFamily: "inherit",
+    background: "#fff",
   },
   mealModalCard: {
     width: "100%",
