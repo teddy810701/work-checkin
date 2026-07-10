@@ -532,7 +532,7 @@ ${message}
       employees.forEach((emp) => {
         const key = emp.empId || emp.id;
         if (!next[key]) {
-          next[key] = { working: false, startTime: "05:00", endTime: "14:00" };
+          next[key] = { working: false, startTime: "05:00", endTime: "14:00", isSupport: false };
         }
       });
       return next;
@@ -549,13 +549,14 @@ ${message}
         const next = {};
         employees.forEach((emp) => {
           const key = emp.empId || emp.id;
-          next[key] = { working: false, startTime: "05:00", endTime: "14:00" };
+          next[key] = { working: false, startTime: "05:00", endTime: "14:00", isSupport: false };
         });
         Object.entries(data).forEach(([empId, schedData]) => {
           next[empId] = {
             working: schedData.working || false,
             startTime: schedData.startTime || "05:00",
             endTime: schedData.endTime || "14:00",
+            isSupport: !!schedData.isSupport,
           };
         });
         return next;
@@ -694,6 +695,13 @@ ${message}
     }));
   };
 
+  const toggleScheduleSupport = (empId) => {
+    setScheduleItems((prev) => ({
+      ...prev,
+      [empId]: { ...prev[empId], isSupport: !prev[empId]?.isSupport },
+    }));
+  };
+
 
   const getScheduleShareUrl = (targetDate = scheduleDate, storeName = publishStore) => {
     const baseUrl = window.location.origin + window.location.pathname;
@@ -757,6 +765,7 @@ ${url}`);
             startTime: item.startTime || "05:00",
             endTime: item.endTime || "14:00",
             working: true,
+            isSupport: !!item.isSupport,
           };
         }
       });
@@ -1081,6 +1090,9 @@ ${url}`);
     const createdAt = Date.now();
     const newStatus = getNextStatus(type);
     const recordId = String(createdAt);
+    const dateKey = formatTaipeiDateKey(createdAt);
+    const scheduleSnap = await get(ref(db, `schedules/${dateKey}/${emp.empId || emp.id}`));
+    const todaySchedule = scheduleSnap.val() || {};
 
     await set(ref(db, `records/${recordId}`), {
       empId: emp.empId || emp.id,
@@ -1090,8 +1102,9 @@ ${url}`);
       type,
       time: now.toLocaleTimeString("zh-TW", { hour12: false }),
       date: now.toLocaleDateString("zh-TW"),
-      dateKey: formatTaipeiDateKey(createdAt),
+      dateKey,
       device: myDevice,
+      isSupport: !!todaySchedule.isSupport,
       createdAt,
       monthKey: getMonthValue(createdAt),
     });
@@ -1291,6 +1304,7 @@ ${url}`);
             .late { background: #ffffff; color: #8b0000; font-weight: bold; }
             .missing { background: #fce4ec; color: #b91c1c; font-weight: bold; }
             .longBreak { background: #fde68a; color: #92400e; font-weight: bold; }
+            .support { background: #dbeafe; color: #1d4ed8; font-weight: bold; }
             .hours { mso-number-format:'0.00'; }
             .total { background: #fff2cc; font-weight: bold; mso-number-format:'0.00'; }
             .gap td { height: 8px; background: #ffffff; border-left: none; border-right: none; }
@@ -1478,6 +1492,8 @@ ${url}`);
             .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
 
           const schedule = schedulesByDate?.[day.dateKey]?.[emp.empId] || null;
+          const isSupportDay = !!schedule?.isSupport || dayRecords.some((record) => record?.isSupport);
+          const supportClass = isSupportDay ? "support" : "";
           const workIn = getFirstRecord(dayRecords, "上班");
           const breakStart = getFirstRecord(dayRecords, "休息開始");
           const breakEnd = getFirstRecord(dayRecords, "休息結束");
@@ -1507,30 +1523,30 @@ ${url}`);
 
           rowData.workIn.push(buildCell(
             missingWorkIn ? "未打卡" : formatExcelTime(workIn.createdAt),
-            missingWorkIn ? "missing" : (isLate ? "late" : "")
+            [missingWorkIn ? "missing" : (isLate ? "late" : ""), supportClass].filter(Boolean).join(" ")
           ));
           rowData.breakStart.push(buildCell(
             breakStart ? formatExcelTime(breakStart.createdAt) : (breakEnd ? "未打卡" : ""),
-            breakEnd && !breakStart ? "missing" : (isLongBreak ? "longBreak" : "")
+            [breakEnd && !breakStart ? "missing" : (isLongBreak ? "longBreak" : ""), supportClass].filter(Boolean).join(" ")
           ));
           rowData.breakEnd.push(buildCell(
             breakEnd ? formatExcelTime(breakEnd.createdAt) : (breakStart ? "未打卡" : ""),
-            breakStart && !breakEnd ? "missing" : (isLongBreak ? "longBreak" : "")
+            [breakStart && !breakEnd ? "missing" : (isLongBreak ? "longBreak" : ""), supportClass].filter(Boolean).join(" ")
           ));
           rowData.workOut.push(buildCell(
             missingWorkOut ? "未打卡" : formatExcelTime(workOut.createdAt),
-            missingWorkOut ? "missing" : ""
+            [missingWorkOut ? "missing" : "", supportClass].filter(Boolean).join(" ")
           ));
 
           if (missingWorkIn || missingWorkOut || breakPairMissing) {
-            rowData.hours.push(buildCell("異常", "missing"));
+            rowData.hours.push(buildCell("異常", ["missing", supportClass].filter(Boolean).join(" ")));
             return;
           }
 
           const totalMinutes = minutesBetween(workIn.createdAt, workOut.createdAt) - breakMinutes;
           const hours = Math.max(0, totalMinutes / 60);
           totalHours += hours;
-          rowData.hours.push(buildCell(hours.toFixed(2), "hours"));
+          rowData.hours.push(buildCell(hours.toFixed(2), ["hours", supportClass].filter(Boolean).join(" ")));
         });
 
         bodyRows.push(`
@@ -1965,6 +1981,7 @@ ${url}`);
         startTime: item?.startTime || "",
         endTime: item?.endTime || "",
         working: !!item?.working,
+        isSupport: !!item?.isSupport,
       }))
       .filter((item) => item.working)
       .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")));
@@ -2213,7 +2230,10 @@ ${url}`);
             ) : (
               <div style={styles.publicScheduleList}>
                 {publicScheduleList.map((item) => (
-                  <div key={`${item.empId}-${item.startTime}`} style={styles.publicScheduleRow}>
+                  <div key={`${item.empId}-${item.startTime}`} style={{
+                    ...styles.publicScheduleRow,
+                    ...(item.isSupport ? { background: "#dbeafe", borderColor: "#93c5fd" } : {}),
+                  }}>
                     <div>
                       <div style={styles.publicScheduleName}>{item.name}</div>
                       <div style={styles.publicScheduleMeta}>{item.empId} ・ {item.store || "未填店名"}</div>
@@ -2523,7 +2543,10 @@ ${url}`);
             <div style={styles.dashboardCard}>
               <div style={styles.sectionTitle}>近期打卡紀錄</div>
               {recentRecords.slice(0, 6).map((r) => (
-                <div key={r.id} style={styles.compactRecordRow}>
+                <div key={r.id} style={{
+                  ...styles.compactRecordRow,
+                  ...(r.isSupport ? { background: "#dbeafe", borderRadius: 12, padding: "10px 12px" } : {}),
+                }}>
                   <div>
                     <div style={styles.recordName}>{r.name}</div>
                     <div style={styles.recordMeta}>{r.empId}・{r.store || "未填店名"}</div>
@@ -3065,6 +3088,7 @@ ${url}`);
                     working: false,
                     startTime: "05:00",
                     endTime: "14:00",
+                    isSupport: false,
                   };
 
                   return (
@@ -3113,6 +3137,29 @@ ${url}`);
                         <div style={styles.integratedScheduleLabel}>
                           {item.working ? "今日已排班" : "未排班"}
                         </div>
+
+                        <label style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          marginBottom: 12,
+                          padding: "10px 12px",
+                          borderRadius: 14,
+                          background: item.isSupport ? "#dbeafe" : "#f8fafc",
+                          color: item.isSupport ? "#1d4ed8" : "#475569",
+                          fontWeight: 900,
+                          cursor: item.working ? "pointer" : "not-allowed",
+                          opacity: item.working ? 1 : 0.45,
+                        }}>
+                          <input
+                            type="checkbox"
+                            checked={!!item.isSupport}
+                            onChange={() => toggleScheduleSupport(key)}
+                            disabled={!item.working}
+                            style={{ width: 18, height: 18, cursor: item.working ? "pointer" : "not-allowed" }}
+                          />
+                          支援另一間店
+                        </label>
 
                         <div style={styles.integratedTimeRow}>
                           <div style={{ ...styles.integratedTimeBox, opacity: item.working ? 1 : 0.45 }}>
@@ -3167,7 +3214,10 @@ ${url}`);
               <div style={styles.emptyText}>目前沒有符合條件的打卡紀錄</div>
             ) : (
               adminFilteredRecords.map((r) => (
-                <div key={r.id} style={styles.recordAdminRow}>
+                <div key={r.id} style={{
+                  ...styles.recordAdminRow,
+                  ...(r.isSupport ? { background: "#dbeafe", borderRadius: 14, padding: "14px 12px", marginBottom: 6 } : {}),
+                }}>
                   <div>
                     <div style={styles.employeeName}>{r.name}</div>
                     <div style={styles.employeeId}>
