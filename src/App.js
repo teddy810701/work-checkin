@@ -376,6 +376,18 @@ const buildLineScheduleMessage = (storeName, scheduleList, dateKey) => {
   ].join("\n");
 };
 
+const isScheduleVisibleForStore = (item, storeName) => {
+  if (storeName === "全部") return true;
+
+  const homeStore = item.store || "未填店名";
+  const workStore = item.isSupport && item.supportStore
+    ? item.supportStore
+    : homeStore;
+
+  // 支援班次要同時出現在員工的所屬店與實際上班店，避免被誤認為休假。
+  return homeStore === storeName || workStore === storeName;
+};
+
 
 const getTaipeiTimestampFromDateTime = (dateKey, timeValue) => {
   if (!dateKey || !timeValue) return 0;
@@ -899,7 +911,7 @@ ${url}`);
 
       const targetStoreName = publishStore;
       const targetScheduleList = scheduleList.filter(
-        (item) => ((item.isSupport && item.supportStore) ? item.supportStore : (item.store || "未填店名")) === targetStoreName
+        (item) => isScheduleVisibleForStore(item, targetStoreName)
       );
       const shareUrl = getScheduleShareUrl(targetDate, targetStoreName);
 
@@ -2068,7 +2080,11 @@ ${url}`);
   const publicStoreOptions = useMemo(() => {
     const stores = Object.values(publicScheduleData || {})
       .filter((item) => item?.working)
-      .map((item) => (item.isSupport && item.supportStore) ? item.supportStore : (item.store || "未填店名"));
+      .flatMap((item) => [
+        item.store || "未填店名",
+        item.isSupport && item.supportStore ? item.supportStore : null,
+      ])
+      .filter(Boolean);
     return ["全部", ...Array.from(new Set(stores))];
   }, [publicScheduleData]);
 
@@ -2076,7 +2092,7 @@ ${url}`);
     const keyword = publicEmployeeKeyword.trim().toLowerCase();
     return Object.values(publicScheduleData || {})
       .filter((item) => item?.working)
-      .filter((item) => publicScheduleStore === "全部" || ((item.isSupport && item.supportStore) ? item.supportStore : (item.store || "未填店名")) === publicScheduleStore)
+      .filter((item) => isScheduleVisibleForStore(item, publicScheduleStore))
       .filter((item) => {
         if (!keyword) return true;
         return (
@@ -2441,7 +2457,7 @@ ${url}`);
                       <div style={styles.publicScheduleName}>{item.name}</div>
                       <div style={styles.publicScheduleMeta}>
                         {item.empId} ・ {item.isSupport && item.supportStore
-                          ? `支援${item.supportStore}`
+                          ? `所屬${item.store || "未填店名"}・支援${item.supportStore}`
                           : (item.store || "未填店名")}
                       </div>
                     </div>
