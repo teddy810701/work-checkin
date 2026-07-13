@@ -916,7 +916,7 @@ ${url}`);
 
       const targetStoreName = publishStore;
       const targetScheduleList = scheduleList.filter(
-        (item) => isScheduleVisibleForStore(item, targetStoreName)
+        (item) => getScheduleWorkStore(item) === targetStoreName
       );
       const shareUrl = getScheduleShareUrl(targetDate, targetStoreName);
 
