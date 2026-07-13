@@ -376,13 +376,18 @@ const buildLineScheduleMessage = (storeName, scheduleList, dateKey) => {
   ].join("\n");
 };
 
+const getScheduleWorkStore = (item) => {
+  const homeStore = item.store || "未填店名";
+  return item.isSupport && item.supportStore
+    ? item.supportStore
+    : homeStore;
+};
+
 const isScheduleVisibleForStore = (item, storeName) => {
   if (storeName === "全部") return true;
 
   const homeStore = item.store || "未填店名";
-  const workStore = item.isSupport && item.supportStore
-    ? item.supportStore
-    : homeStore;
+  const workStore = getScheduleWorkStore(item);
 
   // 支援班次要同時出現在員工的所屬店與實際上班店，避免被誤認為休假。
   return homeStore === storeName || workStore === storeName;
@@ -2103,6 +2108,18 @@ ${url}`);
       .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")));
   }, [publicScheduleData, publicScheduleStore, publicEmployeeKeyword]);
 
+  const publicScheduledCount = useMemo(() => {
+    if (publicScheduleStore === "全部") return publicScheduleList.length;
+    return publicScheduleList.filter(
+      (item) => getScheduleWorkStore(item) === publicScheduleStore
+    ).length;
+  }, [publicScheduleList, publicScheduleStore]);
+
+  const publicOutgoingSupportCount =
+    publicScheduleStore === "全部"
+      ? 0
+      : publicScheduleList.length - publicScheduledCount;
+
   const openPublicSchedule = (storeName = "全部", dateKey = getTomorrowTaipeiDateKey()) => {
     setPublicScheduleStore(storeName);
     setPublicScheduleDate(dateKey);
@@ -2441,7 +2458,10 @@ ${url}`);
             <div style={styles.scheduleSummaryBar}>
               <div>日期：{publicScheduleDate}</div>
               <div>店別：{publicScheduleStore}</div>
-              <div>排班：{publicScheduleList.length} 人</div>
+              <div>排班：{publicScheduledCount} 人</div>
+              {publicOutgoingSupportCount > 0 ? (
+                <div>支援他店：{publicOutgoingSupportCount} 人</div>
+              ) : null}
             </div>
 
             {publicScheduleList.length === 0 ? (
