@@ -384,7 +384,7 @@ export default function App() {
   const [scheduleItems, setScheduleItems] = useState({});
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleSent, setScheduleSent] = useState(false);
-  const [scheduleDate, setScheduleDate] = useState(formatTaipeiDateKey());
+  const [scheduleDate, setScheduleDate] = useState(getTomorrowTaipeiDateKey());
   const [publishStore, setPublishStore] = useState("西螺文昌店");
   const [adminStoreTab, setAdminStoreTab] = useState("全部");
   const [scheduleHistory, setScheduleHistory] = useState({});
