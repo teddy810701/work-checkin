@@ -65,6 +65,11 @@ const getTomorrowTaipeiDateKey = () => {
   return formatTaipeiDateKey(tomorrow);
 };
 
+const getYesterdayTaipeiDateKey = () => {
+  const yesterday = Date.now() - 24 * 60 * 60 * 1000;
+  return formatTaipeiDateKey(yesterday);
+};
+
 // 行政院人事行政總處 115 年（2026）政府行政機關辦公日曆表中的平日放假日。
 // 週六、週日會另外依日期自動判斷。
 const TAIWAN_HOLIDAYS_2026 = new Set([
@@ -121,6 +126,19 @@ const getMonthKeyFromAnyDate = (value) => {
   else d = new Date(value);
   if (!d || Number.isNaN(d.getTime())) return "";
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
+
+const getDateKeyFromAnyDate = (value) => {
+  if (!value) return "";
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)) {
+    return value.slice(0, 10);
+  }
+  let d = null;
+  if (value?.toDate) d = value.toDate();
+  else if (value?.seconds) d = new Date(value.seconds * 1000);
+  else d = new Date(value);
+  if (!d || Number.isNaN(d.getTime())) return "";
+  return formatTaipeiDateKey(d.getTime());
 };
 
 const ensurePointsFirebaseAuth = async () => {
@@ -185,6 +203,39 @@ const fetchMonthlyPointsFromPerformanceSystem = async (empId) => {
   }
 
   return { found: false, message: "尚無積分資料" };
+};
+
+const fetchYesterdayPointsAnnouncement = async () => {
+  await ensurePointsFirebaseAuth();
+  const yesterdayKey = getYesterdayTaipeiDateKey();
+
+  const storeEntries = await Promise.all(POINTS_STORE_IDS.map(async (storeId) => {
+    const [empSnap, logSnap] = await Promise.all([
+      getDocs(fsCollection(pointsDb, "stores", storeId, "employees")),
+      getDocs(fsCollection(pointsDb, "stores", storeId, "logs")),
+    ]);
+    const employeeNames = new Map(empSnap.docs.map((item) => [item.id, item.data()?.name || ""]));
+
+    return logSnap.docs
+      .map((item) => ({ id: item.id, ...(item.data() || {}) }))
+      .filter((log) => Number(log.amount) !== 0
+        && getDateKeyFromAnyDate(log.occurrenceDate || log.timestamp) === yesterdayKey)
+      .map((log) => {
+        const amount = Number(log.amount);
+        const name = log.name || employeeNames.get(log.empId) || "未具名員工";
+        const reason = String(log.reason || "未填原因").trim();
+        const note = String(log.note || "").trim();
+        const detail = note && note !== reason ? `（${note}）` : "";
+        return `• ${name} ${amount > 0 ? "+" : ""}${amount} 分｜${reason}${detail}`;
+      });
+  }));
+
+  const entries = storeEntries.flat();
+  if (!entries.length) return null;
+  return {
+    title: "昨日加扣分公告",
+    content: `${yesterdayKey} 加扣分紀錄\n\n${entries.join("\n")}`,
+  };
 };
 
 
@@ -1028,7 +1079,22 @@ ${url}`);
           title: dailyAnnouncement.title || "今日公告",
         });
       } else {
-        alert(amount > 0 ? `員工餐已記錄：${amount} 元` : "已記錄今日沒有吃員工餐");
+        try {
+          const automaticAnnouncement = await fetchYesterdayPointsAnnouncement();
+          if (automaticAnnouncement) {
+            setAnnouncementModalData({
+              empId: finishedMealData.empId,
+              name: finishedMealData.name,
+              dateKey: finishedMealData.dateKey,
+              ...automaticAnnouncement,
+            });
+          } else {
+            alert(amount > 0 ? `員工餐已記錄：${amount} 元` : "已記錄今日沒有吃員工餐");
+          }
+        } catch (announcementError) {
+          console.error("讀取昨日加扣分公告失敗：", announcementError);
+          alert(amount > 0 ? `員工餐已記錄：${amount} 元` : "已記錄今日沒有吃員工餐");
+        }
       }
     } catch (error) {
       console.error("員工餐記錄失敗：", error);
