@@ -2376,7 +2376,7 @@ ${url}`);
   }
             if (!isAdmin) {
     return (
-      <div style={styles.tabletPage}>
+      <div className="checkin-page" style={styles.tabletPage}>
         {scoreToast && (
           <div style={styles.scoreToastOverlay}>
             <div style={styles.scoreToastCard}>
@@ -2638,13 +2638,14 @@ ${url}`);
           </div>
         )}
 
-        <aside style={styles.tabletSidebar}>
-          <div style={styles.sidebarLogoBox}>
+        <aside className="checkin-sidebar" style={styles.tabletSidebar}>
+          <div className="checkin-sidebar-logo" style={styles.sidebarLogoBox}>
             <div style={styles.sidebarLogo}>MWD</div>
             <div style={styles.sidebarBrand}>麥味登<br />打卡系統</div>
           </div>
 
           <button
+            className="checkin-sidebar-nav"
             style={styles.sidebarNavActive}
             onClick={() => openPublicSchedule("全部", getTomorrowTaipeiDateKey())}
           >
@@ -2652,6 +2653,7 @@ ${url}`);
           </button>
 
           <button
+            className="checkin-sidebar-nav"
             style={styles.sidebarNav}
             onClick={() =>
               window.open(
@@ -2665,6 +2667,7 @@ ${url}`);
           </button>
 
           <button
+            className="checkin-sidebar-nav"
             style={styles.sidebarNav}
             onClick={() =>
               window.open(
@@ -2678,6 +2681,7 @@ ${url}`);
           </button>
 
           <button
+            className="checkin-sidebar-admin"
             style={styles.sidebarAdminBtn}
             onClick={() => setShowLoginModal(true)}
           >
@@ -2685,19 +2689,19 @@ ${url}`);
           </button>
         </aside>
 
-        <main style={styles.tabletMain}>
-          <section style={styles.dashboardHeader}>
+        <main className="checkin-main" style={styles.tabletMain}>
+          <section className="checkin-header" style={styles.dashboardHeader}>
             <div>
               <div style={styles.dashboardHello}>早安，店長 👋</div>
               <div style={styles.dashboardSub}>今天也一起加油！</div>
             </div>
 
-            <div style={styles.clockBox}>
+            <div className="checkin-clock" style={styles.clockBox}>
               <div style={styles.clockTime}>{nowTime ? nowTime.split(" ")[1] : "--:--:--"}</div>
               <div style={styles.clockDate}>{todayKey.replace(/-/g, "/")}</div>
             </div>
 
-            <div style={styles.headerActions}>
+            <div className="checkin-header-actions" style={styles.headerActions}>
               <button style={styles.refreshMiniBtn} onClick={() => window.location.reload()}>
                 重新整理
               </button>
@@ -2713,7 +2717,7 @@ ${url}`);
             </div>
           )}
 
-          <section style={styles.dashboardTopGrid}>
+          <section className="checkin-top-grid" style={styles.dashboardTopGrid}>
             <div style={styles.latePanel}>
               <div style={styles.cardTitleRed}>⚠ 今日遲到看板</div>
               {lateDashboardList.length === 0 ? (
@@ -2738,7 +2742,7 @@ ${url}`);
 
             <div style={styles.statsPanel}>
               <div style={styles.cardTitleGreen}>今日出勤狀況</div>
-              <div style={styles.statsGrid}>
+              <div className="checkin-stats-grid" style={styles.statsGrid}>
                 <div style={styles.statBox}>
                   <div style={styles.statValue}>{dashboardStats.checkedInCount}</div>
                   <div style={styles.statLabel}>已打卡</div>
@@ -2759,7 +2763,7 @@ ${url}`);
             </div>
           </section>
 
-          <section style={styles.checkinPanel}>
+          <section className="checkin-panel" style={styles.checkinPanel}>
             <input
               style={styles.dashboardInput}
               placeholder="請輸入工號"
@@ -2770,20 +2774,13 @@ ${url}`);
               }}
             />
 
-            <div style={styles.dashboardButtonGrid}>
+            <div className="checkin-action-grid" style={styles.dashboardButtonGrid}>
               <button
                 style={{ ...styles.dashboardActionBtn, ...styles.dashboardBlueBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }}
                 onClick={() => checkIn("上班")}
               >
                 ⬆ 上班打卡
                 <span>開始今天的工作</span>
-              </button>
-              <button
-                style={{ ...styles.dashboardActionBtn, ...styles.dashboardDarkBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }}
-                onClick={() => checkIn("下班")}
-              >
-                ⬇ 下班打卡
-                <span>下班時登記員工餐</span>
               </button>
               <button
                 style={{ ...styles.dashboardActionBtn, ...styles.dashboardOrangeBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }}
@@ -2799,13 +2796,20 @@ ${url}`);
                 🍵 休息結束
                 <span>結束休息時間</span>
               </button>
+              <button
+                style={{ ...styles.dashboardActionBtn, ...styles.dashboardDarkBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }}
+                onClick={() => checkIn("下班")}
+              >
+                ⬇ 下班打卡
+                <span>下班時登記員工餐</span>
+              </button>
             </div>
           </section>
 
-          <section style={styles.dashboardBottomGrid}>
+          <section className="checkin-bottom-grid" style={styles.dashboardBottomGrid}>
             <div style={styles.dashboardCard}>
               <div style={styles.sectionTitle}>今日有上班人員狀態</div>
-              <div style={styles.staffMiniGrid}>
+              <div className="checkin-staff-grid" style={styles.staffMiniGrid}>
                 {liveStatusList.length === 0 && (
                   <div style={{ color: "#94a3b8", padding: "12px 0" }}>今天目前還沒有人打卡</div>
                 )}
