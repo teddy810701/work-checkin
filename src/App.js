@@ -8,6 +8,7 @@ import { getFirestore, collection as fsCollection, doc as fsDoc, getDocs, server
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
 const LATE_CONFIRM_MINUTES = 60;
+const LONG_BREAK_MINUTES = 30;
 const DEVICE_BIND_OPTIONS = ["西螺文昌店", "斗南站前店", "老闆手機"];
 
 // ===== 積分系統 Firebase（Firestore） =====
@@ -395,6 +396,8 @@ export default function App() {
   const [missedPunchReason, setMissedPunchReason] = useState("");
   const [missedPunchSaving, setMissedPunchSaving] = useState(false);
   const [lateCheckInModal, setLateCheckInModal] = useState(null);
+  const [longBreakModal, setLongBreakModal] = useState(null);
+  const [longBreakReason, setLongBreakReason] = useState("");
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [password, setPassword] = useState("");
@@ -1227,6 +1230,21 @@ ${url}`);
       }
     }
 
+    if (type === "休息結束" && !options.skipLongBreakConfirmation) {
+      const empId = emp.empId || emp.id;
+      const breakStartRecord = todayRecords.find((record) =>
+        record.empId === empId && record.type === "休息開始"
+      );
+      if (breakStartRecord?.createdAt) {
+        const breakMinutes = Math.floor((Date.now() - breakStartRecord.createdAt) / 60000);
+        if (breakMinutes > LONG_BREAK_MINUTES) {
+          setLongBreakModal({ emp, breakMinutes });
+          setLongBreakReason("");
+          return;
+        }
+      }
+    }
+
     const lastRecord = records.find(
       (r) => (r.empId === (emp.empId || emp.id))
     );
@@ -1260,6 +1278,8 @@ ${url}`);
       device: myDevice,
       isSupport: !!todaySchedule.isSupport,
       supportStore: todaySchedule.supportStore || "",
+      exceptionReason: options.longBreakReason || "",
+      longBreakMinutes: options.longBreakMinutes || 0,
       createdAt,
       monthKey: getMonthValue(createdAt),
     });
@@ -1321,6 +1341,24 @@ ${url}`);
 
       speakText(`${type}打卡完成，積分讀取失敗`);
     }
+  };
+
+  const confirmLongBreak = async () => {
+    if (!longBreakModal) return;
+    const reason = longBreakReason.trim();
+    if (!reason) {
+      alert("休息超過 30 分鐘，請填寫原因");
+      return;
+    }
+    const { emp, breakMinutes } = longBreakModal;
+    setLongBreakModal(null);
+    setLongBreakReason("");
+    await checkIn("休息結束", {
+      emp,
+      skipLongBreakConfirmation: true,
+      longBreakReason: reason,
+      longBreakMinutes: breakMinutes,
+    });
   };
 
   const submitMissedPunchRequest = async () => {
@@ -2280,6 +2318,44 @@ ${url}`);
                 </button>
                 <button style={styles.modalCancelBtn} onClick={() => setLateCheckInModal(null)}>
                   取消
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {longBreakModal && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.modalCard}>
+              <div style={styles.modalTitle}>休息已超過 30 分鐘</div>
+              <div style={{ color: "#475569", lineHeight: 1.7, marginBottom: 14 }}>
+                {longBreakModal.emp.name} 本次休息已經 {longBreakModal.breakMinutes} 分鐘。請選擇是忘記打休息結束卡，或填寫實際休息過久的原因。
+              </div>
+              <button
+                style={{ ...styles.modalLoginBtn, width: "100%", marginBottom: 12, background: "linear-gradient(135deg, #f97316, #ea580c)" }}
+                onClick={() => {
+                  const emp = longBreakModal.emp;
+                  setLongBreakModal(null);
+                  setLongBreakReason("");
+                  openMissedPunchRequest(emp, "休息結束", "休息結束");
+                }}
+              >
+                已回去工作，只是忘記打卡
+              </button>
+
+              <div style={styles.deviceLabel}>確實休息超過 30 分鐘的原因</div>
+              <textarea
+                style={{ ...styles.modalInput, minHeight: 100, resize: "vertical" }}
+                placeholder="例如：身體不舒服，需要多休息一下"
+                value={longBreakReason}
+                onChange={(e) => setLongBreakReason(e.target.value)}
+              />
+              <div style={styles.modalActions}>
+                <button style={styles.modalCancelBtn} onClick={() => setLongBreakModal(null)}>
+                  取消
+                </button>
+                <button style={styles.modalLoginBtn} onClick={confirmLongBreak}>
+                  填寫原因並打休息結束卡
                 </button>
               </div>
             </div>
