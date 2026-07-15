@@ -7,6 +7,7 @@ import { getFirestore, collection as fsCollection, doc as fsDoc, getDocs, server
 
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
+const LATE_CONFIRM_MINUTES = 60;
 const DEVICE_BIND_OPTIONS = ["西螺文昌店", "斗南站前店", "老闆手機"];
 
 // ===== 積分系統 Firebase（Firestore） =====
@@ -393,6 +394,7 @@ export default function App() {
   const [missedPunchTime, setMissedPunchTime] = useState("");
   const [missedPunchReason, setMissedPunchReason] = useState("");
   const [missedPunchSaving, setMissedPunchSaving] = useState(false);
+  const [lateCheckInModal, setLateCheckInModal] = useState(null);
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [password, setPassword] = useState("");
@@ -1212,6 +1214,14 @@ ${url}`);
       return;
     }
 
+    if (type === "上班" && !options.skipLateConfirmation) {
+      const lateMinutes = await getCheckInLateMinutes(emp, Date.now());
+      if (lateMinutes > LATE_CONFIRM_MINUTES) {
+        setLateCheckInModal({ emp, lateMinutes });
+        return;
+      }
+    }
+
     const lastRecord = records.find(
       (r) => (r.empId === (emp.empId || emp.id))
     );
@@ -1383,8 +1393,20 @@ ${url}`);
       setMissedPunchModal(null);
       setMissedPunchTime("");
       setMissedPunchReason("");
-      await checkIn(targetType, { emp, allowMissingTransition: true });
-      alert(`${missingType}忘打卡申請已送到積分系統審核，並已完成「${targetType}」打卡`);
+      if (missingType === targetType) {
+        const updatedAt = Date.now();
+        await update(ref(db, `employees/${emp.id}`), {
+          status: getNextStatus(missingType),
+          lastAction: `${missingType}忘打卡申請中`,
+          lastActionAt: requestedAt,
+          updatedAt,
+        });
+        setEmployeeId("");
+        alert(`${missingType}忘打卡申請已送到積分系統審核，現在可以繼續後面的打卡`);
+      } else {
+        await checkIn(targetType, { emp, allowMissingTransition: true });
+        alert(`${missingType}忘打卡申請已送到積分系統審核，並已完成「${targetType}」打卡`);
+      }
     } catch (error) {
       console.error("送出忘打卡申請失敗：", error);
       alert(`送出失敗：${error.message || "請稍後再試"}`);
@@ -2219,6 +2241,42 @@ ${url}`);
               ) : (
                 <div style={styles.scoreToastNotice}>{scoreToast.pointsResult?.message || "尚無積分資料"}</div>
               )}
+            </div>
+          </div>
+        )}
+
+        {lateCheckInModal && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.modalCard}>
+              <div style={styles.modalTitle}>確認上班狀況</div>
+              <div style={{ color: "#475569", lineHeight: 1.7, marginBottom: 16 }}>
+                {lateCheckInModal.emp.name} 已超過排班時間 {lateCheckInModal.lateMinutes} 分鐘。請確認是真的遲到，還是已經上班但忘記打卡。
+              </div>
+              <div style={{ display: "grid", gap: 10 }}>
+                <button
+                  style={styles.modalLoginBtn}
+                  onClick={() => {
+                    const emp = lateCheckInModal.emp;
+                    setLateCheckInModal(null);
+                    checkIn("上班", { emp, skipLateConfirmation: true });
+                  }}
+                >
+                  我是真的遲到，正常打上班卡
+                </button>
+                <button
+                  style={{ ...styles.modalLoginBtn, background: "linear-gradient(135deg, #f97316, #ea580c)" }}
+                  onClick={() => {
+                    const emp = lateCheckInModal.emp;
+                    setLateCheckInModal(null);
+                    openMissedPunchRequest(emp, "上班", "上班");
+                  }}
+                >
+                  我已經上班，只是忘記打卡
+                </button>
+                <button style={styles.modalCancelBtn} onClick={() => setLateCheckInModal(null)}>
+                  取消
+                </button>
+              </div>
             </div>
           </div>
         )}
