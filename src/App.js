@@ -398,6 +398,7 @@ export default function App() {
   const [lateCheckInModal, setLateCheckInModal] = useState(null);
   const [longBreakModal, setLongBreakModal] = useState(null);
   const [longBreakReason, setLongBreakReason] = useState("");
+  const [breakReminderModal, setBreakReminderModal] = useState(null);
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [password, setPassword] = useState("");
@@ -996,6 +997,42 @@ ${url}`);
       console.error("語音播放失敗:", error);
     }
   };
+
+  useEffect(() => {
+    if (!authReady || isAdmin || breakReminderModal || missedPunchModal || lateCheckInModal || longBreakModal) return;
+
+    const restingEmployees = employees.filter((emp) => emp.status === "休息中");
+    for (const emp of restingEmployees) {
+      const empId = emp.empId || emp.id;
+      const breakStartRecord = todayRecords.find((record) =>
+        record.empId === empId && record.type === "休息開始"
+      );
+      if (!breakStartRecord?.createdAt) continue;
+
+      const elapsedMinutes = Math.floor((Date.now() - breakStartRecord.createdAt) / 60000);
+      const reminderStage = elapsedMinutes >= LONG_BREAK_MINUTES
+        ? LONG_BREAK_MINUTES
+        : elapsedMinutes >= 25
+          ? 25
+          : 0;
+      if (!reminderStage) continue;
+
+      const reminderKey = `break_reminder_${todayKey}_${safeFirebaseKey(empId)}_${breakStartRecord.createdAt}_${reminderStage}`;
+      if (localStorage.getItem(reminderKey)) continue;
+
+      localStorage.setItem(reminderKey, String(Date.now()));
+      setBreakReminderModal({
+        name: emp.name,
+        empId,
+        elapsedMinutes,
+        stage: reminderStage,
+      });
+      speakText(reminderStage === 25
+        ? `${emp.name}休息剩下五分鐘，請記得準時回來打卡`
+        : `${emp.name}休息時間已到，請打休息結束卡`);
+      break;
+    }
+  }, [authReady, isAdmin, nowTime, employees, todayRecords, todayKey, breakReminderModal, missedPunchModal, lateCheckInModal, longBreakModal]);
 
   const getCheckInLateMinutes = async (emp, createdAt) => {
     try {
@@ -2284,6 +2321,29 @@ ${url}`);
               ) : (
                 <div style={styles.scoreToastNotice}>{scoreToast.pointsResult?.message || "尚無積分資料"}</div>
               )}
+            </div>
+          </div>
+        )}
+
+        {breakReminderModal && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.modalCard}>
+              <div style={{ fontSize: 46, textAlign: "center", marginBottom: 8 }}>⏰</div>
+              <div style={styles.modalTitle}>
+                {breakReminderModal.stage === 25 ? "休息剩下 5 分鐘" : "休息時間已到"}
+              </div>
+              <div style={{ color: "#475569", lineHeight: 1.8, margin: "12px 0 18px", textAlign: "center", fontWeight: 800 }}>
+                {breakReminderModal.name} 已休息 {breakReminderModal.elapsedMinutes} 分鐘。<br />
+                {breakReminderModal.stage === 25
+                  ? "請同事幫忙提醒，5 分鐘後記得回來。"
+                  : "請提醒本人回來後立刻打休息結束卡。"}
+              </div>
+              <button
+                style={{ ...styles.modalLoginBtn, width: "100%" }}
+                onClick={() => setBreakReminderModal(null)}
+              >
+                我知道了
+              </button>
             </div>
           </div>
         )}
