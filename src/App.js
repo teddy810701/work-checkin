@@ -1182,7 +1182,7 @@ ${url}`);
     const scheduledStart = todayScheduleData?.[empId]?.startTime || getDefaultScheduleStartTime(emp.store, todayKey);
     const defaultTime = missingType === "上班"
       ? `${todayKey}T${scheduledStart}`
-      : formatDatetimeLocal(Date.now());
+      : formatDateTimeLocalValue(Date.now());
     setMissedPunchModal({ emp, missingType, targetType });
     setMissedPunchTime(defaultTime);
     setMissedPunchReason("");
