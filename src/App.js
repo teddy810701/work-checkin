@@ -65,8 +65,39 @@ const getTomorrowTaipeiDateKey = () => {
   return formatTaipeiDateKey(tomorrow);
 };
 
-const getDefaultScheduleStartTime = (storeName = "") =>
-  String(storeName).includes("斗南") ? "05:30" : "05:00";
+// 行政院人事行政總處 115 年（2026）政府行政機關辦公日曆表中的平日放假日。
+// 週六、週日會另外依日期自動判斷。
+const TAIWAN_HOLIDAYS_2026 = new Set([
+  "2026-01-01",
+  "2026-02-16",
+  "2026-02-17",
+  "2026-02-18",
+  "2026-02-19",
+  "2026-02-20",
+  "2026-02-27",
+  "2026-04-03",
+  "2026-04-06",
+  "2026-05-01",
+  "2026-06-19",
+  "2026-09-25",
+  "2026-09-28",
+  "2026-10-09",
+  "2026-10-26",
+  "2026-12-25",
+]);
+
+const isTaiwanHoliday = (dateKey = "") => {
+  const [year, month, day] = String(dateKey).split("-").map(Number);
+  if (!year || !month || !day) return false;
+  const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  return weekday === 0 || weekday === 6 || TAIWAN_HOLIDAYS_2026.has(dateKey);
+};
+
+const getDefaultScheduleStartTime = (storeName = "", dateKey = "") => {
+  if (String(storeName).includes("斗南")) return "05:30";
+  if (String(storeName).includes("西螺") && isTaiwanHoliday(dateKey)) return "05:15";
+  return "05:00";
+};
 
 const getMonthValue = (ts = Date.now()) => {
   const d = new Date(ts);
@@ -503,12 +534,12 @@ ${message}
       employees.forEach((emp) => {
         const key = emp.empId || emp.id;
         if (!next[key]) {
-          next[key] = { working: false, startTime: getDefaultScheduleStartTime(emp.store), endTime: "14:00", isSupport: false, supportStore: "" };
+          next[key] = { working: false, startTime: getDefaultScheduleStartTime(emp.store, scheduleDate), endTime: "14:00", isSupport: false, supportStore: "" };
         }
       });
       return next;
     });
-  }, [employees, isAdmin]);
+  }, [employees, isAdmin, scheduleDate]);
 
   useEffect(() => {
     if (!authReady || !isAdmin) return;
@@ -520,13 +551,13 @@ ${message}
         const next = {};
         employees.forEach((emp) => {
           const key = emp.empId || emp.id;
-          next[key] = { working: false, startTime: getDefaultScheduleStartTime(emp.store), endTime: "14:00", isSupport: false, supportStore: "" };
+          next[key] = { working: false, startTime: getDefaultScheduleStartTime(emp.store, targetDate), endTime: "14:00", isSupport: false, supportStore: "" };
         });
         Object.entries(data).forEach(([empId, schedData]) => {
           const employee = employees.find((emp) => (emp.empId || emp.id) === empId);
           next[empId] = {
             working: schedData.working || false,
-            startTime: schedData.startTime || getDefaultScheduleStartTime(schedData.store || employee?.store),
+            startTime: schedData.startTime || getDefaultScheduleStartTime(schedData.store || employee?.store, targetDate),
             endTime: schedData.endTime || "14:00",
             isSupport: !!schedData.isSupport,
             supportStore: schedData.supportStore || "",
@@ -712,7 +743,7 @@ ${url}`);
             empId: key,
             name: emp.name,
             store: emp.store || "",
-            startTime: item.startTime || getDefaultScheduleStartTime(emp.store),
+            startTime: item.startTime || getDefaultScheduleStartTime(emp.store, targetDate),
             endTime: item.endTime || "14:00",
             working: true,
             isSupport: !!item.supportStore,
@@ -2811,7 +2842,7 @@ ${url}`);
                   const key = emp.empId || emp.id;
                   const item = scheduleItems[key] || {
                     working: false,
-                    startTime: getDefaultScheduleStartTime(emp.store),
+                    startTime: getDefaultScheduleStartTime(emp.store, scheduleDate),
                     endTime: "14:00",
                     isSupport: false,
                   };
@@ -2894,7 +2925,7 @@ ${url}`);
                             <div style={styles.integratedTimeTitle}>上班</div>
                             <input
                               type="time"
-                              value={item.startTime || getDefaultScheduleStartTime(emp.store)}
+                              value={item.startTime || getDefaultScheduleStartTime(emp.store, scheduleDate)}
                               onChange={(e) => setScheduleTime(key, e.target.value)}
                               disabled={!item.working}
                               style={styles.integratedTimeInput}
