@@ -673,6 +673,9 @@ ${message}
         role: emp.role || "",
         status: "未打卡",
         lastTime: 0,
+        hasTodayActivity: emp.lastActionAt
+          ? formatTaipeiDateKey(emp.lastActionAt) === todayKey
+          : false,
       };
     });
 
@@ -688,6 +691,7 @@ ${message}
           role: record.role || "",
           status: nextStatus,
           lastTime: record.createdAt || 0,
+          hasTodayActivity: true,
         };
       }
       if ((record.createdAt || 0) >= (map[key].lastTime || 0)) {
@@ -698,18 +702,19 @@ ${message}
           role: record.role || map[key].role,
           status: nextStatus,
           lastTime: record.createdAt || 0,
+          hasTodayActivity: true,
         };
       }
     });
 
-    return Object.values(map).sort((a, b) => {
+    return Object.values(map).filter((emp) => emp.hasTodayActivity).sort((a, b) => {
       const statusOrder = { "上班中": 0, "休息中": 1, "已下班": 2, "未打卡": 3 };
       const orderA = statusOrder[a.status] ?? 9;
       const orderB = statusOrder[b.status] ?? 9;
       if (orderA !== orderB) return orderA - orderB;
       return (a.empId || "").localeCompare(b.empId || "");
     });
-  }, [employees, todayRecords]);
+  }, [employees, todayRecords, todayKey]);
 
   const toggleScheduleWorking = (empId) => {
     setScheduleItems((prev) => ({
@@ -2589,9 +2594,12 @@ ${url}`);
 
           <section style={styles.dashboardBottomGrid}>
             <div style={styles.dashboardCard}>
-              <div style={styles.sectionTitle}>今日上班／休息狀態</div>
+              <div style={styles.sectionTitle}>今日有上班人員狀態</div>
               <div style={styles.staffMiniGrid}>
-                {liveStatusList.slice(0, 8).map((emp) => {
+                {liveStatusList.length === 0 && (
+                  <div style={{ color: "#94a3b8", padding: "12px 0" }}>今天目前還沒有人打卡</div>
+                )}
+                {liveStatusList.map((emp) => {
                   const statusStyle = getStatusStyle(emp.status);
                   return (
                     <div key={emp.empId} style={styles.staffMiniCard}>
