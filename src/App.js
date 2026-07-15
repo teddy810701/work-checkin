@@ -2723,7 +2723,7 @@ ${url}`);
                   <div style={styles.lateCountText}>遲到 {lateDashboardList.length} 人</div>
                   {lateDashboardList.slice(0, 3).map((item) => (
                     <div key={`${item.empId}-${item.startTime}`} style={styles.latePersonRow}>
-                      <div>
+                      <div style={styles.staffMiniInfo}>
                         <div style={styles.latePersonName}>{item.name}</div>
                         <div style={styles.latePersonMeta}>
                           {item.isSupport && item.supportStore ? `支援${item.supportStore}` : item.store}｜排班 {item.startTime}｜{item.actualTime === "尚未打卡" ? "尚未打卡" : `打卡 ${item.actualTime}`}
@@ -3844,6 +3844,13 @@ const styles = {
     border: "1px solid #e2e8f0",
     borderRadius: 18,
     padding: "12px 14px",
+    height: 76,
+    boxSizing: "border-box",
+    overflow: "hidden",
+  },
+  staffMiniInfo: {
+    minWidth: 0,
+    flex: 1,
   },
   staffMiniName: {
     fontSize: 15,
@@ -3855,6 +3862,9 @@ const styles = {
     fontSize: 11,
     color: "#64748b",
     fontWeight: 800,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
   },
   staffMiniBadge: {
     borderRadius: 999,
@@ -3862,6 +3872,7 @@ const styles = {
     fontSize: 12,
     fontWeight: 950,
     whiteSpace: "nowrap",
+    flexShrink: 0,
   },
   compactRecordRow: {
     display: "flex",
