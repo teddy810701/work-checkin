@@ -980,21 +980,92 @@ ${url}`);
   };
 
 
+  const getCheckInAudioContext = () => {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return null;
+    if (!window.__checkInAudioContext) {
+      window.__checkInAudioContext = new AudioContextClass();
+    }
+    return window.__checkInAudioContext;
+  };
+
+  const playFallbackTone = () => {
+    try {
+      const audioContext = getCheckInAudioContext();
+      if (!audioContext) return;
+      audioContext.resume?.();
+      const oscillator = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(880, audioContext.currentTime);
+      gain.gain.setValueAtTime(0.18, audioContext.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.25);
+      oscillator.connect(gain);
+      gain.connect(audioContext.destination);
+      oscillator.start();
+      oscillator.stop(audioContext.currentTime + 0.25);
+    } catch (error) {
+      console.error("提示音播放失敗:", error);
+    }
+  };
+
+  const unlockMobileAudio = (testVoice = false) => {
+    try {
+      const audioContext = getCheckInAudioContext();
+      audioContext?.resume?.();
+
+      if (!window.speechSynthesis) {
+        playFallbackTone();
+        return;
+      }
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.resume();
+      const unlockMessage = new SpeechSynthesisUtterance(testVoice ? "打卡語音已啟用" : " ");
+      unlockMessage.lang = "zh-TW";
+      unlockMessage.volume = testVoice ? 1 : 0;
+      window.speechSynthesis.speak(unlockMessage);
+      if (testVoice) {
+        unlockMessage.onerror = playFallbackTone;
+      }
+    } catch (error) {
+      console.error("行動裝置音訊解鎖失敗:", error);
+      playFallbackTone();
+    }
+  };
+
   const speakText = (text) => {
     try {
-      if (!text || !window.speechSynthesis) return;
+      if (!text) return;
+      if (!window.speechSynthesis) {
+        playFallbackTone();
+        return;
+      }
 
       window.speechSynthesis.cancel();
+      window.speechSynthesis.resume();
 
       const msg = new SpeechSynthesisUtterance(text);
       msg.lang = "zh-TW";
       msg.rate = 1;
       msg.pitch = 1;
       msg.volume = 1;
+      let started = false;
+      msg.onstart = () => {
+        started = true;
+      };
+      msg.onerror = () => {
+        playFallbackTone();
+      };
 
       window.speechSynthesis.speak(msg);
+      window.setTimeout(() => {
+        if (!started && !window.speechSynthesis.speaking) {
+          playFallbackTone();
+        }
+      }, 1200);
     } catch (error) {
       console.error("語音播放失敗:", error);
+      playFallbackTone();
     }
   };
 
@@ -1236,6 +1307,9 @@ ${url}`);
   };
 
   const checkIn = async (type, options = {}) => {
+    // 手機與平板要求音訊必須在使用者點擊當下解鎖，不能等 Firebase 查詢完成後才啟動。
+    unlockMobileAudio();
+
     if (!isAuthorizedDevice) {
       alert("此設備未授權");
       return;
@@ -2777,6 +2851,13 @@ ${url}`);
           <div style={styles.systemNotice}>
             📣 系統公告：請大家準時打卡，遲到超過 10 分鐘將自動通知店長群組。
           </div>
+          <button
+            type="button"
+            style={{ ...styles.fullMainBtn, marginTop: 12, width: "100%" }}
+            onClick={() => unlockMobileAudio(true)}
+          >
+            🔊 啟用／測試平板聲音
+          </button>
         </main>
       </div>
     );
