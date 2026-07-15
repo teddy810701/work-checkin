@@ -65,6 +65,9 @@ const getTomorrowTaipeiDateKey = () => {
   return formatTaipeiDateKey(tomorrow);
 };
 
+const getDefaultScheduleStartTime = (storeName = "") =>
+  String(storeName).includes("斗南") ? "05:30" : "05:00";
+
 const getMonthValue = (ts = Date.now()) => {
   const d = new Date(ts);
   const year = d.getFullYear();
@@ -500,7 +503,7 @@ ${message}
       employees.forEach((emp) => {
         const key = emp.empId || emp.id;
         if (!next[key]) {
-          next[key] = { working: false, startTime: "05:00", endTime: "14:00", isSupport: false, supportStore: "" };
+          next[key] = { working: false, startTime: getDefaultScheduleStartTime(emp.store), endTime: "14:00", isSupport: false, supportStore: "" };
         }
       });
       return next;
@@ -517,12 +520,13 @@ ${message}
         const next = {};
         employees.forEach((emp) => {
           const key = emp.empId || emp.id;
-          next[key] = { working: false, startTime: "05:00", endTime: "14:00", isSupport: false, supportStore: "" };
+          next[key] = { working: false, startTime: getDefaultScheduleStartTime(emp.store), endTime: "14:00", isSupport: false, supportStore: "" };
         });
         Object.entries(data).forEach(([empId, schedData]) => {
+          const employee = employees.find((emp) => (emp.empId || emp.id) === empId);
           next[empId] = {
             working: schedData.working || false,
-            startTime: schedData.startTime || "05:00",
+            startTime: schedData.startTime || getDefaultScheduleStartTime(schedData.store || employee?.store),
             endTime: schedData.endTime || "14:00",
             isSupport: !!schedData.isSupport,
             supportStore: schedData.supportStore || "",
@@ -708,7 +712,7 @@ ${url}`);
             empId: key,
             name: emp.name,
             store: emp.store || "",
-            startTime: item.startTime || "05:00",
+            startTime: item.startTime || getDefaultScheduleStartTime(emp.store),
             endTime: item.endTime || "14:00",
             working: true,
             isSupport: !!item.supportStore,
@@ -2807,7 +2811,7 @@ ${url}`);
                   const key = emp.empId || emp.id;
                   const item = scheduleItems[key] || {
                     working: false,
-                    startTime: "05:00",
+                    startTime: getDefaultScheduleStartTime(emp.store),
                     endTime: "14:00",
                     isSupport: false,
                   };
@@ -2890,7 +2894,7 @@ ${url}`);
                             <div style={styles.integratedTimeTitle}>上班</div>
                             <input
                               type="time"
-                              value={item.startTime || "05:00"}
+                              value={item.startTime || getDefaultScheduleStartTime(emp.store)}
                               onChange={(e) => setScheduleTime(key, e.target.value)}
                               disabled={!item.working}
                               style={styles.integratedTimeInput}
