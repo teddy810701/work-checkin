@@ -337,11 +337,8 @@ export default function App() {
   const [publishStore, setPublishStore] = useState("西螺文昌店");
   const [adminStoreTab, setAdminStoreTab] = useState("全部");
   const [scheduleHistory, setScheduleHistory] = useState({});
-  const [scheduleNotifyHistory, setScheduleNotifyHistory] = useState({});
-  const [lineStatus, setLineStatus] = useState({});
   const [adminPanels, setAdminPanels] = useState({
     scheduleHistory: false,
-    lineQuery: false,
   });
 
   const urlParams = new URLSearchParams(window.location.search);
@@ -541,22 +538,6 @@ ${message}
     const historyRef = ref(db, "schedules");
     return onValue(historyRef, (snap) => {
       setScheduleHistory(snap.val() || {});
-    });
-  }, [authReady, isAdmin]);
-
-  useEffect(() => {
-    if (!authReady || !isAdmin) return;
-    const notifyRef = ref(db, "schedule_notify");
-    return onValue(notifyRef, (snap) => {
-      setScheduleNotifyHistory(snap.val() || {});
-    });
-  }, [authReady, isAdmin]);
-
-  useEffect(() => {
-    if (!authReady || !isAdmin) return;
-    const lineStatusRef = ref(db, "line_status");
-    return onValue(lineStatusRef, (snap) => {
-      setLineStatus(snap.val() || {});
     });
   }, [authReady, isAdmin]);
 
@@ -1625,27 +1606,6 @@ ${url}`);
   const historyScheduleDates = useMemo(() => {
     return Object.keys(scheduleHistory || {}).sort((a, b) => b.localeCompare(a));
   }, [scheduleHistory]);
-
-  const lineQueryEntries = useMemo(() => {
-    const scheduleSent = lineStatus?.schedule_sent || {};
-    const scheduleNotify = scheduleNotifyHistory || {};
-
-    return [
-      ...Object.entries(scheduleSent).map(([key, value]) => ({
-        id: `staff-${key}`,
-        dateKey: key,
-        type: "班表推播",
-        ...value,
-      })),
-      ...Object.entries(scheduleNotify).map(([key, value]) => ({
-        id: `notify-${key}`,
-        dateKey: key,
-        type: "發布紀錄",
-        ...value,
-      })),
-    ].sort((a, b) => (b.sentAt || b.createdAt || 0) - (a.sentAt || a.createdAt || 0));
-  }, [lineStatus, scheduleNotifyHistory]);
-
 
   const publicStoreOptions = useMemo(() => {
     const stores = Object.values(publicScheduleData || {})
@@ -2807,27 +2767,6 @@ ${url}`);
             ) : null}
           </div>
 
-          <div style={styles.panelCard}>
-            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("lineQuery")}>
-              LINE 查詢頁 {adminPanels.lineQuery ? "－" : "＋"}
-            </button>
-            {adminPanels.lineQuery ? (
-              <div style={styles.collapseContent}>
-                {lineQueryEntries.length === 0 ? (
-                  <div style={styles.emptyText}>目前沒有 LINE 發送紀錄</div>
-                ) : (
-                  lineQueryEntries.slice(0, 14).map((item) => (
-                    <div key={item.id} style={styles.historyBlock}>
-                      <div style={styles.historyDate}>{item.type}｜{item.targetStore || item.store || item.dateKey}</div>
-                      <div style={styles.historyItem}>時間：{formatDateTime(item.sentAt || item.createdAt)}</div>
-                      <div style={styles.historyItem}>狀態：{item.pending ? "待處理" : item.sent === false ? "未發送" : "已發送"}</div>
-                      {item.lastError ? <div style={styles.errorMini}>錯誤：{item.lastError}</div> : null}
-                    </div>
-                  ))
-                )}
-              </div>
-            ) : null}
-          </div>
         </div>
 
         <div style={styles.rightCol}>
