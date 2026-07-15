@@ -4515,7 +4515,7 @@ const styles = {
     border: "none",
     outline: "none",
     background: "transparent",
-    fontSize: 24,
+    fontSize: 18,
     fontWeight: 900,
     color: "#0f172a",
     letterSpacing: 1,
