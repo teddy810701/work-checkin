@@ -3,7 +3,7 @@ import { db, auth } from "./firebase";
 import { ref, set, onValue, update, remove, get, query, orderByChild, limitToLast } from "firebase/database";
 import { initializeApp, getApp, getApps } from "firebase/app";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
-import { getFirestore, collection as fsCollection, getDocs } from "firebase/firestore";
+import { getFirestore, collection as fsCollection, doc as fsDoc, getDocs, serverTimestamp, setDoc as fsSetDoc } from "firebase/firestore";
 
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
@@ -28,6 +28,10 @@ const pointsDb = getFirestore(pointsApp);
 const pointsAuth = getAuth(pointsApp);
 const MONTHLY_BASE_POINTS = 50;
 const POINTS_STORE_IDS = ["storeA", "storeB"];
+const POINTS_STORE_LABELS = {
+  storeA: "西螺文昌店",
+  storeB: "斗南站前店",
+};
 
 
 const getDeviceId = () => {
@@ -321,6 +325,14 @@ const isValidTransition = (currentStatus, type) => {
   return false;
 };
 
+const getMissingPunchType = (currentStatus, targetType) => {
+  const status = currentStatus || "未打卡";
+  if (status === "未打卡" && ["休息開始", "下班"].includes(targetType)) return "上班";
+  if (status === "上班中" && targetType === "休息結束") return "休息開始";
+  if (status === "休息中" && targetType === "下班") return "休息結束";
+  return "";
+};
+
 const getStatusFromTypeHistory = (records = []) => {
   if (!records.length) return "未打卡";
   const latest = [...records].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
@@ -377,6 +389,10 @@ export default function App() {
   const [announcementDate, setAnnouncementDate] = useState(formatTaipeiDateKey());
   const [announcementContent, setAnnouncementContent] = useState("");
   const [announcementSaving, setAnnouncementSaving] = useState(false);
+  const [missedPunchModal, setMissedPunchModal] = useState(null);
+  const [missedPunchTime, setMissedPunchTime] = useState("");
+  const [missedPunchReason, setMissedPunchReason] = useState("");
+  const [missedPunchSaving, setMissedPunchSaving] = useState(false);
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [password, setPassword] = useState("");
@@ -1161,21 +1177,37 @@ ${url}`);
     }
   };
 
-  const checkIn = async (type) => {
+  const openMissedPunchRequest = (emp, missingType, targetType) => {
+    const empId = emp.empId || emp.id;
+    const scheduledStart = todayScheduleData?.[empId]?.startTime || getDefaultScheduleStartTime(emp.store, todayKey);
+    const defaultTime = missingType === "上班"
+      ? `${todayKey}T${scheduledStart}`
+      : formatDatetimeLocal(Date.now());
+    setMissedPunchModal({ emp, missingType, targetType });
+    setMissedPunchTime(defaultTime);
+    setMissedPunchReason("");
+  };
+
+  const checkIn = async (type, options = {}) => {
     if (!isAuthorizedDevice) {
       alert("此設備未授權");
       return;
     }
 
     const inputId = employeeId.trim().toUpperCase();
-    const emp = employees.find((e) => e.id === inputId || e.empId === inputId);
+    const emp = options.emp || employees.find((e) => e.id === inputId || e.empId === inputId);
 
     if (!emp) {
       alert("找不到工號");
       return;
     }
 
-    if (!isValidTransition(emp.status, type)) {
+    if (!options.allowMissingTransition && !isValidTransition(emp.status, type)) {
+      const missingType = getMissingPunchType(emp.status, type);
+      if (missingType) {
+        openMissedPunchRequest(emp, missingType, type);
+        return;
+      }
       alert(`目前狀態為「${emp.status || "未打卡"}」，不能執行「${type}」`);
       return;
     }
@@ -1275,6 +1307,92 @@ ${url}`);
       speakText(`${type}打卡完成，積分讀取失敗`);
     }
   };
+
+  const submitMissedPunchRequest = async () => {
+    if (!missedPunchModal || missedPunchSaving) return;
+    const requestedAt = datetimeLocalToTimestamp(missedPunchTime);
+    const reason = missedPunchReason.trim();
+    if (!requestedAt) {
+      alert("請選擇忘打卡的時間");
+      return;
+    }
+    if (!reason) {
+      alert("請填寫忘打卡原因");
+      return;
+    }
+
+    setMissedPunchSaving(true);
+    try {
+      const { emp, missingType, targetType } = missedPunchModal;
+      const empId = emp.empId || emp.id;
+      await ensurePointsFirebaseAuth();
+
+      let matchedEmployee = null;
+      for (const storeId of POINTS_STORE_IDS) {
+        const empSnap = await getDocs(fsCollection(pointsDb, "stores", storeId, "employees"));
+        const matchedDoc = empSnap.docs.find((empDoc) => {
+          const data = empDoc.data() || {};
+          const candidates = [
+            empDoc.id,
+            data.birthdayId,
+            data.checkinId,
+            data.employeeId,
+            data.empId,
+            data.id,
+            data.birthday,
+            data.birthDate,
+          ];
+          return candidates.some((item) => normalizeEmpId(item) === normalizeEmpId(empId));
+        });
+        if (matchedDoc) {
+          matchedEmployee = { storeId, doc: matchedDoc };
+          break;
+        }
+      }
+
+      if (!matchedEmployee) {
+        throw new Error("積分系統找不到此員工，請先確認兩邊的工號設定一致");
+      }
+
+      const requestDate = formatTaipeiDateKey(requestedAt);
+      const requestTime = missedPunchTime.slice(11, 16);
+      const logRef = fsDoc(fsCollection(pointsDb, "stores", matchedEmployee.storeId, "logs"));
+      await fsSetDoc(logRef, {
+        id: logRef.id,
+        actionType: "missed_clock_request",
+        amount: 0,
+        empId: matchedEmployee.doc.id,
+        name: matchedEmployee.doc.data()?.name || emp.name,
+        reason: "忘打卡申請",
+        note: `${missingType}忘打卡：${reason}`,
+        occurrenceDate: requestDate,
+        requestDate,
+        requestDateTime: `${requestDate}T${requestTime}`,
+        requestTime,
+        requestStatus: "pending",
+        operator: matchedEmployee.doc.data()?.name || emp.name,
+        operatorKey: "employee_request",
+        operatorStoreId: matchedEmployee.storeId,
+        operatorStoreLabel: POINTS_STORE_LABELS[matchedEmployee.storeId] || emp.store || "",
+        source: "work_checkin",
+        missingType,
+        targetType,
+        timestamp: serverTimestamp(),
+        createdAt: serverTimestamp(),
+      });
+      setMissedPunchModal(null);
+      setMissedPunchTime("");
+      setMissedPunchReason("");
+      await checkIn(targetType, { emp, allowMissingTransition: true });
+      alert(`${missingType}忘打卡申請已送到積分系統審核，並已完成「${targetType}」打卡`);
+    } catch (error) {
+      console.error("送出忘打卡申請失敗：", error);
+      alert(`送出失敗：${error.message || "請稍後再試"}`);
+    } finally {
+      setMissedPunchSaving(false);
+    }
+  };
+
 
   const bindDevice = async () => {
     const storeName = bindStore || "西螺文昌店";
@@ -2101,6 +2219,50 @@ ${url}`);
               ) : (
                 <div style={styles.scoreToastNotice}>{scoreToast.pointsResult?.message || "尚無積分資料"}</div>
               )}
+            </div>
+          </div>
+        )}
+
+        {missedPunchModal && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.modalCard}>
+              <div style={styles.modalTitle}>申請忘打卡</div>
+              <div style={{ color: "#475569", lineHeight: 1.7, marginBottom: 14 }}>
+                {missedPunchModal.emp.name} 要執行「{missedPunchModal.targetType}」，但缺少「{missedPunchModal.missingType}」紀錄。送出後即可繼續打卡，申請會送到積分系統由管理員審核。
+              </div>
+
+              <div style={styles.deviceLabel}>忘打卡時間</div>
+              <input
+                style={styles.modalInput}
+                type="datetime-local"
+                value={missedPunchTime}
+                onChange={(e) => setMissedPunchTime(e.target.value)}
+              />
+
+              <div style={styles.deviceLabel}>忘打卡原因</div>
+              <textarea
+                style={{ ...styles.modalInput, minHeight: 100, resize: "vertical" }}
+                placeholder="例如：早上忙著備料，忘記打上班卡"
+                value={missedPunchReason}
+                onChange={(e) => setMissedPunchReason(e.target.value)}
+              />
+
+              <div style={styles.modalActions}>
+                <button
+                  style={styles.modalCancelBtn}
+                  onClick={() => setMissedPunchModal(null)}
+                  disabled={missedPunchSaving}
+                >
+                  取消
+                </button>
+                <button
+                  style={styles.modalLoginBtn}
+                  onClick={submitMissedPunchRequest}
+                  disabled={missedPunchSaving}
+                >
+                  {missedPunchSaving ? "送出中…" : "送出申請並繼續打卡"}
+                </button>
+              </div>
             </div>
           </div>
         )}
