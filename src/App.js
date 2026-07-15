@@ -8,6 +8,7 @@ import { getFirestore, collection as fsCollection, doc as fsDoc, getDocs, server
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
 const LATE_CONFIRM_MINUTES = 60;
+const LONG_BREAK_MINUTES = 30;
 const DEVICE_BIND_OPTIONS = ["西螺文昌店", "斗南站前店", "老闆手機"];
 
 // ===== 積分系統 Firebase（Firestore） =====
@@ -395,6 +396,9 @@ export default function App() {
   const [missedPunchReason, setMissedPunchReason] = useState("");
   const [missedPunchSaving, setMissedPunchSaving] = useState(false);
   const [lateCheckInModal, setLateCheckInModal] = useState(null);
+  const [longBreakModal, setLongBreakModal] = useState(null);
+  const [longBreakReason, setLongBreakReason] = useState("");
+  const [breakReminderModal, setBreakReminderModal] = useState(null);
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [password, setPassword] = useState("");
@@ -673,6 +677,9 @@ ${message}
         role: emp.role || "",
         status: "未打卡",
         lastTime: 0,
+        hasTodayActivity: emp.lastActionAt
+          ? formatTaipeiDateKey(emp.lastActionAt) === todayKey
+          : false,
       };
     });
 
@@ -688,6 +695,7 @@ ${message}
           role: record.role || "",
           status: nextStatus,
           lastTime: record.createdAt || 0,
+          hasTodayActivity: true,
         };
       }
       if ((record.createdAt || 0) >= (map[key].lastTime || 0)) {
@@ -698,18 +706,19 @@ ${message}
           role: record.role || map[key].role,
           status: nextStatus,
           lastTime: record.createdAt || 0,
+          hasTodayActivity: true,
         };
       }
     });
 
-    return Object.values(map).sort((a, b) => {
+    return Object.values(map).filter((emp) => emp.hasTodayActivity).sort((a, b) => {
       const statusOrder = { "上班中": 0, "休息中": 1, "已下班": 2, "未打卡": 3 };
       const orderA = statusOrder[a.status] ?? 9;
       const orderB = statusOrder[b.status] ?? 9;
       if (orderA !== orderB) return orderA - orderB;
       return (a.empId || "").localeCompare(b.empId || "");
     });
-  }, [employees, todayRecords]);
+  }, [employees, todayRecords, todayKey]);
 
   const toggleScheduleWorking = (empId) => {
     setScheduleItems((prev) => ({
@@ -989,6 +998,42 @@ ${url}`);
     }
   };
 
+  useEffect(() => {
+    if (!authReady || isAdmin || breakReminderModal || missedPunchModal || lateCheckInModal || longBreakModal) return;
+
+    const restingEmployees = employees.filter((emp) => emp.status === "休息中");
+    for (const emp of restingEmployees) {
+      const empId = emp.empId || emp.id;
+      const breakStartRecord = todayRecords.find((record) =>
+        record.empId === empId && record.type === "休息開始"
+      );
+      if (!breakStartRecord?.createdAt) continue;
+
+      const elapsedMinutes = Math.floor((Date.now() - breakStartRecord.createdAt) / 60000);
+      const reminderStage = elapsedMinutes >= LONG_BREAK_MINUTES
+        ? LONG_BREAK_MINUTES
+        : elapsedMinutes >= 25
+          ? 25
+          : 0;
+      if (!reminderStage) continue;
+
+      const reminderKey = `break_reminder_${todayKey}_${safeFirebaseKey(empId)}_${breakStartRecord.createdAt}_${reminderStage}`;
+      if (localStorage.getItem(reminderKey)) continue;
+
+      localStorage.setItem(reminderKey, String(Date.now()));
+      setBreakReminderModal({
+        name: emp.name,
+        empId,
+        elapsedMinutes,
+        stage: reminderStage,
+      });
+      speakText(reminderStage === 25
+        ? `${emp.name}休息剩下五分鐘，請記得準時回來打卡`
+        : `${emp.name}休息時間已到，請打休息結束卡`);
+      break;
+    }
+  }, [authReady, isAdmin, nowTime, employees, todayRecords, todayKey, breakReminderModal, missedPunchModal, lateCheckInModal, longBreakModal]);
+
   const getCheckInLateMinutes = async (emp, createdAt) => {
     try {
       if (!emp || !createdAt) return 0;
@@ -1222,6 +1267,21 @@ ${url}`);
       }
     }
 
+    if (type === "休息結束" && !options.skipLongBreakConfirmation) {
+      const empId = emp.empId || emp.id;
+      const breakStartRecord = todayRecords.find((record) =>
+        record.empId === empId && record.type === "休息開始"
+      );
+      if (breakStartRecord?.createdAt) {
+        const breakMinutes = Math.floor((Date.now() - breakStartRecord.createdAt) / 60000);
+        if (breakMinutes > LONG_BREAK_MINUTES) {
+          setLongBreakModal({ emp, breakMinutes });
+          setLongBreakReason("");
+          return;
+        }
+      }
+    }
+
     const lastRecord = records.find(
       (r) => (r.empId === (emp.empId || emp.id))
     );
@@ -1255,6 +1315,8 @@ ${url}`);
       device: myDevice,
       isSupport: !!todaySchedule.isSupport,
       supportStore: todaySchedule.supportStore || "",
+      exceptionReason: options.longBreakReason || "",
+      longBreakMinutes: options.longBreakMinutes || 0,
       createdAt,
       monthKey: getMonthValue(createdAt),
     });
@@ -1316,6 +1378,24 @@ ${url}`);
 
       speakText(`${type}打卡完成，積分讀取失敗`);
     }
+  };
+
+  const confirmLongBreak = async () => {
+    if (!longBreakModal) return;
+    const reason = longBreakReason.trim();
+    if (!reason) {
+      alert("休息超過 30 分鐘，請填寫原因");
+      return;
+    }
+    const { emp, breakMinutes } = longBreakModal;
+    setLongBreakModal(null);
+    setLongBreakReason("");
+    await checkIn("休息結束", {
+      emp,
+      skipLongBreakConfirmation: true,
+      longBreakReason: reason,
+      longBreakMinutes: breakMinutes,
+    });
   };
 
   const submitMissedPunchRequest = async () => {
@@ -2245,6 +2325,29 @@ ${url}`);
           </div>
         )}
 
+        {breakReminderModal && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.modalCard}>
+              <div style={{ fontSize: 46, textAlign: "center", marginBottom: 8 }}>⏰</div>
+              <div style={styles.modalTitle}>
+                {breakReminderModal.stage === 25 ? "休息剩下 5 分鐘" : "休息時間已到"}
+              </div>
+              <div style={{ color: "#475569", lineHeight: 1.8, margin: "12px 0 18px", textAlign: "center", fontWeight: 800 }}>
+                {breakReminderModal.name} 已休息 {breakReminderModal.elapsedMinutes} 分鐘。<br />
+                {breakReminderModal.stage === 25
+                  ? "請同事幫忙提醒，5 分鐘後記得回來。"
+                  : "請提醒本人回來後立刻打休息結束卡。"}
+              </div>
+              <button
+                style={{ ...styles.modalLoginBtn, width: "100%" }}
+                onClick={() => setBreakReminderModal(null)}
+              >
+                我知道了
+              </button>
+            </div>
+          </div>
+        )}
+
         {lateCheckInModal && (
           <div style={styles.modalOverlay}>
             <div style={styles.modalCard}>
@@ -2275,6 +2378,44 @@ ${url}`);
                 </button>
                 <button style={styles.modalCancelBtn} onClick={() => setLateCheckInModal(null)}>
                   取消
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {longBreakModal && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.modalCard}>
+              <div style={styles.modalTitle}>休息已超過 30 分鐘</div>
+              <div style={{ color: "#475569", lineHeight: 1.7, marginBottom: 14 }}>
+                {longBreakModal.emp.name} 本次休息已經 {longBreakModal.breakMinutes} 分鐘。請選擇是忘記打休息結束卡，或填寫實際休息過久的原因。
+              </div>
+              <button
+                style={{ ...styles.modalLoginBtn, width: "100%", marginBottom: 12, background: "linear-gradient(135deg, #f97316, #ea580c)" }}
+                onClick={() => {
+                  const emp = longBreakModal.emp;
+                  setLongBreakModal(null);
+                  setLongBreakReason("");
+                  openMissedPunchRequest(emp, "休息結束", "休息結束");
+                }}
+              >
+                已回去工作，只是忘記打卡
+              </button>
+
+              <div style={styles.deviceLabel}>確實休息超過 30 分鐘的原因</div>
+              <textarea
+                style={{ ...styles.modalInput, minHeight: 100, resize: "vertical" }}
+                placeholder="例如：身體不舒服，需要多休息一下"
+                value={longBreakReason}
+                onChange={(e) => setLongBreakReason(e.target.value)}
+              />
+              <div style={styles.modalActions}>
+                <button style={styles.modalCancelBtn} onClick={() => setLongBreakModal(null)}>
+                  取消
+                </button>
+                <button style={styles.modalLoginBtn} onClick={confirmLongBreak}>
+                  填寫原因並打休息結束卡
                 </button>
               </div>
             </div>
@@ -2589,9 +2730,12 @@ ${url}`);
 
           <section style={styles.dashboardBottomGrid}>
             <div style={styles.dashboardCard}>
-              <div style={styles.sectionTitle}>今日上班／休息狀態</div>
+              <div style={styles.sectionTitle}>今日有上班人員狀態</div>
               <div style={styles.staffMiniGrid}>
-                {liveStatusList.slice(0, 8).map((emp) => {
+                {liveStatusList.length === 0 && (
+                  <div style={{ color: "#94a3b8", padding: "12px 0" }}>今天目前還沒有人打卡</div>
+                )}
+                {liveStatusList.map((emp) => {
                   const statusStyle = getStatusStyle(emp.status);
                   return (
                     <div key={emp.empId} style={styles.staffMiniCard}>
