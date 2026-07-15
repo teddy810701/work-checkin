@@ -2833,7 +2833,7 @@ ${url}`);
                   ...styles.compactRecordRow,
                   ...(r.isSupport ? { background: "#dbeafe", borderRadius: 12, padding: "10px 12px" } : {}),
                 }}>
-                  <div>
+                  <div style={styles.recordAdminInfo}>
                     <div style={styles.recordName}>{r.name}</div>
                     <div style={styles.recordMeta}>
                       {r.empId}・{r.isSupport && r.supportStore ? `支援${r.supportStore}` : (r.store || "未填店名")}
@@ -4619,16 +4619,22 @@ const styles = {
   },
   recordAdminRow: {
     display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
+    flexDirection: "column",
+    alignItems: "stretch",
     padding: "14px 0",
     borderBottom: "1px solid #eef2f7",
-    gap: 12,
-    flexWrap: "wrap",
+    gap: 10,
+    minHeight: 112,
+    boxSizing: "border-box",
+  },
+  recordAdminInfo: {
+    width: "100%",
+    minWidth: 0,
   },
   recordAdminActions: {
     display: "flex",
     alignItems: "center",
+    justifyContent: "flex-start",
     gap: 8,
     flexWrap: "wrap",
   },
