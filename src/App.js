@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { db, auth } from "./firebase";
 import { ref, set, onValue, update, remove, get, query, orderByChild, limitToLast } from "firebase/database";
 import { initializeApp, getApp, getApps } from "firebase/app";
@@ -276,23 +276,6 @@ const safeFirebaseKey = (value) => {
     .replace(/\s+/g, "_");
 };
 
-const buildLateLineMessage = (storeName, lateList, dateKey, reason = "") => {
-  return [
-    `⚠️ ${dateKey} ${storeName} 遲到名單`,
-    "",
-    ...lateList.map((item, index) => {
-      const actualText =
-        item.status === "not_checked"
-          ? "尚未打卡"
-          : `打卡 ${item.actualTime}`;
-
-      return `${index + 1}. ${item.name}｜排班 ${item.startTime}｜${actualText}｜遲到 ${item.lateMinutes} 分鐘`;
-    }),
-    "",
-    `共 ${lateList.length} 人`,
-  ].join("\n");
-};
-
 const timeTextToMinutes = (value = "") => {
   const match = String(value || "").match(/(\d{1,2}):(\d{2})/);
   if (!match) return null;
@@ -378,8 +361,6 @@ export default function App() {
     const matched = Object.entries(authorizedDevices || {}).find(([, item]) => item?.id === myDevice);
     return matched?.[0] || "";
   }, [authorizedDevices, myDevice]);
-
-  const lateCheckRunningRef = useRef(false);
 
   const [scheduleItems, setScheduleItems] = useState({});
   const [scheduleSaving, setScheduleSaving] = useState(false);
@@ -1694,173 +1675,6 @@ ${url}`);
     }));
   };
 
-  const runClientLateCheck = async (reason = "") => {
-    if (lateCheckRunningRef.current) return;
-
-    lateCheckRunningRef.current = true;
-
-    try {
-      const dateKey = formatTaipeiDateKey();
-      const nowTs = Date.now();
-      const graceMs = 10 * 60 * 1000;
-
-      const [scheduleSnap, recordsSnap, sentSnap] = await Promise.all([
-        get(ref(db, `schedules/${dateKey}`)),
-        get(ref(db, "records")),
-        get(ref(db, `line_status/attendance_sent/${dateKey}`)),
-      ]);
-
-      const scheduleData = scheduleSnap.val() || {};
-      const recordsData = recordsSnap.val() || {};
-      const sentData = sentSnap.val() || {};
-
-      const todayWorkInRecords = Object.values(recordsData)
-        .filter((record) => {
-          const recordDateKey = record?.dateKey || (record?.createdAt ? formatTaipeiDateKey(record.createdAt) : "");
-          return recordDateKey === dateKey && record?.type === "上班";
-        })
-        .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-
-      const firstWorkInByEmp = {};
-      todayWorkInRecords.forEach((record) => {
-        const empId = record?.empId || "";
-        if (!empId) return;
-        if (!firstWorkInByEmp[empId]) {
-          firstWorkInByEmp[empId] = record;
-        }
-      });
-
-      const lateByStore = {};
-
-      Object.entries(scheduleData).forEach(([empIdFromKey, item]) => {
-        if (!item?.working) return;
-
-        const empId = item.empId || empIdFromKey;
-        const startTime = item.startTime || "05:00";
-        const startTs = getTaipeiTimestampFromDateTime(dateKey, startTime);
-        if (!startTs) return;
-
-        const shouldCheckTs = startTs + graceMs;
-        if (nowTs < shouldCheckTs) return;
-
-        const storeName = (item.isSupport && item.supportStore) ? item.supportStore : (item.store || "未填店名");
-        const sentStoreKey = safeFirebaseKey(storeName);
-        const sentEmpKey = safeFirebaseKey(empId);
-        if (sentData?.[sentStoreKey]?.[sentEmpKey]?.sent) return;
-
-        const workInRecord = firstWorkInByEmp[empId];
-        const actualTs = workInRecord?.createdAt || 0;
-        const isNotChecked = !workInRecord;
-        const isLateCheckedIn = actualTs > shouldCheckTs;
-
-        if (!isNotChecked && !isLateCheckedIn) return;
-
-        if (!lateByStore[storeName]) lateByStore[storeName] = [];
-        const lateMinutes = isNotChecked
-          ? Math.floor((nowTs - startTs) / 60000)
-          : Math.floor((actualTs - startTs) / 60000);
-
-        lateByStore[storeName].push({
-          empId,
-          name: item.name || empId,
-          store: storeName,
-          startTime,
-          actualTime: workInRecord?.time || "未打卡",
-          status: isNotChecked ? "not_checked" : "late_checked_in",
-          lateMinutes,
-        });
-      });
-
-      const entries = Object.entries(lateByStore);
-      if (!entries.length) return;
-
-      for (const [storeName, lateList] of entries) {
-        const message = buildLateLineMessage(storeName, lateList, dateKey, reason);
-
-        const response = await fetch("/api/send-schedule", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            store: storeName,
-            message,
-            dateKey,
-            type: "late_notice",
-            lateList,
-          }),
-        });
-
-        const result = await response.json().catch(() => ({}));
-        const sent = response.ok && result?.success;
-        const sentAt = Date.now();
-        const sentStoreKey = safeFirebaseKey(storeName);
-        const updatePayload = {};
-
-        lateList.forEach((item) => {
-          const sentEmpKey = safeFirebaseKey(item.empId);
-          updatePayload[`line_status/attendance_sent/${dateKey}/${sentStoreKey}/${sentEmpKey}`] = {
-            sent,
-            sentAt,
-            dateKey,
-            store: storeName,
-            empId: item.empId,
-            name: item.name,
-            startTime: item.startTime,
-            actualTime: item.actualTime,
-            status: item.status,
-            reason,
-            result: sent ? "已發送" : "發送失敗",
-            error: sent ? "" : (result?.error || result?.message || "LINE 發送失敗"),
-          };
-        });
-
-        updatePayload[`line_status/manual_late_checks/${dateKey}_${safeFirebaseKey(reason || "auto")}_${sentStoreKey}_${sentAt}`] = {
-          checkedAt: sentAt,
-          sentAt,
-          sent,
-          dateKey,
-          store: storeName,
-          names: lateList.map((item) => item.name),
-          lateDetails: lateList.map((item) => ({
-            empId: item.empId,
-            name: item.name,
-            startTime: item.startTime,
-            actualTime: item.actualTime,
-            status: item.status,
-            lateMinutes: item.lateMinutes,
-          })),
-          result: sent ? "已發送" : "發送失敗",
-          reason,
-          error: sent ? "" : (result?.error || result?.message || "LINE 發送失敗"),
-        };
-
-        await update(ref(db), updatePayload);
-      }
-    } catch (error) {
-      console.error("client late check failed:", error);
-    } finally {
-      lateCheckRunningRef.current = false;
-    }
-  };
-
-  const triggerAutoLateCheck = async (reason = "") => {
-    try {
-      await fetch("/api/auto-check-late", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ reason }),
-      });
-    } catch (error) {
-      console.error("auto-check-late api failed:", error);
-    }
-
-    // 不再由前端補發 LINE，避免開頁面或多台設備造成重複通知。
-    // 遲到通知改由 Vercel Cron 呼叫 /api/auto-check-late 統一處理。
-  };
-
   const historyScheduleDates = useMemo(() => {
     return Object.keys(scheduleHistory || {}).sort((a, b) => b.localeCompare(a));
   }, [scheduleHistory]);
@@ -2536,7 +2350,7 @@ ${url}`);
             </div>
 
             <div style={styles.headerActions}>
-              <button style={styles.refreshMiniBtn} onClick={() => triggerAutoLateCheck("manual_dashboard")}>
+              <button style={styles.refreshMiniBtn} onClick={() => window.location.reload()}>
                 重新整理
               </button>
               <button style={styles.headerScheduleBtn} onClick={() => openPublicSchedule("全部", getTomorrowTaipeiDateKey())}>
