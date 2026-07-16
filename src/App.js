@@ -444,6 +444,7 @@ export default function App() {
   const [nowTime, setNowTime] = useState("");
   const [selectedMonth, setSelectedMonth] = useState(getMonthValue());
   const [recordSearch, setRecordSearch] = useState("");
+  const [expandedRecordMonths, setExpandedRecordMonths] = useState({});
 
   const myDevice = getDeviceId();
   const isAuthorizedDevice = useMemo(() => {
@@ -2103,6 +2104,20 @@ ${url}`);
       .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
   }, [records]);
 
+  const adminRecordMonthGroups = useMemo(() => {
+    const groups = {};
+    adminFilteredRecords.forEach((record) => {
+      const monthKey = record.monthKey || getMonthValue(record.createdAt || Date.now());
+      if (!groups[monthKey]) groups[monthKey] = [];
+      groups[monthKey].push(record);
+    });
+    return Object.entries(groups).sort(([a], [b]) => b.localeCompare(a));
+  }, [adminFilteredRecords]);
+
+  const toggleRecordMonth = (monthKey) => {
+    setExpandedRecordMonths((prev) => ({ ...prev, [monthKey]: !prev[monthKey] }));
+  };
+
   const getLastMonthKey = () => {
     const d = new Date();
     d.setMonth(d.getMonth() - 1);
@@ -2942,7 +2957,7 @@ ${url}`);
 
 
   return (
-    <div style={styles.adminPage}>
+    <div className="admin-page" style={styles.adminPage}>
       {scoreToast && (
         <div style={styles.scoreToastOverlay}>
           <div style={styles.scoreToastCard}>
@@ -3113,7 +3128,7 @@ ${url}`);
         </div>
       )}
 
-      <div style={styles.adminHeader}>
+      <div className="admin-header" style={styles.adminHeader}>
         <div>
           <div style={styles.adminTitle}>管理後台</div>
           <div style={styles.adminSub}>員工、設備、紀錄、月報表匯出管理中心</div>
@@ -3123,8 +3138,8 @@ ${url}`);
         </button>
       </div>
 
-      <div style={styles.adminGrid}>
-        <div style={styles.leftCol}>
+      <div className="admin-grid" style={styles.adminGrid}>
+        <div className="admin-left-col" style={styles.leftCol}>
           <div style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div style={styles.panelTitle}>每日員工公告</div>
@@ -3392,7 +3407,7 @@ ${url}`);
 
         </div>
 
-        <div style={styles.rightCol}>
+        <div className="admin-right-col" style={styles.rightCol}>
           <div style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -3622,13 +3637,13 @@ ${url}`);
             ) : null}
           </div>
 
-          <div style={styles.panelCard}>
+          <div className="admin-record-panel" style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div style={styles.panelTitle}>打卡紀錄</div>
               <div style={styles.badge}>最新 {records.length} 筆</div>
             </div>
 
-            <div style={styles.recordToolbar}>
+            <div className="admin-record-toolbar" style={styles.recordToolbar}>
               <input
                 type="text"
                 placeholder="搜尋員工姓名或工號"
@@ -3644,31 +3659,51 @@ ${url}`);
             {adminFilteredRecords.length === 0 ? (
               <div style={styles.emptyText}>目前沒有符合條件的打卡紀錄</div>
             ) : (
-              adminFilteredRecords.map((r) => (
-                <div key={r.id} style={{
-                  ...styles.recordAdminRow,
-                  ...(r.isSupport ? { background: "#dbeafe", borderRadius: 14, padding: "14px 12px", marginBottom: 6 } : {}),
-                }}>
-                  <div>
-                    <div style={styles.employeeName}>{r.name}</div>
-                    <div style={styles.employeeId}>
-                      {r.empId} ・ {r.isSupport && r.supportStore ? `支援${r.supportStore}` : (r.store || "未填店名")} ・ {r.role || "未設定"} ・ {r.date}
-                    </div>
-                  </div>
-                  <div style={styles.recordAdminActions}>
-                    <div style={styles.recordAdminRight}>
-                      <div style={styles.recordTypeBadge}>{r.type}</div>
-                      <div style={styles.recordTime}>{r.time}</div>
-                    </div>
-                    <button style={styles.editBtn} onClick={() => openRecordEdit(r)}>
-                      修改
+              adminRecordMonthGroups.map(([monthKey, monthRecords]) => {
+                const isExpanded = !!expandedRecordMonths[monthKey];
+                const [year, month] = monthKey.split("-");
+                return (
+                  <div key={monthKey} style={styles.recordMonthGroup}>
+                    <button
+                      className="admin-record-month-button"
+                      style={styles.recordMonthButton}
+                      onClick={() => toggleRecordMonth(monthKey)}
+                    >
+                      <span>{year} 年 {Number(month)} 月</span>
+                      <span style={styles.recordMonthCount}>{monthRecords.length} 筆 {isExpanded ? "－" : "＋"}</span>
                     </button>
-                    <button style={styles.deleteBtn} onClick={() => deleteRecord(r)}>
-                      刪除
-                    </button>
+                    {isExpanded ? (
+                      <div style={styles.recordMonthContent}>
+                        {monthRecords.map((r) => (
+                          <div className="admin-record-row" key={r.id} style={{
+                            ...styles.recordAdminRow,
+                            ...(r.isSupport ? { background: "#dbeafe", borderRadius: 14, padding: "14px 12px", marginBottom: 6 } : {}),
+                          }}>
+                            <div style={styles.recordAdminInfo}>
+                              <div style={styles.employeeName}>{r.name}</div>
+                              <div style={styles.employeeId}>
+                                {r.empId} ・ {r.isSupport && r.supportStore ? `支援${r.supportStore}` : (r.store || "未填店名")} ・ {r.role || "未設定"} ・ {r.date}
+                              </div>
+                            </div>
+                            <div className="admin-record-actions" style={styles.recordAdminActions}>
+                              <div className="admin-record-summary" style={styles.recordAdminRight}>
+                                <div style={styles.recordTypeBadge}>{r.type}</div>
+                                <div style={styles.recordTime}>{r.time}</div>
+                              </div>
+                              <button style={styles.editBtn} onClick={() => openRecordEdit(r)}>
+                                修改
+                              </button>
+                              <button style={styles.deleteBtn} onClick={() => deleteRecord(r)}>
+                                刪除
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -4802,6 +4837,36 @@ const styles = {
     lineHeight: 1.6,
     whiteSpace: "pre-wrap",
     wordBreak: "break-word",
+  },
+  recordMonthGroup: {
+    marginTop: 12,
+    borderRadius: 16,
+    border: "1px solid #e2e8f0",
+    overflow: "hidden",
+    background: "#ffffff",
+  },
+  recordMonthButton: {
+    width: "100%",
+    border: "none",
+    padding: "14px 16px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    background: "#f8fafc",
+    color: "#0f172a",
+    fontSize: 15,
+    fontWeight: 900,
+    cursor: "pointer",
+    textAlign: "left",
+  },
+  recordMonthCount: {
+    color: "#2563eb",
+    fontSize: 13,
+    whiteSpace: "nowrap",
+  },
+  recordMonthContent: {
+    padding: "0 14px",
   },
   recordAdminRow: {
     display: "flex",
