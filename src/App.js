@@ -1547,6 +1547,8 @@ ${url}`);
       setMissedPunchModal(null);
       setMissedPunchTime("");
       setMissedPunchReason("");
+      setLongBreakModal(null);
+      setLongBreakReason("");
       await checkIn(targetType, {
         emp,
         allowMissingTransition: true,
@@ -2456,35 +2458,56 @@ ${url}`);
             <div style={styles.modalCard}>
               <div style={styles.modalTitle}>休息已超過 30 分鐘</div>
               <div style={{ color: "#475569", lineHeight: 1.7, marginBottom: 14 }}>
-                {longBreakModal.emp.name} 本次休息已經 {longBreakModal.breakMinutes} 分鐘。請選擇是忘記打休息結束卡，或填寫實際休息過久的原因。
+                {longBreakModal.emp.name} 本次休息已經 {longBreakModal.breakMinutes} 分鐘。請先選擇這次是哪一種狀況。
               </div>
-              <button
-                style={{ ...styles.modalLoginBtn, width: "100%", marginBottom: 12, background: "linear-gradient(135deg, #f97316, #ea580c)" }}
-                onClick={() => {
-                  const emp = longBreakModal.emp;
-                  setLongBreakModal(null);
-                  setLongBreakReason("");
-                  openMissedPunchRequest(emp, "休息結束", "休息結束");
-                }}
-              >
-                已回去工作，只是忘記打卡
-              </button>
-
-              <div style={styles.deviceLabel}>確實休息超過 30 分鐘的原因</div>
-              <textarea
-                style={{ ...styles.modalInput, minHeight: 100, resize: "vertical" }}
-                placeholder="例如：身體不舒服，需要多休息一下"
-                value={longBreakReason}
-                onChange={(e) => setLongBreakReason(e.target.value)}
-              />
-              <div style={styles.modalActions}>
-                <button style={styles.modalCancelBtn} onClick={() => setLongBreakModal(null)}>
-                  取消
-                </button>
-                <button style={styles.modalLoginBtn} onClick={confirmLongBreak}>
-                  填寫原因並打休息結束卡
-                </button>
-              </div>
+              {!longBreakModal.showReasonForm ? (
+                <div style={{ display: "grid", gap: 10 }}>
+                  <button
+                    style={{ ...styles.modalLoginBtn, width: "100%", background: "linear-gradient(135deg, #f97316, #ea580c)" }}
+                    onClick={() => {
+                      const emp = longBreakModal.emp;
+                      setLongBreakModal(null);
+                      setLongBreakReason("");
+                      openMissedPunchRequest(emp, "休息結束", "休息結束");
+                    }}
+                  >
+                    已回去工作，只是忘記打卡
+                  </button>
+                  <button
+                    style={{ ...styles.modalLoginBtn, width: "100%" }}
+                    onClick={() => setLongBreakModal((prev) => ({ ...prev, showReasonForm: true }))}
+                  >
+                    確實休息超過 30 分鐘
+                  </button>
+                  <button style={styles.modalCancelBtn} onClick={() => setLongBreakModal(null)}>
+                    取消
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div style={styles.deviceLabel}>休息超時原因</div>
+                  <textarea
+                    style={{ ...styles.modalInput, minHeight: 100, resize: "vertical" }}
+                    placeholder="例如：身體不舒服，需要多休息一下"
+                    value={longBreakReason}
+                    onChange={(e) => setLongBreakReason(e.target.value)}
+                  />
+                  <div style={styles.modalActions}>
+                    <button
+                      style={styles.modalCancelBtn}
+                      onClick={() => {
+                        setLongBreakReason("");
+                        setLongBreakModal((prev) => ({ ...prev, showReasonForm: false }));
+                      }}
+                    >
+                      返回選擇
+                    </button>
+                    <button style={styles.modalLoginBtn} onClick={confirmLongBreak}>
+                      填寫原因並打休息結束卡
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}
