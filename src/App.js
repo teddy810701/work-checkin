@@ -9,7 +9,13 @@ const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
 const LATE_CONFIRM_MINUTES = 60;
 const LONG_BREAK_MINUTES = 30;
-const DEVICE_BIND_OPTIONS = ["西螺文昌店", "斗南站前店", "老闆手機"];
+const DEVICE_BIND_OPTIONS = [
+  "西螺文昌店",
+  "斗南站前店",
+  "老闆手機",
+  "老闆娘手機",
+  "老闆電腦",
+];
 
 // ===== 積分系統 Firebase（Firestore） =====
 // 這組是績效考核系統 Firebase，打卡系統會在打卡成功後讀取本月積分。
@@ -1632,8 +1638,8 @@ ${url}`);
     const currentDeviceNames = Object.keys(authorizedDevices || {});
     const isUpdatingExistingSlot = Boolean(authorizedDevices?.[storeName]);
 
-    if (currentDeviceNames.length >= 3 && !isUpdatingExistingSlot) {
-      alert("最多只能綁定 3 台設備：西螺店、斗南店、老闆手機");
+    if (currentDeviceNames.length >= DEVICE_BIND_OPTIONS.length && !isUpdatingExistingSlot) {
+      alert(`最多只能綁定 ${DEVICE_BIND_OPTIONS.length} 台設備：${DEVICE_BIND_OPTIONS.join("、")}`);
       return;
     }
 
