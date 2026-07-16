@@ -279,6 +279,12 @@ const getStatusStyle = (status) => {
   }
 };
 
+const getRequestStatusMeta = (status) => {
+  if (status === "approved") return { label: "已批准", color: "#166534", background: "#dcfce7" };
+  if (status === "rejected") return { label: "已退回", color: "#b91c1c", background: "#fee2e2" };
+  return { label: "待審核", color: "#9a3412", background: "#ffedd5" };
+};
+
 const formatDate = (timestamp) => {
   if (!timestamp) return "";
   return new Date(timestamp).toLocaleDateString("zh-TW");
@@ -399,6 +405,9 @@ export default function App() {
   const [longBreakModal, setLongBreakModal] = useState(null);
   const [longBreakReason, setLongBreakReason] = useState("");
   const [breakReminderModal, setBreakReminderModal] = useState(null);
+  const [missedPunchRequests, setMissedPunchRequests] = useState([]);
+  const [exceptionRecordsLoading, setExceptionRecordsLoading] = useState(false);
+  const [exceptionRecordsError, setExceptionRecordsError] = useState("");
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [password, setPassword] = useState("");
@@ -462,6 +471,32 @@ export default function App() {
   const [publicScheduleData, setPublicScheduleData] = useState({});
   const [todayScheduleData, setTodayScheduleData] = useState({});
   const [scheduleLinkCopied, setScheduleLinkCopied] = useState(false);
+
+  const loadMissedPunchRequests = async () => {
+    if (!isAdmin) return;
+    setExceptionRecordsLoading(true);
+    setExceptionRecordsError("");
+    try {
+      await ensurePointsFirebaseAuth();
+      const storeEntries = await Promise.all(POINTS_STORE_IDS.map(async (storeId) => {
+        const logSnap = await getDocs(fsCollection(pointsDb, "stores", storeId, "logs"));
+        return logSnap.docs
+          .map((item) => ({ id: item.id, storeId, ...(item.data() || {}) }))
+          .filter((item) => item.actionType === "missed_clock_request");
+      }));
+      const entries = storeEntries.flat().sort((a, b) => {
+        const aTime = a.createdAt?.seconds ? a.createdAt.seconds * 1000 : Date.parse(a.requestDateTime || a.requestDate || "") || 0;
+        const bTime = b.createdAt?.seconds ? b.createdAt.seconds * 1000 : Date.parse(b.requestDateTime || b.requestDate || "") || 0;
+        return bTime - aTime;
+      });
+      setMissedPunchRequests(entries);
+    } catch (error) {
+      console.error("讀取忘打卡申請失敗：", error);
+      setExceptionRecordsError(error.message || "讀取忘打卡申請失敗");
+    } finally {
+      setExceptionRecordsLoading(false);
+    }
+  };
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -589,6 +624,12 @@ ${message}
       setAnnouncementContent(data.content || "");
     });
   }, [authReady, isAdmin, announcementDate]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    loadMissedPunchRequests();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin]);
 
   const storeGroups = useMemo(() => {
     const groups = {};
@@ -2046,6 +2087,12 @@ ${url}`);
     });
   }, [records, recordSearch]);
 
+  const longBreakExceptionRecords = useMemo(() => {
+    return records
+      .filter((record) => Number(record.longBreakMinutes) > LONG_BREAK_MINUTES || String(record.exceptionReason || "").trim())
+      .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+  }, [records]);
+
   const getLastMonthKey = () => {
     const d = new Date();
     d.setMonth(d.getMonth() - 1);
@@ -3483,6 +3530,79 @@ ${url}`);
 
           <div style={styles.panelCard}>
             <div style={styles.listHeader}>
+              <div>
+                <div style={styles.panelTitle}>異常／忘打卡紀錄</div>
+                <div style={{ marginTop: 4, color: "#64748b", fontSize: 12, fontWeight: 700 }}>
+                  忘打卡由積分系統審核；休息超時原因保留在打卡系統。
+                </div>
+              </div>
+              <button
+                style={styles.refreshMiniBtn}
+                onClick={loadMissedPunchRequests}
+                disabled={exceptionRecordsLoading}
+              >
+                {exceptionRecordsLoading ? "讀取中…" : "重新整理"}
+              </button>
+            </div>
+
+            {exceptionRecordsError ? (
+              <div style={{ ...styles.emptyText, color: "#b91c1c" }}>{exceptionRecordsError}</div>
+            ) : null}
+
+            <div style={{ ...styles.deviceLabel, marginTop: 14 }}>忘打卡申請</div>
+            {missedPunchRequests.length === 0 && !exceptionRecordsLoading ? (
+              <div style={styles.emptyText}>目前沒有忘打卡申請</div>
+            ) : (
+              missedPunchRequests.slice(0, 20).map((request) => {
+                const statusMeta = getRequestStatusMeta(request.requestStatus);
+                return (
+                  <div key={`${request.storeId}-${request.id}`} style={styles.exceptionRecordCard}>
+                    <div style={styles.exceptionRecordHeader}>
+                      <div>
+                        <div style={styles.employeeName}>{request.name || "未具名員工"}</div>
+                        <div style={styles.employeeId}>
+                          {request.operatorStoreLabel || POINTS_STORE_LABELS[request.storeId] || "未填店名"} ・ {request.requestDateTime ? request.requestDateTime.replace("T", " ") : request.requestDate || "未填日期"}
+                        </div>
+                      </div>
+                      <span style={{ ...styles.statusBadge, color: statusMeta.color, background: statusMeta.background }}>
+                        {statusMeta.label}
+                      </span>
+                    </div>
+                    <div style={styles.exceptionReasonText}>
+                      {request.note || `${request.missingType || "打卡"}忘打卡：未填原因`}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+
+            <div style={{ ...styles.deviceLabel, marginTop: 18 }}>確實休息超時</div>
+            {longBreakExceptionRecords.length === 0 ? (
+              <div style={styles.emptyText}>目前沒有休息超時原因紀錄</div>
+            ) : (
+              longBreakExceptionRecords.slice(0, 20).map((record) => (
+                <div key={`long-break-${record.id}`} style={styles.exceptionRecordCard}>
+                  <div style={styles.exceptionRecordHeader}>
+                    <div>
+                      <div style={styles.employeeName}>{record.name}</div>
+                      <div style={styles.employeeId}>
+                        {record.empId} ・ {record.store || "未填店名"} ・ {record.date} {record.time}
+                      </div>
+                    </div>
+                    <span style={{ ...styles.statusBadge, color: "#9a3412", background: "#ffedd5" }}>
+                      休息 {record.longBreakMinutes || 0} 分鐘
+                    </span>
+                  </div>
+                  <div style={styles.exceptionReasonText}>
+                    原因：{record.exceptionReason || "未填原因"}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div style={styles.panelCard}>
+            <div style={styles.listHeader}>
               <div style={styles.panelTitle}>打卡紀錄</div>
               <div style={styles.badge}>最新 {records.length} 筆</div>
             </div>
@@ -4636,6 +4756,31 @@ const styles = {
     boxShadow: "inset 0 0 0 1px #fecaca",
     justifySelf: "start",
     width: "fit-content",
+  },
+  exceptionRecordCard: {
+    marginTop: 10,
+    padding: "12px 14px",
+    borderRadius: 16,
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+  },
+  exceptionRecordHeader: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  exceptionReasonText: {
+    marginTop: 10,
+    padding: "10px 12px",
+    borderRadius: 12,
+    background: "#ffffff",
+    color: "#334155",
+    fontSize: 13,
+    fontWeight: 800,
+    lineHeight: 1.6,
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
   },
   recordAdminRow: {
     display: "flex",
