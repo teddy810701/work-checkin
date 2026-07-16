@@ -3150,7 +3150,7 @@ ${url}`);
 
       <div className="admin-grid" style={styles.adminGrid}>
         <div className="admin-left-col" style={styles.leftCol}>
-          <div style={styles.panelCard}>
+          <div className="admin-announcement-panel" style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div style={styles.panelTitle}>每日員工公告</div>
               <div style={styles.badge}>📢</div>
@@ -3189,7 +3189,7 @@ ${url}`);
             </div>
           </div>
 
-          <div style={styles.panelCard}>
+          <div className="admin-schedule-panel" style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div style={styles.panelTitle}>班表發布</div>
               <div style={styles.badge}>{adminStoreTab === "全部" ? publishStore : adminStoreTab}</div>
@@ -3278,7 +3278,7 @@ ${url}`);
             </div>
           </div>
 
-          <div style={styles.panelCard}>
+          <div className="admin-device-panel" style={styles.panelCard}>
             <div style={styles.panelTitle}>設備設定</div>
             <div style={styles.deviceBox}>
               <div style={styles.deviceLabel}>目前設備 ID</div>
@@ -3348,7 +3348,7 @@ ${url}`);
             </div>
           </div>
 
-          <div style={styles.panelCard}>
+          <div className="admin-export-panel" style={styles.panelCard}>
             <div style={styles.panelTitle}>資料匯出</div>
             <button style={styles.fullGreenBtn} onClick={exportAllCSV}>
               匯出全部打卡 CSV
@@ -3369,7 +3369,7 @@ ${url}`);
             </button>
           </div>
 
-          <div style={styles.panelCard}>
+          <div className="admin-history-panel" style={styles.panelCard}>
             <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("scheduleHistory")}>
               歷史班表 {adminPanels.scheduleHistory ? "－" : "＋"}
             </button>
@@ -3418,7 +3418,7 @@ ${url}`);
         </div>
 
         <div className="admin-right-col" style={styles.rightCol}>
-          <div style={styles.panelCard}>
+          <div className="admin-employees-panel" style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <div style={styles.panelTitle}>排班設定＋員工名單</div>
@@ -3563,7 +3563,7 @@ ${url}`);
             )}
           </div>
 
-          <div style={styles.panelCard}>
+          <div className="admin-exceptions-panel" style={styles.panelCard}>
             <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("exceptionRecords")}>
               異常／忘打卡紀錄 {adminPanels.exceptionRecords ? "－" : "＋"}
             </button>
