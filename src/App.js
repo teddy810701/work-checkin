@@ -1157,6 +1157,16 @@ ${url}`);
     }
   }, [authReady, isAdmin, nowTime, employees, todayRecords, todayKey, breakReminderModal, missedPunchModal, lateCheckInModal, longBreakModal]);
 
+  useEffect(() => {
+    if (!breakReminderModal) return;
+    const remindedEmployee = employees.find((emp) =>
+      normalizeEmpId(emp.empId || emp.id) === normalizeEmpId(breakReminderModal.empId)
+    );
+    if (!remindedEmployee || remindedEmployee.status !== "休息中") {
+      setBreakReminderModal(null);
+    }
+  }, [breakReminderModal, employees]);
+
   const getCheckInLateMinutes = async (emp, createdAt) => {
     try {
       if (!emp || !createdAt) return 0;
