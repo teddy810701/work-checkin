@@ -297,6 +297,15 @@ const formatDateTime = (timestamp) => {
   });
 };
 
+const formatAnyDateTime = (value) => {
+  if (!value) return "尚無紀錄";
+  if (value?.toDate) return formatDateTime(value.toDate());
+  if (value?.seconds) return formatDateTime(value.seconds * 1000);
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value).replace("T", " ");
+  return formatDateTime(parsed);
+};
+
 const formatDateTimeLocalValue = (timestamp) => {
   if (!timestamp) return "";
   const d = new Date(timestamp);
@@ -3565,7 +3574,13 @@ ${url}`);
                       <div>
                         <div style={styles.employeeName}>{request.name || "未具名員工"}</div>
                         <div style={styles.employeeId}>
-                          {request.operatorStoreLabel || POINTS_STORE_LABELS[request.storeId] || "未填店名"} ・ {request.requestDateTime ? request.requestDateTime.replace("T", " ") : request.requestDate || "未填日期"}
+                          {request.operatorStoreLabel || POINTS_STORE_LABELS[request.storeId] || "未填店名"}
+                        </div>
+                        <div style={{ ...styles.employeeId, marginTop: 6 }}>
+                          申請時間：{formatAnyDateTime(request.createdAt || request.timestamp)}
+                        </div>
+                        <div style={{ ...styles.employeeId, marginTop: 3 }}>
+                          實際修正時間：{formatAnyDateTime(request.requestDateTime || request.requestDate)}
                         </div>
                       </div>
                       <span style={{ ...styles.statusBadge, color: statusMeta.color, background: statusMeta.background }}>
