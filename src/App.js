@@ -297,6 +297,15 @@ const formatDateTime = (timestamp) => {
   });
 };
 
+const formatAnyDateTime = (value) => {
+  if (!value) return "尚無紀錄";
+  if (value?.toDate) return formatDateTime(value.toDate());
+  if (value?.seconds) return formatDateTime(value.seconds * 1000);
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value).replace("T", " ");
+  return formatDateTime(parsed);
+};
+
 const formatDateTimeLocalValue = (timestamp) => {
   if (!timestamp) return "";
   const d = new Date(timestamp);
@@ -455,6 +464,7 @@ export default function App() {
   const [scheduleHistory, setScheduleHistory] = useState({});
   const [adminPanels, setAdminPanels] = useState({
     scheduleHistory: false,
+    exceptionRecords: false,
   });
 
   const urlParams = new URLSearchParams(window.location.search);
@@ -626,10 +636,10 @@ ${message}
   }, [authReady, isAdmin, announcementDate]);
 
   useEffect(() => {
-    if (!isAdmin) return;
+    if (!isAdmin || !adminPanels.exceptionRecords) return;
     loadMissedPunchRequests();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin]);
+  }, [isAdmin, adminPanels.exceptionRecords]);
 
   const storeGroups = useMemo(() => {
     const groups = {};
@@ -3529,25 +3539,28 @@ ${url}`);
           </div>
 
           <div style={styles.panelCard}>
-            <div style={styles.listHeader}>
-              <div>
-                <div style={styles.panelTitle}>異常／忘打卡紀錄</div>
-                <div style={{ marginTop: 4, color: "#64748b", fontSize: 12, fontWeight: 700 }}>
-                  忘打卡由積分系統審核；休息超時原因保留在打卡系統。
-                </div>
-              </div>
-              <button
-                style={styles.refreshMiniBtn}
-                onClick={loadMissedPunchRequests}
-                disabled={exceptionRecordsLoading}
-              >
-                {exceptionRecordsLoading ? "讀取中…" : "重新整理"}
-              </button>
-            </div>
+            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("exceptionRecords")}>
+              異常／忘打卡紀錄 {adminPanels.exceptionRecords ? "－" : "＋"}
+            </button>
 
-            {exceptionRecordsError ? (
-              <div style={{ ...styles.emptyText, color: "#b91c1c" }}>{exceptionRecordsError}</div>
-            ) : null}
+            {adminPanels.exceptionRecords ? (
+              <div style={styles.collapseContent}>
+                <div style={styles.listHeader}>
+                  <div style={{ color: "#64748b", fontSize: 12, fontWeight: 700, lineHeight: 1.6 }}>
+                    忘打卡由積分系統審核；休息超時原因保留在打卡系統。
+                  </div>
+                  <button
+                    style={styles.refreshMiniBtn}
+                    onClick={loadMissedPunchRequests}
+                    disabled={exceptionRecordsLoading}
+                  >
+                    {exceptionRecordsLoading ? "讀取中…" : "重新整理"}
+                  </button>
+                </div>
+
+                {exceptionRecordsError ? (
+                  <div style={{ ...styles.emptyText, color: "#b91c1c" }}>{exceptionRecordsError}</div>
+                ) : null}
 
             <div style={{ ...styles.deviceLabel, marginTop: 14 }}>忘打卡申請</div>
             {missedPunchRequests.length === 0 && !exceptionRecordsLoading ? (
@@ -3561,7 +3574,13 @@ ${url}`);
                       <div>
                         <div style={styles.employeeName}>{request.name || "未具名員工"}</div>
                         <div style={styles.employeeId}>
-                          {request.operatorStoreLabel || POINTS_STORE_LABELS[request.storeId] || "未填店名"} ・ {request.requestDateTime ? request.requestDateTime.replace("T", " ") : request.requestDate || "未填日期"}
+                          {request.operatorStoreLabel || POINTS_STORE_LABELS[request.storeId] || "未填店名"}
+                        </div>
+                        <div style={{ ...styles.employeeId, marginTop: 6 }}>
+                          申請時間：{formatAnyDateTime(request.createdAt || request.timestamp)}
+                        </div>
+                        <div style={{ ...styles.employeeId, marginTop: 3 }}>
+                          實際修正時間：{formatAnyDateTime(request.requestDateTime || request.requestDate)}
                         </div>
                       </div>
                       <span style={{ ...styles.statusBadge, color: statusMeta.color, background: statusMeta.background }}>
@@ -3576,29 +3595,31 @@ ${url}`);
               })
             )}
 
-            <div style={{ ...styles.deviceLabel, marginTop: 18 }}>確實休息超時</div>
-            {longBreakExceptionRecords.length === 0 ? (
-              <div style={styles.emptyText}>目前沒有休息超時原因紀錄</div>
-            ) : (
-              longBreakExceptionRecords.slice(0, 20).map((record) => (
-                <div key={`long-break-${record.id}`} style={styles.exceptionRecordCard}>
-                  <div style={styles.exceptionRecordHeader}>
-                    <div>
-                      <div style={styles.employeeName}>{record.name}</div>
-                      <div style={styles.employeeId}>
-                        {record.empId} ・ {record.store || "未填店名"} ・ {record.date} {record.time}
+                <div style={{ ...styles.deviceLabel, marginTop: 18 }}>確實休息超時</div>
+                {longBreakExceptionRecords.length === 0 ? (
+                  <div style={styles.emptyText}>目前沒有休息超時原因紀錄</div>
+                ) : (
+                  longBreakExceptionRecords.slice(0, 20).map((record) => (
+                    <div key={`long-break-${record.id}`} style={styles.exceptionRecordCard}>
+                      <div style={styles.exceptionRecordHeader}>
+                        <div>
+                          <div style={styles.employeeName}>{record.name}</div>
+                          <div style={styles.employeeId}>
+                            {record.empId} ・ {record.store || "未填店名"} ・ {record.date} {record.time}
+                          </div>
+                        </div>
+                        <span style={{ ...styles.statusBadge, color: "#9a3412", background: "#ffedd5" }}>
+                          休息 {record.longBreakMinutes || 0} 分鐘
+                        </span>
+                      </div>
+                      <div style={styles.exceptionReasonText}>
+                        原因：{record.exceptionReason || "未填原因"}
                       </div>
                     </div>
-                    <span style={{ ...styles.statusBadge, color: "#9a3412", background: "#ffedd5" }}>
-                      休息 {record.longBreakMinutes || 0} 分鐘
-                    </span>
-                  </div>
-                  <div style={styles.exceptionReasonText}>
-                    原因：{record.exceptionReason || "未填原因"}
-                  </div>
-                </div>
-              ))
-            )}
+                  ))
+                )}
+              </div>
+            ) : null}
           </div>
 
           <div style={styles.panelCard}>
