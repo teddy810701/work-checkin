@@ -136,9 +136,42 @@ code {
 }
 
 /* 管理後台響應式排版 */
+.admin-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  grid-template-areas:
+    "announcement schedule device"
+    "export schedule history"
+    "employees employees employees"
+    "exceptions exceptions exceptions"
+    "records records records";
+  align-items: start;
+  gap: 16px !important;
+}
+
+.admin-left-col,
+.admin-right-col {
+  display: contents !important;
+}
+
+.admin-announcement-panel { grid-area: announcement; }
+.admin-schedule-panel { grid-area: schedule; }
+.admin-device-panel { grid-area: device; }
+.admin-export-panel { grid-area: export; }
+.admin-history-panel { grid-area: history; }
+.admin-employees-panel { grid-area: employees; }
+.admin-exceptions-panel { grid-area: exceptions; }
+.admin-record-panel { grid-area: records; }
+
 @media (max-width: 900px) {
   .admin-grid {
-    grid-template-columns: 1fr !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    grid-template-areas:
+      "announcement schedule"
+      "device schedule"
+      "export history"
+      "employees employees"
+      "exceptions exceptions"
+      "records records";
   }
 }
 
@@ -157,8 +190,21 @@ code {
 
   .admin-left-col,
   .admin-right-col {
-    gap: 14px !important;
     min-width: 0;
+  }
+
+  .admin-grid {
+    grid-template-columns: 1fr !important;
+    grid-template-areas:
+      "announcement"
+      "schedule"
+      "device"
+      "employees"
+      "exceptions"
+      "records"
+      "export"
+      "history";
+    gap: 12px !important;
   }
 
   .admin-grid > div > div {
