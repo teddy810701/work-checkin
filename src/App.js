@@ -1547,20 +1547,13 @@ ${url}`);
       setMissedPunchModal(null);
       setMissedPunchTime("");
       setMissedPunchReason("");
-      if (missingType === targetType) {
-        const updatedAt = Date.now();
-        await update(ref(db, `employees/${emp.id}`), {
-          status: getNextStatus(missingType),
-          lastAction: `${missingType}忘打卡申請中`,
-          lastActionAt: requestedAt,
-          updatedAt,
-        });
-        setEmployeeId("");
-        alert(`${missingType}忘打卡申請已送到積分系統審核，現在可以繼續後面的打卡`);
-      } else {
-        await checkIn(targetType, { emp, allowMissingTransition: true });
-        alert(`${missingType}忘打卡申請已送到積分系統審核，並已完成「${targetType}」打卡`);
-      }
+      await checkIn(targetType, {
+        emp,
+        allowMissingTransition: true,
+        skipLateConfirmation: true,
+        skipLongBreakConfirmation: true,
+      });
+      alert(`${missingType}忘打卡申請已送到積分系統審核，並已完成「${targetType}」打卡`);
     } catch (error) {
       console.error("送出忘打卡申請失敗：", error);
       alert(`送出失敗：${error.message || "請稍後再試"}`);
