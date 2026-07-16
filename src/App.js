@@ -3508,16 +3508,16 @@ ${url}`);
                         </div>
 
                         <label style={{
-                          marginBottom: 12,
-                          padding: "12px 14px",
-                          borderRadius: 14,
+                          marginBottom: 8,
+                          padding: "8px 10px",
+                          borderRadius: 12,
                           background: item.isSupport ? "#dbeafe" : "#f8fafc",
                           color: item.isSupport ? "#1d4ed8" : "#475569",
                           fontWeight: 900,
                           opacity: item.working ? 1 : 0.45,
                           display: "flex",
                           alignItems: "center",
-                          gap: 10,
+                          gap: 8,
                           cursor: item.working ? "pointer" : "not-allowed",
                           border: item.isSupport ? "1px solid #93c5fd" : "1px solid #e2e8f0",
                         }}>
@@ -3526,7 +3526,7 @@ ${url}`);
                             checked={!!item.isSupport}
                             onChange={() => toggleScheduleSupport(key, emp.store)}
                             disabled={!item.working}
-                            style={{ width: 19, height: 19, cursor: item.working ? "pointer" : "not-allowed" }}
+                            style={{ width: 17, height: 17, cursor: item.working ? "pointer" : "not-allowed" }}
                           />
                           <span>
                             支援{getOtherStoreName(emp.store)}
@@ -4661,23 +4661,23 @@ const styles = {
   },
   integratedEmployeeCard: {
     border: "1px solid #e5e7eb",
-    borderRadius: 22,
-    padding: 18,
+    borderRadius: 16,
+    padding: 12,
     background: "linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)",
     boxShadow: "0 10px 24px rgba(15,23,42,0.04)",
-    marginBottom: 14,
+    marginBottom: 10,
   },
   integratedTopRow: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "flex-start",
-    gap: 12,
+    gap: 8,
     flexWrap: "wrap",
   },
   scheduleCheckWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 12,
+    width: 30,
+    height: 30,
+    borderRadius: 10,
     background: "#ecfdf5",
     border: "1px solid #bbf7d0",
     display: "flex",
@@ -4687,9 +4687,9 @@ const styles = {
     flexShrink: 0,
   },
   integratedSchedulePanel: {
-    marginTop: 14,
-    padding: 14,
-    borderRadius: 18,
+    marginTop: 10,
+    padding: 10,
+    borderRadius: 14,
     background: "#ffffff",
     border: "1px solid #e2e8f0",
   },
@@ -4697,31 +4697,31 @@ const styles = {
     fontSize: 13,
     fontWeight: 800,
     color: "#475569",
-    marginBottom: 10,
+    marginBottom: 8,
   },
   integratedTimeRow: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-    gap: 12,
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gap: 8,
   },
   integratedTimeBox: {
-    borderRadius: 16,
+    borderRadius: 12,
     background: "#f8fafc",
     border: "1px solid #e2e8f0",
-    padding: 12,
+    padding: 8,
   },
   integratedTimeTitle: {
     fontSize: 12,
     fontWeight: 800,
     color: "#64748b",
-    marginBottom: 6,
+    marginBottom: 4,
   },
   integratedTimeInput: {
     width: "100%",
     border: "none",
     outline: "none",
     background: "transparent",
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: 900,
     color: "#0f172a",
     letterSpacing: 1,

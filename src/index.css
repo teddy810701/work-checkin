@@ -164,14 +164,17 @@ code {
 
 @media (max-width: 900px) {
   .admin-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    grid-template-columns: 1fr !important;
     grid-template-areas:
-      "announcement schedule"
-      "device schedule"
-      "export history"
-      "employees employees"
-      "exceptions exceptions"
-      "records records";
+      "announcement"
+      "schedule"
+      "device"
+      "employees"
+      "exceptions"
+      "records"
+      "export"
+      "history";
+    gap: 14px !important;
   }
 }
 
