@@ -413,6 +413,25 @@ const safeFirebaseKey = (value) => {
     .replace(/\s+/g, "_");
 };
 
+const CHECKIN_ANOMALY_QUEUE_KEY = "work_checkin_pending_anomalies";
+
+const readPendingAnomalies = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CHECKIN_ANOMALY_QUEUE_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const savePendingAnomalies = (items) => {
+  try {
+    localStorage.setItem(CHECKIN_ANOMALY_QUEUE_KEY, JSON.stringify(items.slice(-50)));
+  } catch {
+    // 裝置儲存空間不可用時，仍保留畫面上的打卡失敗提示。
+  }
+};
+
 
 export default function App() {
   const [authReady, setAuthReady] = useState(false);
@@ -440,6 +459,9 @@ export default function App() {
   const [missedPunchRequests, setMissedPunchRequests] = useState([]);
   const [exceptionRecordsLoading, setExceptionRecordsLoading] = useState(false);
   const [exceptionRecordsError, setExceptionRecordsError] = useState("");
+  const [systemAnomalies, setSystemAnomalies] = useState([]);
+  const [anomalyRepairingId, setAnomalyRepairingId] = useState("");
+  const [checkInSaving, setCheckInSaving] = useState(false);
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [password, setPassword] = useState("");
@@ -489,6 +511,7 @@ export default function App() {
   const [adminPanels, setAdminPanels] = useState({
     scheduleHistory: false,
     exceptionRecords: false,
+    systemAnomalies: true,
   });
 
   const urlParams = new URLSearchParams(window.location.search);
@@ -505,6 +528,49 @@ export default function App() {
   const [publicScheduleData, setPublicScheduleData] = useState({});
   const [todayScheduleData, setTodayScheduleData] = useState({});
   const [scheduleLinkCopied, setScheduleLinkCopied] = useState(false);
+
+  const reportCheckInAnomaly = async ({ error, emp, type, phase }) => {
+    const createdAt = Date.now();
+    const anomaly = {
+      id: `${createdAt}_${safeFirebaseKey(myDevice).slice(-16)}`,
+      category: "checkin_failure",
+      status: "open",
+      phase: phase || "checkin_write",
+      empId: emp?.empId || emp?.id || employeeId.trim().toUpperCase(),
+      name: emp?.name || "",
+      store: emp?.store || currentDeviceStoreName || "",
+      actionType: type || "",
+      errorCode: error?.code || "unknown",
+      errorMessage: String(error?.message || "打卡寫入失敗").slice(0, 300),
+      device: myDevice,
+      deviceLabel: currentDeviceStoreName || "未識別設備",
+      createdAt,
+      updatedAt: createdAt,
+    };
+
+    try {
+      await set(ref(db, `system_anomalies/${anomaly.id}`), anomaly);
+    } catch (loggingError) {
+      console.error("異常紀錄暫存於本機：", loggingError);
+      const pending = readPendingAnomalies();
+      savePendingAnomalies([...pending.filter((item) => item.id !== anomaly.id), anomaly]);
+    }
+  };
+
+  const flushPendingAnomalies = async () => {
+    const pending = readPendingAnomalies();
+    if (!pending.length) return;
+
+    const remaining = [];
+    for (const anomaly of pending) {
+      try {
+        await set(ref(db, `system_anomalies/${anomaly.id}`), anomaly);
+      } catch {
+        remaining.push(anomaly);
+      }
+    }
+    savePendingAnomalies(remaining);
+  };
 
   const loadMissedPunchRequests = async () => {
     if (!isAdmin) return;
@@ -584,6 +650,37 @@ ${message}
       list.sort((a, b) => (a.empId || a.id).localeCompare(b.empId || b.id));
       setEmployees(list);
     });
+  }, [authReady]);
+
+  useEffect(() => {
+    if (!authReady || !isAdmin) {
+      setSystemAnomalies([]);
+      return;
+    }
+
+    const anomaliesRef = query(
+      ref(db, "system_anomalies"),
+      orderByChild("createdAt"),
+      limitToLast(100)
+    );
+    return onValue(anomaliesRef, (snap) => {
+      const data = snap.val() || {};
+      const list = Object.keys(data)
+        .map((key) => ({ id: key, ...data[key] }))
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setSystemAnomalies(list);
+    }, (error) => {
+      console.error("讀取系統異常失敗：", error);
+    });
+  }, [authReady, isAdmin]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    flushPendingAnomalies();
+    const handleOnline = () => flushPendingAnomalies();
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authReady]);
 
   useEffect(() => {
@@ -794,6 +891,39 @@ ${message}
       return (a.empId || "").localeCompare(b.empId || "");
     });
   }, [employees, todayRecords, todayKey]);
+
+  const statusMismatchAnomalies = useMemo(() => {
+    return employees.flatMap((emp) => {
+      const empId = emp.empId || emp.id;
+      const latestRecord = records.find((record) => record.empId === empId);
+      if (!latestRecord) return [];
+
+      const expectedStatus = getNextStatus(latestRecord.type);
+      const actualStatus = emp.status || "未打卡";
+      if (expectedStatus === actualStatus) return [];
+
+      return [{
+        id: `status_mismatch_${emp.id}`,
+        category: "status_mismatch",
+        status: "open",
+        empId,
+        employeeKey: emp.id,
+        name: emp.name,
+        store: emp.store || "",
+        actionType: latestRecord.type,
+        expectedStatus,
+        actualStatus,
+        recordId: latestRecord.id,
+        createdAt: latestRecord.createdAt || 0,
+        errorMessage: `最新紀錄為「${latestRecord.type}」，員工狀態卻是「${actualStatus}」`,
+      }];
+    });
+  }, [employees, records]);
+
+  const openSystemAnomalies = useMemo(
+    () => systemAnomalies.filter((item) => item.status !== "resolved"),
+    [systemAnomalies]
+  );
 
   const toggleScheduleWorking = (empId) => {
     setScheduleItems((prev) => ({
@@ -1052,6 +1182,42 @@ ${url}`);
       lastActionAt: targetRecords[0]?.createdAt || 0,
       updatedAt: Date.now(),
     });
+  };
+
+  const repairStatusMismatch = async (anomaly) => {
+    if (!anomaly?.employeeKey || !anomaly?.expectedStatus) return;
+    setAnomalyRepairingId(anomaly.id);
+    try {
+      await update(ref(db, `employees/${anomaly.employeeKey}`), {
+        status: anomaly.expectedStatus,
+        lastAction: anomaly.actionType || "",
+        lastActionAt: anomaly.createdAt || 0,
+        updatedAt: Date.now(),
+      });
+      alert(`${anomaly.name || anomaly.empId} 的狀態已修正為「${anomaly.expectedStatus}」`);
+    } catch (error) {
+      console.error("修正員工狀態失敗：", error);
+      alert(`修正失敗：${error?.message || "請稍後再試"}`);
+    } finally {
+      setAnomalyRepairingId("");
+    }
+  };
+
+  const resolveSystemAnomaly = async (anomaly) => {
+    if (!anomaly?.id) return;
+    setAnomalyRepairingId(anomaly.id);
+    try {
+      await update(ref(db, `system_anomalies/${anomaly.id}`), {
+        status: "resolved",
+        resolvedAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    } catch (error) {
+      console.error("更新異常狀態失敗：", error);
+      alert(`更新失敗：${error?.message || "請稍後再試"}`);
+    } finally {
+      setAnomalyRepairingId("");
+    }
   };
 
 
@@ -1400,6 +1566,11 @@ ${url}`);
       return;
     }
 
+    if (checkInSaving) {
+      alert("上一筆打卡正在處理，請稍候");
+      return;
+    }
+
     const inputId = employeeId.trim().toUpperCase();
     const emp = options.emp || employees.find((e) => e.id === inputId || e.empId === inputId);
 
@@ -1454,88 +1625,99 @@ ${url}`);
       return;
     }
 
+    setCheckInSaving(true);
     const now = new Date();
     const createdAt = Date.now();
     const newStatus = getNextStatus(type);
     const recordId = String(createdAt);
     const dateKey = formatTaipeiDateKey(createdAt);
-    const scheduleSnap = await get(ref(db, `schedules/${dateKey}/${emp.empId || emp.id}`));
-    const todaySchedule = scheduleSnap.val() || {};
 
-    await set(ref(db, `records/${recordId}`), {
-      empId: emp.empId || emp.id,
-      name: emp.name,
-      store: emp.store || "",
-      role: emp.role || "",
-      type,
-      time: now.toLocaleTimeString("zh-TW", { hour12: false }),
-      date: now.toLocaleDateString("zh-TW"),
-      dateKey,
-      device: myDevice,
-      isSupport: !!todaySchedule.isSupport,
-      supportStore: todaySchedule.supportStore || "",
-      exceptionReason: options.longBreakReason || "",
-      longBreakMinutes: options.longBreakMinutes || 0,
-      createdAt,
-      monthKey: getMonthValue(createdAt),
-    });
-
-    await update(ref(db, `employees/${emp.id}`), {
-      status: newStatus,
-      lastAction: type,
-      lastActionAt: createdAt,
-      updatedAt: createdAt,
-    });
-
-    setEmployeeId("");
-
-    if (type === "下班") {
-      setMealModalData({
+    try {
+      const scheduleSnap = await get(ref(db, `schedules/${dateKey}/${emp.empId || emp.id}`));
+      const todaySchedule = scheduleSnap.val() || {};
+      const record = {
         empId: emp.empId || emp.id,
         name: emp.name,
         store: emp.store || "",
         role: emp.role || "",
-        dateKey: formatTaipeiDateKey(createdAt),
-        checkoutAt: createdAt,
+        type,
+        time: now.toLocaleTimeString("zh-TW", { hour12: false }),
+        date: now.toLocaleDateString("zh-TW"),
+        dateKey,
+        device: myDevice,
+        isSupport: !!todaySchedule.isSupport,
+        supportStore: todaySchedule.supportStore || "",
+        exceptionReason: options.longBreakReason || "",
+        longBreakMinutes: options.longBreakMinutes || 0,
+        createdAt,
+        monthKey: getMonthValue(createdAt),
+      };
+
+      // 紀錄與員工狀態必須同時成功，避免只寫入其中一邊造成畫面仍顯示未打卡。
+      await update(ref(db), {
+        [`records/${recordId}`]: record,
+        [`employees/${emp.id}/status`]: newStatus,
+        [`employees/${emp.id}/lastAction`]: type,
+        [`employees/${emp.id}/lastActionAt`]: createdAt,
+        [`employees/${emp.id}/updatedAt`]: createdAt,
       });
-      setMealAmount("");
-    }
+
+      setEmployeeId("");
+
+      if (type === "下班") {
+        setMealModalData({
+          empId: emp.empId || emp.id,
+          name: emp.name,
+          store: emp.store || "",
+          role: emp.role || "",
+          dateKey: formatTaipeiDateKey(createdAt),
+          checkoutAt: createdAt,
+        });
+        setMealAmount("");
+      }
 
     // 改為由自動排程統一檢查遲到，避免重複 LINE 通知
 
-    try {
-      const pointsResult = await fetchMonthlyPointsFromPerformanceSystem(emp.empId || emp.id);
-      const lateMinutes = type === "上班" ? await getCheckInLateMinutes(emp, createdAt) : 0;
-      const monthlyPointsText = pointsResult?.found ? pointsResult.monthlyPoints : "未知";
+      try {
+        const pointsResult = await fetchMonthlyPointsFromPerformanceSystem(emp.empId || emp.id);
+        const lateMinutes = type === "上班" ? await getCheckInLateMinutes(emp, createdAt) : 0;
+        const monthlyPointsText = pointsResult?.found ? pointsResult.monthlyPoints : "未知";
 
-      showScoreToast({
-        success: true,
-        name: emp.name,
-        type,
-        pointsResult,
-        createdAt,
-      });
+        showScoreToast({
+          success: true,
+          name: emp.name,
+          type,
+          pointsResult,
+          createdAt,
+        });
 
-      if (lateMinutes > 0) {
-        speakText(`你遲到了，遲到${lateMinutes}分鐘，本月積分${monthlyPointsText}分`);
-      } else {
-        speakText(`${type}打卡完成，本月積分${monthlyPointsText}分`);
+        if (lateMinutes > 0) {
+          speakText(`你遲到了，遲到${lateMinutes}分鐘，本月積分${monthlyPointsText}分`);
+        } else {
+          speakText(`${type}打卡完成，本月積分${monthlyPointsText}分`);
+        }
+      } catch (error) {
+        console.error("讀取本月積分失敗:", error);
+        showScoreToast({
+          success: true,
+          name: emp.name,
+          type,
+          pointsResult: {
+            found: false,
+            message: "積分讀取失敗，但打卡已成功",
+            error: true,
+          },
+          createdAt,
+        });
+
+        speakText(`${type}打卡完成，積分讀取失敗`);
       }
     } catch (error) {
-      console.error("讀取本月積分失敗:", error);
-      showScoreToast({
-        success: true,
-        name: emp.name,
-        type,
-        pointsResult: {
-          found: false,
-          message: "積分讀取失敗，但打卡已成功",
-          error: true,
-        },
-        createdAt,
-      });
-
-      speakText(`${type}打卡完成，積分讀取失敗`);
+      console.error("打卡寫入失敗：", error);
+      await reportCheckInAnomaly({ error, emp, type, phase: "atomic_checkin_write" });
+      alert(`打卡未完成，請再試一次。\n錯誤：${error?.message || "網路或資料庫連線異常"}`);
+    } finally {
+      setCheckInSaving(false);
     }
   };
 
@@ -2916,31 +3098,35 @@ ${url}`);
 
             <div className="checkin-action-grid" style={styles.dashboardButtonGrid}>
               <button
-                style={{ ...styles.dashboardActionBtn, ...styles.dashboardBlueBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }}
+                style={{ ...styles.dashboardActionBtn, ...styles.dashboardBlueBtn, opacity: (!isAuthorizedDevice || checkInSaving) ? 0.5 : 1 }}
                 onClick={() => checkIn("上班")}
+                disabled={checkInSaving}
               >
-                ⬆ 上班打卡
+                {checkInSaving ? "處理中…" : "⬆ 上班打卡"}
                 <span>開始今天的工作</span>
               </button>
               <button
-                style={{ ...styles.dashboardActionBtn, ...styles.dashboardOrangeBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }}
+                style={{ ...styles.dashboardActionBtn, ...styles.dashboardOrangeBtn, opacity: (!isAuthorizedDevice || checkInSaving) ? 0.5 : 1 }}
                 onClick={() => checkIn("休息開始")}
+                disabled={checkInSaving}
               >
-                ☕ 休息開始
+                {checkInSaving ? "處理中…" : "☕ 休息開始"}
                 <span>開始休息時間</span>
               </button>
               <button
-                style={{ ...styles.dashboardActionBtn, ...styles.dashboardGreenBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }}
+                style={{ ...styles.dashboardActionBtn, ...styles.dashboardGreenBtn, opacity: (!isAuthorizedDevice || checkInSaving) ? 0.5 : 1 }}
                 onClick={() => checkIn("休息結束")}
+                disabled={checkInSaving}
               >
-                🍵 休息結束
+                {checkInSaving ? "處理中…" : "🍵 休息結束"}
                 <span>結束休息時間</span>
               </button>
               <button
-                style={{ ...styles.dashboardActionBtn, ...styles.dashboardDarkBtn, opacity: !isAuthorizedDevice ? 0.5 : 1 }}
+                style={{ ...styles.dashboardActionBtn, ...styles.dashboardDarkBtn, opacity: (!isAuthorizedDevice || checkInSaving) ? 0.5 : 1 }}
                 onClick={() => checkIn("下班")}
+                disabled={checkInSaving}
               >
-                ⬇ 下班打卡
+                {checkInSaving ? "處理中…" : "⬇ 下班打卡"}
                 <span>下班時登記員工餐</span>
               </button>
             </div>
@@ -3603,6 +3789,77 @@ ${url}`);
                   );
                 })
             )}
+          </div>
+
+          <div className="admin-system-anomalies-panel" style={{
+            ...styles.panelCard,
+            ...((statusMismatchAnomalies.length + openSystemAnomalies.length) > 0 ? { border: "2px solid #f97316" } : {}),
+          }}>
+            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("systemAnomalies")}>
+              系統異常中心（{statusMismatchAnomalies.length + openSystemAnomalies.length}） {adminPanels.systemAnomalies ? "－" : "＋"}
+            </button>
+
+            {adminPanels.systemAnomalies ? (
+              <div style={styles.collapseContent}>
+                <div style={{ color: "#64748b", fontSize: 12, fontWeight: 700, lineHeight: 1.6, marginBottom: 12 }}>
+                  自動檢查打卡紀錄與員工狀態是否一致；離線時的失敗會先留在打卡設備，連線恢復後自動送到這裡。
+                </div>
+
+                {statusMismatchAnomalies.length === 0 && openSystemAnomalies.length === 0 ? (
+                  <div style={{ ...styles.noLateBox, color: "#15803d" }}>✓ 目前沒有偵測到系統異常</div>
+                ) : null}
+
+                {statusMismatchAnomalies.map((anomaly) => (
+                  <div key={anomaly.id} style={{ ...styles.exceptionRecordCard, borderLeft: "5px solid #dc2626" }}>
+                    <div style={styles.exceptionRecordHeader}>
+                      <div>
+                        <div style={styles.employeeName}>{anomaly.name || anomaly.empId}</div>
+                        <div style={styles.employeeId}>
+                          {anomaly.empId} ・ {anomaly.store || "未填店名"} ・ {formatAnyDateTime(anomaly.createdAt)}
+                        </div>
+                      </div>
+                      <span style={{ ...styles.statusBadge, color: "#b91c1c", background: "#fee2e2" }}>
+                        狀態不同步
+                      </span>
+                    </div>
+                    <div style={styles.exceptionReasonText}>{anomaly.errorMessage}</div>
+                    <button
+                      style={{ ...styles.editBtn, marginTop: 10 }}
+                      disabled={anomalyRepairingId === anomaly.id}
+                      onClick={() => repairStatusMismatch(anomaly)}
+                    >
+                      {anomalyRepairingId === anomaly.id ? "修正中…" : `一鍵修正為「${anomaly.expectedStatus}」`}
+                    </button>
+                  </div>
+                ))}
+
+                {openSystemAnomalies.map((anomaly) => (
+                  <div key={anomaly.id} style={{ ...styles.exceptionRecordCard, borderLeft: "5px solid #f97316" }}>
+                    <div style={styles.exceptionRecordHeader}>
+                      <div>
+                        <div style={styles.employeeName}>{anomaly.name || anomaly.empId || "未知員工"}</div>
+                        <div style={styles.employeeId}>
+                          {anomaly.deviceLabel || anomaly.store || "未識別設備"} ・ {formatAnyDateTime(anomaly.createdAt)}
+                        </div>
+                      </div>
+                      <span style={{ ...styles.statusBadge, color: "#9a3412", background: "#ffedd5" }}>
+                        {anomaly.actionType || "打卡"}失敗
+                      </span>
+                    </div>
+                    <div style={styles.exceptionReasonText}>
+                      {anomaly.errorMessage || anomaly.errorCode || "未提供錯誤原因"}
+                    </div>
+                    <button
+                      style={{ ...styles.editBtn, marginTop: 10 }}
+                      disabled={anomalyRepairingId === anomaly.id}
+                      onClick={() => resolveSystemAnomaly(anomaly)}
+                    >
+                      {anomalyRepairingId === anomaly.id ? "處理中…" : "標記已處理"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
 
           <div className="admin-exceptions-panel" style={styles.panelCard}>
