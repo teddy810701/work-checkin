@@ -36,10 +36,6 @@ const pointsDb = getFirestore(pointsApp);
 const pointsAuth = getAuth(pointsApp);
 const MONTHLY_BASE_POINTS = 50;
 const POINTS_STORE_IDS = ["storeA", "storeB"];
-const POINTS_STORE_LABELS = {
-  storeA: "西螺文昌店",
-  storeB: "斗南站前店",
-};
 
 
 const getDeviceId = () => {
@@ -312,6 +308,14 @@ const formatAnyDateTime = (value) => {
   return formatDateTime(parsed);
 };
 
+const getTimestampValue = (value) => {
+  if (!value) return 0;
+  if (value?.toMillis) return value.toMillis();
+  if (value?.seconds) return value.seconds * 1000;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+};
+
 const formatDateTimeLocalValue = (timestamp) => {
   if (!timestamp) return "";
   const d = new Date(timestamp);
@@ -459,6 +463,8 @@ export default function App() {
   const [missedPunchRequests, setMissedPunchRequests] = useState([]);
   const [exceptionRecordsLoading, setExceptionRecordsLoading] = useState(false);
   const [exceptionRecordsError, setExceptionRecordsError] = useState("");
+  const [missedPunchReviewTimes, setMissedPunchReviewTimes] = useState({});
+  const [missedPunchReviewSavingId, setMissedPunchReviewSavingId] = useState("");
   const [systemAnomalies, setSystemAnomalies] = useState([]);
   const [anomalyRepairingId, setAnomalyRepairingId] = useState("");
   const [checkInSaving, setCheckInSaving] = useState(false);
@@ -577,18 +583,80 @@ export default function App() {
     setExceptionRecordsLoading(true);
     setExceptionRecordsError("");
     try {
-      await ensurePointsFirebaseAuth();
-      const storeEntries = await Promise.all(POINTS_STORE_IDS.map(async (storeId) => {
-        const logSnap = await getDocs(fsCollection(pointsDb, "stores", storeId, "logs"));
-        return logSnap.docs
-          .map((item) => ({ id: item.id, storeId, ...(item.data() || {}) }))
-          .filter((item) => item.actionType === "missed_clock_request");
-      }));
-      const entries = storeEntries.flat().sort((a, b) => {
-        const aTime = a.createdAt?.seconds ? a.createdAt.seconds * 1000 : Date.parse(a.requestDateTime || a.requestDate || "") || 0;
-        const bTime = b.createdAt?.seconds ? b.createdAt.seconds * 1000 : Date.parse(b.requestDateTime || b.requestDate || "") || 0;
-        return bTime - aTime;
-      });
+      let requestSnap = await get(ref(db, "missed_punch_requests"));
+      const existingData = requestSnap.val() || {};
+      const migratedLegacyIds = new Set(
+        Object.values(existingData).map((item) => item?.legacyLogId).filter(Boolean)
+      );
+
+      // 將仍待審核的舊積分系統申請搬到打卡系統，讓既有申請也能直接處理。
+      try {
+        await ensurePointsFirebaseAuth();
+        for (const storeId of POINTS_STORE_IDS) {
+          const [empSnap, logSnap] = await Promise.all([
+            getDocs(fsCollection(pointsDb, "stores", storeId, "employees")),
+            getDocs(fsCollection(pointsDb, "stores", storeId, "logs")),
+          ]);
+          const employeeMap = new Map(empSnap.docs.map((empDoc) => {
+            const data = empDoc.data() || {};
+            const checkinId = [
+              data.checkinId,
+              data.birthdayId,
+              data.employeeId,
+              data.empId,
+              data.id,
+              data.birthday,
+              data.birthDate,
+              empDoc.id,
+            ].map(normalizeEmpId).find(Boolean);
+            return [empDoc.id, { checkinId, name: data.name || "" }];
+          }));
+
+          for (const logDoc of logSnap.docs) {
+            const log = logDoc.data() || {};
+            if (log.actionType !== "missed_clock_request" || log.requestStatus !== "pending") continue;
+            if (migratedLegacyIds.has(logDoc.id)) continue;
+            const matchedEmployee = employeeMap.get(log.empId) || {};
+            const requestId = `legacy_${storeId}_${safeFirebaseKey(logDoc.id)}`;
+            const createdAt = getTimestampValue(log.createdAt || log.timestamp) || Date.now();
+            const requestedAt = datetimeLocalToTimestamp(log.requestDateTime)
+              || getTimestampValue(log.occurrenceDate)
+              || createdAt;
+            await set(ref(db, `missed_punch_requests/${requestId}`), {
+              id: requestId,
+              legacyLogId: logDoc.id,
+              pointsStoreId: storeId,
+              pointsEmployeeDocId: log.empId || "",
+              actionType: "missed_clock_request",
+              empId: matchedEmployee.checkinId || normalizeEmpId(log.empId),
+              name: log.name || matchedEmployee.name || "",
+              store: log.operatorStoreLabel || "",
+              operatorStoreLabel: log.operatorStoreLabel || "",
+              reason: log.reason || "忘打卡申請",
+              note: log.note || "",
+              requestDate: log.requestDate || getDateKeyFromAnyDate(requestedAt),
+              requestDateTime: log.requestDateTime || formatDateTimeLocalValue(requestedAt),
+              requestedAt,
+              requestStatus: "pending",
+              source: "legacy_points_migration",
+              missingType: log.missingType || "",
+              targetType: log.targetType || "",
+              targetPunchCompleted: true,
+              createdAt,
+              updatedAt: Date.now(),
+            });
+            migratedLegacyIds.add(logDoc.id);
+          }
+        }
+        requestSnap = await get(ref(db, "missed_punch_requests"));
+      } catch (migrationError) {
+        console.error("搬移舊忘打卡申請失敗：", migrationError);
+      }
+
+      const data = requestSnap.val() || {};
+      const entries = Object.keys(data)
+        .map((key) => ({ id: key, ...(data[key] || {}) }))
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
       setMissedPunchRequests(entries);
     } catch (error) {
       console.error("讀取忘打卡申請失敗：", error);
@@ -761,6 +829,25 @@ ${message}
     loadMissedPunchRequests();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin, adminPanels.exceptionRecords]);
+
+  useEffect(() => {
+    if (!authReady || !isAdmin || !adminPanels.exceptionRecords) return;
+    const requestsRef = query(
+      ref(db, "missed_punch_requests"),
+      orderByChild("createdAt"),
+      limitToLast(100)
+    );
+    return onValue(requestsRef, (snap) => {
+      const data = snap.val() || {};
+      const entries = Object.keys(data)
+        .map((key) => ({ id: key, ...(data[key] || {}) }))
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setMissedPunchRequests(entries);
+      setExceptionRecordsError("");
+    }, (error) => {
+      setExceptionRecordsError(error?.message || "讀取忘打卡申請失敗");
+    });
+  }, [authReady, isAdmin, adminPanels.exceptionRecords]);
 
   const storeGroups = useMemo(() => {
     const groups = {};
@@ -1712,10 +1799,12 @@ ${url}`);
 
         speakText(`${type}打卡完成，積分讀取失敗`);
       }
+      return true;
     } catch (error) {
       console.error("打卡寫入失敗：", error);
       await reportCheckInAnomaly({ error, emp, type, phase: "atomic_checkin_write" });
       alert(`打卡未完成，請再試一次。\n錯誤：${error?.message || "網路或資料庫連線異常"}`);
+      return false;
     } finally {
       setCheckInSaving(false);
     }
@@ -1756,14 +1845,72 @@ ${url}`);
     try {
       const { emp, missingType, targetType } = missedPunchModal;
       const empId = emp.empId || emp.id;
-      await ensurePointsFirebaseAuth();
+      const requestDate = formatTaipeiDateKey(requestedAt);
+      const requestTime = missedPunchTime.slice(11, 16);
+      const requestId = `${Date.now()}_${safeFirebaseKey(empId)}`;
+      await set(ref(db, `missed_punch_requests/${requestId}`), {
+        id: requestId,
+        actionType: "missed_clock_request",
+        empId,
+        employeeKey: emp.id,
+        name: emp.name,
+        store: emp.store || "",
+        role: emp.role || "",
+        reason: "忘打卡申請",
+        note: `${missingType}忘打卡：${reason}`,
+        occurrenceDate: requestDate,
+        requestDate,
+        requestDateTime: `${requestDate}T${requestTime}`,
+        requestedAt,
+        requestTime,
+        requestStatus: "pending",
+        operator: emp.name,
+        operatorKey: "employee_request",
+        operatorStoreLabel: emp.store || "",
+        source: "work_checkin",
+        missingType,
+        targetType,
+        device: myDevice,
+        deviceLabel: currentDeviceStoreName || "未識別設備",
+        targetPunchCompleted: false,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      setMissedPunchModal(null);
+      setMissedPunchTime("");
+      setMissedPunchReason("");
+      setLongBreakModal(null);
+      setLongBreakReason("");
+      const targetPunchCompleted = await checkIn(targetType, {
+        emp,
+        allowMissingTransition: true,
+        skipLateConfirmation: true,
+        skipLongBreakConfirmation: true,
+      });
+      await update(ref(db, `missed_punch_requests/${requestId}`), {
+        targetPunchCompleted: !!targetPunchCompleted,
+        updatedAt: Date.now(),
+      });
+      alert(targetPunchCompleted
+        ? `${missingType}忘打卡申請已送到打卡系統後台，並已完成「${targetType}」打卡`
+        : `${missingType}忘打卡申請已送到打卡系統後台，但「${targetType}」打卡未完成，請通知管理員`);
+    } catch (error) {
+      console.error("送出忘打卡申請失敗：", error);
+      alert(`送出失敗：${error.message || "請稍後再試"}`);
+    } finally {
+      setMissedPunchSaving(false);
+    }
+  };
 
+  const syncMissedPunchDecisionToPoints = async (request, decision, reviewedAt, approvedPunchAt = 0) => {
+    try {
+      await ensurePointsFirebaseAuth();
       let matchedEmployee = null;
       for (const storeId of POINTS_STORE_IDS) {
         const empSnap = await getDocs(fsCollection(pointsDb, "stores", storeId, "employees"));
         const matchedDoc = empSnap.docs.find((empDoc) => {
           const data = empDoc.data() || {};
-          const candidates = [
+          return [
             empDoc.id,
             data.birthdayId,
             data.checkinId,
@@ -1772,8 +1919,7 @@ ${url}`);
             data.id,
             data.birthday,
             data.birthDate,
-          ];
-          return candidates.some((item) => normalizeEmpId(item) === normalizeEmpId(empId));
+          ].some((item) => normalizeEmpId(item) === normalizeEmpId(request.empId));
         });
         if (matchedDoc) {
           matchedEmployee = { storeId, doc: matchedDoc };
@@ -1781,53 +1927,148 @@ ${url}`);
         }
       }
 
-      if (!matchedEmployee) {
-        throw new Error("積分系統找不到此員工，請先確認兩邊的工號設定一致");
+      if (!matchedEmployee) throw new Error("積分系統找不到對應員工");
+      if (request.legacyLogId && request.pointsStoreId) {
+        const legacyLogRef = fsDoc(pointsDb, "stores", request.pointsStoreId, "logs", request.legacyLogId);
+        await fsSetDoc(legacyLogRef, {
+          requestStatus: decision,
+          approvedPunchAt: approvedPunchAt || 0,
+          reviewedAt,
+          reviewedBy: "打卡系統管理員",
+          reviewSource: "work_checkin",
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+        return true;
       }
-
-      const requestDate = formatTaipeiDateKey(requestedAt);
-      const requestTime = missedPunchTime.slice(11, 16);
       const logRef = fsDoc(fsCollection(pointsDb, "stores", matchedEmployee.storeId, "logs"));
       await fsSetDoc(logRef, {
         id: logRef.id,
-        actionType: "missed_clock_request",
+        actionType: "missed_clock_review_result",
         amount: 0,
         empId: matchedEmployee.doc.id,
-        name: matchedEmployee.doc.data()?.name || emp.name,
-        reason: "忘打卡申請",
-        note: `${missingType}忘打卡：${reason}`,
-        occurrenceDate: requestDate,
-        requestDate,
-        requestDateTime: `${requestDate}T${requestTime}`,
-        requestTime,
-        requestStatus: "pending",
-        operator: matchedEmployee.doc.data()?.name || emp.name,
-        operatorKey: "employee_request",
-        operatorStoreId: matchedEmployee.storeId,
-        operatorStoreLabel: POINTS_STORE_LABELS[matchedEmployee.storeId] || emp.store || "",
+        name: matchedEmployee.doc.data()?.name || request.name || "",
+        reason: decision === "approved" ? "忘打卡申請已核准" : "忘打卡申請已駁回",
+        note: request.note || `${request.missingType || "打卡"}忘打卡`,
+        occurrenceDate: request.requestDate || formatTaipeiDateKey(request.requestedAt || reviewedAt),
+        requestId: request.id,
+        requestStatus: decision,
+        missingType: request.missingType || "",
+        targetType: request.targetType || "",
+        approvedPunchAt: approvedPunchAt || 0,
+        reviewedAt,
+        operator: "打卡系統管理員",
+        operatorKey: "work_checkin_admin",
         source: "work_checkin",
-        missingType,
-        targetType,
         timestamp: serverTimestamp(),
         createdAt: serverTimestamp(),
       });
-      setMissedPunchModal(null);
-      setMissedPunchTime("");
-      setMissedPunchReason("");
-      setLongBreakModal(null);
-      setLongBreakReason("");
-      await checkIn(targetType, {
-        emp,
-        allowMissingTransition: true,
-        skipLateConfirmation: true,
-        skipLongBreakConfirmation: true,
-      });
-      alert(`${missingType}忘打卡申請已送到積分系統審核，並已完成「${targetType}」打卡`);
+      return true;
     } catch (error) {
-      console.error("送出忘打卡申請失敗：", error);
-      alert(`送出失敗：${error.message || "請稍後再試"}`);
+      console.error("同步忘打卡審核結果到積分系統失敗：", error);
+      return false;
+    }
+  };
+
+  const approveMissedPunchRequest = async (request) => {
+    if (!request?.id || missedPunchReviewSavingId) return;
+    const reviewTime = missedPunchReviewTimes[request.id]
+      || request.requestDateTime
+      || formatDateTimeLocalValue(request.requestedAt);
+    const approvedPunchAt = datetimeLocalToTimestamp(reviewTime);
+    if (!approvedPunchAt) {
+      alert("請輸入正確的補登日期與時間");
+      return;
+    }
+
+    const employee = employees.find((item) => (item.empId || item.id) === request.empId);
+    if (!employee) {
+      alert("找不到這位員工，無法補登");
+      return;
+    }
+
+    setMissedPunchReviewSavingId(request.id);
+    try {
+      const reviewedAt = Date.now();
+      const approvedDate = new Date(approvedPunchAt);
+      const dateKey = formatTaipeiDateKey(approvedPunchAt);
+      const scheduleSnap = await get(ref(db, `schedules/${dateKey}/${request.empId}`));
+      const schedule = scheduleSnap.val() || {};
+      const recordId = safeFirebaseKey(`${approvedPunchAt}_manual_${request.id}`);
+      const approvedRecord = {
+        empId: request.empId,
+        name: request.name || employee.name,
+        store: request.store || employee.store || "",
+        role: request.role || employee.role || "",
+        type: request.missingType,
+        time: approvedDate.toLocaleTimeString("zh-TW", { hour12: false }),
+        date: approvedDate.toLocaleDateString("zh-TW"),
+        dateKey,
+        device: request.device || "admin_manual_review",
+        isSupport: !!schedule.isSupport,
+        supportStore: schedule.supportStore || "",
+        createdAt: approvedPunchAt,
+        monthKey: getMonthValue(approvedPunchAt),
+        source: "missed_punch_approval",
+        requestId: request.id,
+        reviewedAt,
+      };
+      const employeeRecords = records
+        .filter((item) => item.empId === request.empId && item.id !== recordId)
+        .concat({ id: recordId, ...approvedRecord });
+      const latestRecord = [...employeeRecords]
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+      const nextStatus = getNextStatus(latestRecord?.type);
+
+      await update(ref(db), {
+        [`records/${recordId}`]: approvedRecord,
+        [`employees/${employee.id}/status`]: nextStatus,
+        [`employees/${employee.id}/lastAction`]: latestRecord?.type || "",
+        [`employees/${employee.id}/lastActionAt`]: latestRecord?.createdAt || 0,
+        [`employees/${employee.id}/updatedAt`]: reviewedAt,
+        [`missed_punch_requests/${request.id}/requestStatus`]: "approved",
+        [`missed_punch_requests/${request.id}/approvedPunchAt`]: approvedPunchAt,
+        [`missed_punch_requests/${request.id}/approvedRecordId`]: recordId,
+        [`missed_punch_requests/${request.id}/reviewedAt`]: reviewedAt,
+        [`missed_punch_requests/${request.id}/reviewedBy`]: "打卡系統管理員",
+        [`missed_punch_requests/${request.id}/updatedAt`]: reviewedAt,
+      });
+
+      const pointsSynced = await syncMissedPunchDecisionToPoints(request, "approved", reviewedAt, approvedPunchAt);
+      await update(ref(db, `missed_punch_requests/${request.id}`), {
+        pointsSyncStatus: pointsSynced ? "synced" : "failed",
+        pointsSyncedAt: pointsSynced ? Date.now() : 0,
+      });
+      alert(`${request.name || request.empId} 的「${request.missingType}」已補登${pointsSynced ? "，審核結果已同步積分系統" : "；積分系統同步失敗，但打卡資料已完成"}`);
+    } catch (error) {
+      console.error("核准忘打卡申請失敗：", error);
+      alert(`核准失敗：${error?.message || "請稍後再試"}`);
     } finally {
-      setMissedPunchSaving(false);
+      setMissedPunchReviewSavingId("");
+    }
+  };
+
+  const rejectMissedPunchRequest = async (request) => {
+    if (!request?.id || missedPunchReviewSavingId) return;
+    if (!window.confirm(`確定駁回 ${request.name || request.empId} 的「${request.missingType || "打卡"}」申請嗎？`)) return;
+    setMissedPunchReviewSavingId(request.id);
+    try {
+      const reviewedAt = Date.now();
+      await update(ref(db, `missed_punch_requests/${request.id}`), {
+        requestStatus: "rejected",
+        reviewedAt,
+        reviewedBy: "打卡系統管理員",
+        updatedAt: reviewedAt,
+      });
+      const pointsSynced = await syncMissedPunchDecisionToPoints(request, "rejected", reviewedAt);
+      await update(ref(db, `missed_punch_requests/${request.id}`), {
+        pointsSyncStatus: pointsSynced ? "synced" : "failed",
+        pointsSyncedAt: pointsSynced ? Date.now() : 0,
+      });
+    } catch (error) {
+      console.error("駁回忘打卡申請失敗：", error);
+      alert(`駁回失敗：${error?.message || "請稍後再試"}`);
+    } finally {
+      setMissedPunchReviewSavingId("");
     }
   };
 
@@ -3871,7 +4112,7 @@ ${url}`);
               <div style={styles.collapseContent}>
                 <div style={styles.listHeader}>
                   <div style={{ color: "#64748b", fontSize: 12, fontWeight: 700, lineHeight: 1.6 }}>
-                    忘打卡由積分系統審核；休息超時原因保留在打卡系統。
+                    忘打卡可直接在這裡修改時間、核准補登或駁回；完成後只把審核結果同步到積分系統。
                   </div>
                   <button
                     style={styles.refreshMiniBtn}
@@ -3893,12 +4134,12 @@ ${url}`);
               missedPunchRequests.slice(0, 20).map((request) => {
                 const statusMeta = getRequestStatusMeta(request.requestStatus);
                 return (
-                  <div key={`${request.storeId}-${request.id}`} style={styles.exceptionRecordCard}>
+                  <div key={request.id} style={styles.exceptionRecordCard}>
                     <div style={styles.exceptionRecordHeader}>
                       <div>
                         <div style={styles.employeeName}>{request.name || "未具名員工"}</div>
                         <div style={styles.employeeId}>
-                          {request.operatorStoreLabel || POINTS_STORE_LABELS[request.storeId] || "未填店名"}
+                          {request.operatorStoreLabel || request.store || "未填店名"} ・ {request.empId || "未填工號"}
                         </div>
                         <div style={{ ...styles.employeeId, marginTop: 6 }}>
                           申請時間：{formatAnyDateTime(request.createdAt || request.timestamp)}
@@ -3914,6 +4155,40 @@ ${url}`);
                     <div style={styles.exceptionReasonText}>
                       {request.note || `${request.missingType || "打卡"}忘打卡：未填原因`}
                     </div>
+                    {request.requestStatus === "pending" ? (
+                      <div style={{ marginTop: 12 }}>
+                        <div style={styles.deviceLabel}>核准補登時間</div>
+                        <input
+                          type="datetime-local"
+                          value={missedPunchReviewTimes[request.id] ?? request.requestDateTime ?? formatDateTimeLocalValue(request.requestedAt)}
+                          onChange={(e) => setMissedPunchReviewTimes((prev) => ({ ...prev, [request.id]: e.target.value }))}
+                          style={{ ...styles.modalInput, marginTop: 6 }}
+                        />
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                          <button
+                            style={styles.editBtn}
+                            disabled={missedPunchReviewSavingId === request.id}
+                            onClick={() => approveMissedPunchRequest(request)}
+                          >
+                            {missedPunchReviewSavingId === request.id ? "處理中…" : "核准並補登"}
+                          </button>
+                          <button
+                            style={styles.deleteBtn}
+                            disabled={missedPunchReviewSavingId === request.id}
+                            onClick={() => rejectMissedPunchRequest(request)}
+                          >
+                            駁回申請
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ ...styles.employeeId, marginTop: 10 }}>
+                        {request.requestStatus === "approved"
+                          ? `補登完成：${formatAnyDateTime(request.approvedPunchAt)}`
+                          : "此申請已駁回"}
+                        {request.pointsSyncStatus === "synced" ? " ・ 已同步積分系統" : request.pointsSyncStatus === "failed" ? " ・ 積分同步失敗" : ""}
+                      </div>
+                    )}
                   </div>
                 );
               })
