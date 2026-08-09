@@ -54,6 +54,11 @@ const roundToQuarterHour = (timestamp) => {
   return Math.round(timestamp / (15 * 60000)) * 15 * 60000;
 };
 
+const floorToMinute = (timestamp) => {
+  if (!timestamp) return null;
+  return Math.floor(timestamp / 60000) * 60000;
+};
+
 const columnLetter = (number) => {
   let value = number;
   let result = "";
@@ -162,13 +167,15 @@ export const buildFormulaWorkbook = ({ employees, records, schedulesByDate, days
       }
 
       const scheduledStart = schedule?.working ? scheduleTimestamp(day.dateKey, schedule.startTime) : null;
+      const scheduledStartMinute = floorToMinute(scheduledStart);
+      const actualWorkInMinute = floorToMinute(workIn?.createdAt);
       let correctedWorkIn = workIn?.createdAt || null;
-      if (workIn && scheduledStart && workIn.createdAt < scheduledStart) {
+      if (workIn && scheduledStartMinute && actualWorkInMinute < scheduledStartMinute) {
         correctedWorkIn = scheduledStart;
         workInCorrections.push([employee.name, day.dateKey, formatTime(workIn.createdAt), formatTime(scheduledStart), "早到依班表時間計薪"]);
         styleCell(cells[0], COLORS.corrected);
-      } else if (workIn && scheduledStart && workIn.createdAt > scheduledStart) {
-        lateRecords.push([employee.name, day.dateKey, formatTime(scheduledStart), formatTime(workIn.createdAt), minutesBetween(scheduledStart, workIn.createdAt)]);
+      } else if (workIn && scheduledStartMinute && actualWorkInMinute > scheduledStartMinute) {
+        lateRecords.push([employee.name, day.dateKey, formatTime(scheduledStart), formatTime(workIn.createdAt), minutesBetween(scheduledStartMinute, actualWorkInMinute)]);
         styleCell(cells[0], COLORS.exception);
       }
 
