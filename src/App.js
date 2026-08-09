@@ -4,6 +4,7 @@ import { ref, set, onValue, update, remove, get, query, orderByChild, limitToLas
 import { initializeApp, getApp, getApps } from "firebase/app";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import { getFirestore, collection as fsCollection, doc as fsDoc, getDocs, serverTimestamp, setDoc as fsSetDoc } from "firebase/firestore";
+import { exportFormulaWorkbook } from "./exportFormulaWorkbook";
 
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
@@ -2494,6 +2495,30 @@ ${url}`);
     }
   };
 
+  const exportMonthlyFormulaXLSX = async () => {
+    try {
+      const allRecords = await getAllRecordsForExport();
+      const targetMonthRecords = allRecords.filter((record) => {
+        const key = record.monthKey || getMonthValue(record.createdAt || Date.now());
+        return key === selectedMonth;
+      });
+      if (!targetMonthRecords.length) {
+        alert(`${selectedMonth} 沒有統計資料可匯出`);
+        return;
+      }
+      await exportFormulaWorkbook({
+        monthKey: selectedMonth,
+        employees,
+        records: targetMonthRecords,
+        schedulesByDate: await getAllSchedulesForMonth(selectedMonth),
+        days: getDaysInSelectedMonth(selectedMonth),
+      });
+    } catch (error) {
+      console.error("匯出公式版 Excel 失敗：", error);
+      alert("匯出公式版 Excel 失敗，請稍後再試");
+    }
+  };
+
   const toggleAdminPanel = (key) => {
     setAdminPanels((prev) => ({
       ...prev,
@@ -3835,6 +3860,10 @@ ${url}`);
 
             <button style={styles.fullOrangeBtn} onClick={exportMonthlyCSV}>
               匯出薪資核對版 Excel
+            </button>
+
+            <button style={{ ...styles.fullGreenBtn, marginTop: 10 }} onClick={exportMonthlyFormulaXLSX}>
+              下載公式版 Excel（6 工作表）
             </button>
           </div>
 
