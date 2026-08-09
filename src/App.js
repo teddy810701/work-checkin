@@ -3863,7 +3863,7 @@ ${url}`);
             </button>
 
             <button style={{ ...styles.fullGreenBtn, marginTop: 10 }} onClick={exportMonthlyFormulaXLSX}>
-              下載公式版 Excel（6 工作表）
+              薪資核定版（公式版）
             </button>
           </div>
 
