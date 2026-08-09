@@ -30,3 +30,19 @@ test("creates six formula worksheets and applies correction rules", async () => 
   const bytes = await workbook.xlsx.writeBuffer();
   expect(bytes.byteLength).toBeGreaterThan(1000);
 });
+
+test("does not mark a punch in the scheduled minute as late", () => {
+  const workbook = buildFormulaWorkbook({
+    employees: [{ empId: "002", name: "同分鐘員工", role: "正職", store: "西螺文昌店" }],
+    days: [{ day: 1, dateKey: "2026-08-01", label: "08/01" }],
+    schedulesByDate: {
+      "2026-08-01": { "002": { working: true, startTime: "05:30" } },
+    },
+    records: [
+      { empId: "002", dateKey: "2026-08-01", type: "上班", createdAt: new Date("2026-08-01T05:30:59+08:00").getTime() },
+      { empId: "002", dateKey: "2026-08-01", type: "下班", createdAt: new Date("2026-08-01T14:00:00+08:00").getTime() },
+    ],
+  });
+
+  expect(workbook.getWorksheet("遲到紀錄").rowCount).toBe(1);
+});
