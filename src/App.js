@@ -438,6 +438,16 @@ const savePendingAnomalies = (items) => {
   }
 };
 
+const normalizeSubsidyMultiplier = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.min(1, Math.max(0, Math.round(parsed * 1000) / 1000));
+};
+
+const applySubsidyMultiplier = (amount, multiplier) => (
+  Math.round(Math.max(0, Number(amount) || 0) * normalizeSubsidyMultiplier(multiplier))
+);
+
 
 export default function App() {
   const [authReady, setAuthReady] = useState(false);
@@ -447,6 +457,7 @@ export default function App() {
   const [employeeId, setEmployeeId] = useState("");
   const [scoreToast, setScoreToast] = useState(null);
   const [mealModalData, setMealModalData] = useState(null);
+  const [mealModalAccount, setMealModalAccount] = useState(null);
   const [mealAmount, setMealAmount] = useState("");
   const [mealSaving, setMealSaving] = useState(false);
   const [dailyAnnouncement, setDailyAnnouncement] = useState(null);
@@ -1471,6 +1482,48 @@ ${url}`);
     setTimeout(() => setScoreToast(null), 7000);
   };
 
+  const loadMealModalAccount = async (employee, dateKey) => {
+    const monthKey = getMonthKeyFromDateKey(dateKey);
+    const empKey = normalizeEmpId(employee.empId || employee.id);
+    setMealModalAccount({ loading: true, multiplier: 1, outstanding: 0, isPaid: false });
+
+    try {
+      const [mealsSnap, adjustmentSnap] = await Promise.all([
+        get(ref(db, "meal_records")),
+        get(ref(db, `meal_subsidy_adjustments/${monthKey}/${empKey}`)),
+      ]);
+      const meals = mealsSnap.val() || {};
+      const multiplier = normalizeSubsidyMultiplier(adjustmentSnap.val()?.multiplier);
+      let totalMeal = 0;
+      let totalSubsidy = 0;
+
+      Object.entries(meals).forEach(([key, item]) => {
+        if (key === "payments" || !item || typeof item !== "object") return;
+        if (getMonthKeyFromDateKey(item.dateKey) !== monthKey) return;
+        if (normalizeEmpId(item.empId) !== empKey) return;
+        totalMeal += Math.max(0, Number(item.mealAmount) || 0);
+        const approvalRequired = Boolean(item.approvalRequired);
+        const approved = !approvalRequired || (item.approvalStatus || "approved") === "approved";
+        if (!approved) return;
+        const baseSubsidy = item.baseSubsidyAmount !== undefined
+          ? Number(item.baseSubsidyAmount) || 0
+          : item.calculatedSubsidyAmount !== undefined
+            ? Number(item.calculatedSubsidyAmount) || 0
+            : item.workHours !== undefined
+              ? (Number(item.workHours) >= 6 ? 100 : Number(item.workHours) >= 4 ? 60 : 0)
+              : Number(item.subsidyAmount) || 0;
+        totalSubsidy += applySubsidyMultiplier(baseSubsidy, multiplier);
+      });
+
+      const isPaid = Boolean(meals?.payments?.[`${monthKey}_${employee.empId || employee.id}`]?.paid);
+      const outstanding = isPaid ? 0 : Math.round(Math.max(0, totalMeal - totalSubsidy) * 0.9);
+      setMealModalAccount({ loading: false, multiplier, outstanding, isPaid, totalMeal, totalSubsidy });
+    } catch (error) {
+      console.error("讀取員工餐月結失敗：", error);
+      setMealModalAccount({ loading: false, multiplier: 1, outstanding: 0, isPaid: false, error: true });
+    }
+  };
+
   const closeScoreToast = () => {
     setScoreToast(null);
   };
@@ -1513,7 +1566,9 @@ ${url}`);
         : 0;
       const workHours = Number((workMinutes / 60).toFixed(2));
       const breakHours = Number((breakMinutes / 60).toFixed(2));
-      const subsidyAmount = workHours >= 6 ? 100 : workHours >= 4 ? 60 : 0;
+      const baseSubsidyAmount = workHours >= 6 ? 100 : workHours >= 4 ? 60 : 0;
+      const subsidyMultiplier = normalizeSubsidyMultiplier(mealModalAccount?.multiplier);
+      const subsidyAmount = applySubsidyMultiplier(baseSubsidyAmount, subsidyMultiplier);
       const overAmount = Math.max(0, amount - subsidyAmount);
       const employeePay = Math.round(overAmount * 0.9);
 
@@ -1529,6 +1584,9 @@ ${url}`);
         workHours,
         breakHours,
         mealAmount: amount,
+        baseSubsidyAmount,
+        calculatedSubsidyAmount: subsidyAmount,
+        subsidyMultiplier,
         subsidyAmount,
         overAmount,
         discountRate: 0.9,
@@ -1537,11 +1595,12 @@ ${url}`);
         createdAt: nowTs,
         updatedAt: nowTs,
         source: "checkout",
-        rule: "未滿4小時0元；滿4小時未滿6小時60元；滿6小時以上100元；超出補貼部分打9折",
+        rule: "未滿4小時0元；滿4小時未滿6小時60元；滿6小時以上100元；當月補助依個人倍率調整；超出補貼部分打9折",
       });
 
       const finishedMealData = { ...mealModalData };
       setMealModalData(null);
+      setMealModalAccount(null);
       setMealAmount("");
 
       if (dailyAnnouncement?.content) {
@@ -1585,6 +1644,7 @@ ${url}`);
   const closeMealModalWithoutSaving = () => {
     if (mealSaving) return;
     setMealModalData(null);
+    setMealModalAccount(null);
     setMealAmount("");
   };
 
@@ -1762,6 +1822,7 @@ ${url}`);
           dateKey: formatTaipeiDateKey(createdAt),
           checkoutAt: createdAt,
         });
+        loadMealModalAccount(emp, formatTaipeiDateKey(createdAt));
         setMealAmount("");
       }
 
@@ -3194,6 +3255,18 @@ ${url}`);
               <div style={styles.modalTitle}>下班員工餐登記</div>
               <div style={styles.mealModalDesc}>
                 {mealModalData.name} 今天有吃員工餐嗎？請輸入金額，沒有吃就按「沒有吃」。
+              </div>
+              <div style={styles.mealAccountBox}>
+                {mealModalAccount?.loading ? (
+                  <span>正在計算本月員工餐欠款…</span>
+                ) : mealModalAccount?.error ? (
+                  <span>暫時無法讀取本月欠款，仍可先登記餐費。</span>
+                ) : (
+                  <>
+                    <b>目前尚欠：{mealModalAccount?.outstanding || 0} 元</b>
+                    <span>本月補助倍率 {mealModalAccount?.multiplier ?? 1}（{Math.round((mealModalAccount?.multiplier ?? 1) * 100)}%）{mealModalAccount?.isPaid ? "｜本月已收款" : ""}</span>
+                  </>
+                )}
               </div>
               <input
                 style={styles.mealAmountInput}
@@ -5830,6 +5903,17 @@ const styles = {
     fontWeight: 700,
     lineHeight: 1.7,
     marginBottom: 16,
+  },
+  mealAccountBox: {
+    display: "grid",
+    gap: 4,
+    padding: "12px 14px",
+    marginBottom: 14,
+    borderRadius: 14,
+    background: "#fef3c7",
+    color: "#92400e",
+    fontSize: 14,
+    lineHeight: 1.5,
   },
   mealAmountInput: {
     width: "100%",
