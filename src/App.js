@@ -798,11 +798,13 @@ ${message}
 
       // 新版：config/device/devices 可綁定多台設備。
       // 舊版：config/device/id 只有單台設備，這裡保留相容，避免更新後原本設備失效。
-      const nextDevices = data.devices || {};
+      const nextDevices = { ...(data.devices || {}) };
       if (data.id && !Object.values(nextDevices).some((item) => item?.id === data.id)) {
-        nextDevices["原本已綁定設備"] = {
+        const legacyStoreName = data.store || data.storeName || "西螺文昌店";
+        nextDevices[legacyStoreName] = {
           id: data.id,
           boundAt: data.boundAt || 0,
+          migratedFromLegacy: true,
         };
       }
 
