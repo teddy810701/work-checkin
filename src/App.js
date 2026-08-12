@@ -4151,9 +4151,7 @@ ${url}`);
         </button>
       </div>
 
-      <div className="admin-grid" style={styles.adminGrid}>
-        <div className="admin-left-col" style={styles.leftCol}>
-          <div className="admin-remote-voice-panel" style={styles.panelCard}>
+      <div className="admin-remote-voice-panel" style={{ ...styles.panelCard, marginBottom: 20 }}>
             <div style={styles.listHeader}>
               <div style={styles.panelTitle}>遠端平板語音播報</div>
               <div style={styles.badge}>🔊</div>
@@ -4233,8 +4231,10 @@ ${url}`);
                 </div>
               ) : null}
             </div>
-          </div>
+      </div>
 
+      <div className="admin-grid" style={styles.adminGrid}>
+        <div className="admin-left-col" style={styles.leftCol}>
           <div className="admin-announcement-panel" style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div style={styles.panelTitle}>每日員工公告</div>
