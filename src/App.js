@@ -18,6 +18,7 @@ const DEVICE_BIND_OPTIONS = [
   "老闆娘手機",
   "老闆電腦",
 ];
+const CHECKIN_AUDIO_ENABLED_KEY = "checkin_audio_enabled";
 
 // ===== 積分系統 Firebase（Firestore） =====
 // 這組是績效考核系統 Firebase，打卡系統會在打卡成功後讀取本月積分。
@@ -1352,6 +1353,7 @@ ${url}`);
 
   const unlockMobileAudio = (testVoice = false) => {
     try {
+      localStorage.setItem(CHECKIN_AUDIO_ENABLED_KEY, "true");
       const audioContext = getCheckInAudioContext();
       audioContext?.resume?.();
 
@@ -1406,6 +1408,34 @@ ${url}`);
       }, 1200);
     } catch (error) {
       console.error("語音播放失敗:", error);
+      playFallbackTone();
+    }
+  };
+
+  const speakLateEmployeesTwice = (employeeNames) => {
+    try {
+      if (!employeeNames.length) return;
+      if (!window.speechSynthesis) {
+        playFallbackTone();
+        return;
+      }
+
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.resume();
+      employeeNames.forEach((name) => {
+        const text = `${name}員工已超過上班打卡時間`;
+        for (let repeat = 0; repeat < 2; repeat += 1) {
+          const message = new SpeechSynthesisUtterance(text);
+          message.lang = "zh-TW";
+          message.rate = 1;
+          message.pitch = 1;
+          message.volume = 1;
+          message.onerror = playFallbackTone;
+          window.speechSynthesis.speak(message);
+        }
+      });
+    } catch (error) {
+      console.error("遲到語音提醒失敗:", error);
       playFallbackTone();
     }
   };
@@ -2850,6 +2880,31 @@ ${url}`);
       .filter(Boolean)
       .sort((a, b) => b.lateMinutes - a.lateMinutes);
   }, [todayScheduleList, firstWorkInByEmpToday, todayKey, nowTime]);
+
+  useEffect(() => {
+    if (!authReady || isAdmin || publicViewMode !== "checkin" || !isAuthorizedDevice) return;
+    if (localStorage.getItem(CHECKIN_AUDIO_ENABLED_KEY) !== "true") return;
+    const deviceStore = currentDeviceStoreName.includes("西螺")
+      ? "西螺"
+      : currentDeviceStoreName.includes("斗南")
+        ? "斗南"
+        : "";
+    if (!deviceStore) return;
+
+    const newlyLateEmployees = lateDashboardList.filter((item) => {
+      if (item.status !== "尚未打卡") return false;
+      const workStore = item.isSupport && item.supportStore ? item.supportStore : item.store;
+      if (!String(workStore || "").includes(deviceStore)) return false;
+      const reminderKey = `late_voice_${todayKey}_${safeFirebaseKey(item.empId)}_${item.startTime}`;
+      if (localStorage.getItem(reminderKey)) return false;
+      localStorage.setItem(reminderKey, String(Date.now()));
+      return true;
+    });
+
+    if (newlyLateEmployees.length > 0) {
+      speakLateEmployeesTwice(newlyLateEmployees.map((item) => item.name));
+    }
+  }, [authReady, isAdmin, publicViewMode, isAuthorizedDevice, currentDeviceStoreName, lateDashboardList, todayKey]);
 
   const dashboardStats = useMemo(() => {
     const scheduledCount = todayScheduleList.length;
