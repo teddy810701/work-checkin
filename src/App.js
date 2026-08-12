@@ -472,6 +472,10 @@ export default function App() {
   const [remoteVoiceSaving, setRemoteVoiceSaving] = useState(false);
   const [latestRemoteVoice, setLatestRemoteVoice] = useState(null);
   const [remoteVoiceReceipts, setRemoteVoiceReceipts] = useState({});
+  const [remoteRefreshTarget, setRemoteRefreshTarget] = useState("全部");
+  const [remoteRefreshSaving, setRemoteRefreshSaving] = useState(false);
+  const [latestRemoteRefresh, setLatestRemoteRefresh] = useState(null);
+  const [remoteRefreshReceipts, setRemoteRefreshReceipts] = useState({});
   const [missedPunchModal, setMissedPunchModal] = useState(null);
   const [missedPunchTime, setMissedPunchTime] = useState("");
   const [missedPunchReason, setMissedPunchReason] = useState("");
@@ -847,6 +851,46 @@ ${message}
       setRemoteVoiceReceipts(snap.val() || {});
     });
   }, [authReady, latestRemoteVoice?.id]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    return onValue(ref(db, "remote_refresh_commands/current"), (snap) => {
+      setLatestRemoteRefresh(snap.val() || null);
+    });
+  }, [authReady]);
+
+  useEffect(() => {
+    if (!authReady || !latestRemoteRefresh?.id) {
+      setRemoteRefreshReceipts({});
+      return;
+    }
+    return onValue(ref(db, `remote_refresh_receipts/${latestRemoteRefresh.id}`), (snap) => {
+      setRemoteRefreshReceipts(snap.val() || {});
+    });
+  }, [authReady, latestRemoteRefresh?.id]);
+
+  useEffect(() => {
+    if (!authReady || isAdmin || publicViewMode !== "checkin" || !isAuthorizedDevice || !latestRemoteRefresh?.id) return;
+    if (Number(latestRemoteRefresh.expiresAt || 0) < Date.now()) return;
+    const deviceStore = currentDeviceStoreName.includes("西螺")
+      ? "西螺"
+      : currentDeviceStoreName.includes("斗南")
+        ? "斗南"
+        : "";
+    if (!deviceStore || !["全部", deviceStore].includes(latestRemoteRefresh.targetStore)) return;
+    const handledKey = `remote_refresh_handled_${latestRemoteRefresh.id}`;
+    if (localStorage.getItem(handledKey)) return;
+
+    localStorage.setItem(handledKey, String(Date.now()));
+    set(ref(db, `remote_refresh_receipts/${latestRemoteRefresh.id}/${safeFirebaseKey(myDevice)}`), {
+      device: myDevice,
+      deviceLabel: currentDeviceStoreName,
+      receivedAt: Date.now(),
+      status: "reloading",
+    }).finally(() => {
+      window.setTimeout(() => window.location.reload(), 500);
+    });
+  }, [authReady, isAdmin, publicViewMode, isAuthorizedDevice, currentDeviceStoreName, latestRemoteRefresh, myDevice]);
 
   useEffect(() => {
     if (!authReady || !todayKey) return;
@@ -1822,6 +1866,31 @@ ${url}`);
       alert(`語音訊息送出失敗：${error.message || "請稍後再試"}`);
     } finally {
       setRemoteVoiceSaving(false);
+    }
+  };
+
+  const sendRemoteRefresh = async () => {
+    if (!isAdmin || remoteRefreshSaving) return;
+    const targetLabel = remoteRefreshTarget === "全部" ? "兩間店平板" : `${remoteRefreshTarget}平板`;
+    if (!window.confirm(`確定要遠端重新整理${targetLabel}的打卡系統嗎？`)) return;
+
+    setRemoteRefreshSaving(true);
+    try {
+      const createdAt = Date.now();
+      const id = String(createdAt);
+      await set(ref(db, "remote_refresh_commands/current"), {
+        id,
+        targetStore: remoteRefreshTarget,
+        createdAt,
+        expiresAt: createdAt + 10 * 60 * 1000,
+        sentBy: "admin",
+      });
+      alert("重新整理指令已送出，平板連線後會自動重載打卡頁面");
+    } catch (error) {
+      console.error("遠端重新整理指令送出失敗:", error);
+      alert(`重新整理指令送出失敗：${error.message || "請稍後再試"}`);
+    } finally {
+      setRemoteRefreshSaving(false);
     }
   };
 
@@ -4136,6 +4205,34 @@ ${url}`);
                 已收到 {Object.keys(remoteVoiceReceipts).length} 台｜{latestRemoteVoice.text}
               </div>
             ) : null}
+            <div style={{ borderTop: "1px solid #e2e8f0", marginTop: 16, paddingTop: 16 }}>
+              <div style={{ ...styles.deviceLabel, marginBottom: 8 }}>遠端重新整理打卡頁面</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10 }}>
+                <select
+                  value={remoteRefreshTarget}
+                  onChange={(event) => setRemoteRefreshTarget(event.target.value)}
+                  style={styles.monthInput}
+                  aria-label="重新整理店別"
+                >
+                  <option value="全部">兩間店</option>
+                  <option value="西螺">西螺平板</option>
+                  <option value="斗南">斗南平板</option>
+                </select>
+                <button
+                  style={{ ...styles.fullMainBtn, width: "auto", background: "linear-gradient(135deg, #f97316, #ea580c)", opacity: remoteRefreshSaving ? 0.7 : 1 }}
+                  onClick={sendRemoteRefresh}
+                  disabled={remoteRefreshSaving}
+                >
+                  {remoteRefreshSaving ? "傳送中…" : "遠端重新整理"}
+                </button>
+              </div>
+              {latestRemoteRefresh ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: "#64748b" }}>
+                  最近指令：{latestRemoteRefresh.targetStore === "全部" ? "兩間店" : latestRemoteRefresh.targetStore}｜
+                  已回報 {Object.keys(remoteRefreshReceipts).length} 台
+                </div>
+              ) : null}
+            </div>
           </div>
 
           <div className="admin-announcement-panel" style={styles.panelCard}>
