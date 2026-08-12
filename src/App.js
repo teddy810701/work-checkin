@@ -466,6 +466,12 @@ export default function App() {
   const [announcementDate, setAnnouncementDate] = useState(formatTaipeiDateKey());
   const [announcementContent, setAnnouncementContent] = useState("");
   const [announcementSaving, setAnnouncementSaving] = useState(false);
+  const [remoteVoiceText, setRemoteVoiceText] = useState("");
+  const [remoteVoiceTarget, setRemoteVoiceTarget] = useState("全部");
+  const [remoteVoiceRepeats, setRemoteVoiceRepeats] = useState(1);
+  const [remoteVoiceSaving, setRemoteVoiceSaving] = useState(false);
+  const [latestRemoteVoice, setLatestRemoteVoice] = useState(null);
+  const [remoteVoiceReceipts, setRemoteVoiceReceipts] = useState({});
   const [missedPunchModal, setMissedPunchModal] = useState(null);
   const [missedPunchTime, setMissedPunchTime] = useState("");
   const [missedPunchReason, setMissedPunchReason] = useState("");
@@ -822,6 +828,23 @@ ${message}
       setTodayScheduleData(snap.val() || {});
     });
   }, [authReady, todayKey]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    return onValue(ref(db, "remote_voice_broadcasts/current"), (snap) => {
+      setLatestRemoteVoice(snap.val() || null);
+    });
+  }, [authReady]);
+
+  useEffect(() => {
+    if (!authReady || !latestRemoteVoice?.id) {
+      setRemoteVoiceReceipts({});
+      return;
+    }
+    return onValue(ref(db, `remote_voice_receipts/${latestRemoteVoice.id}`), (snap) => {
+      setRemoteVoiceReceipts(snap.val() || {});
+    });
+  }, [authReady, latestRemoteVoice?.id]);
 
   useEffect(() => {
     if (!authReady || !todayKey) return;
@@ -1443,6 +1466,48 @@ ${url}`);
     }
   };
 
+  const playRemoteVoice = (text, repeats) => {
+    if (!text) return;
+    if (!window.speechSynthesis) {
+      playFallbackTone();
+      return;
+    }
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.resume();
+    for (let repeat = 0; repeat < repeats; repeat += 1) {
+      const message = new SpeechSynthesisUtterance(text);
+      message.lang = "zh-TW";
+      message.rate = 1;
+      message.pitch = 1;
+      message.volume = 1;
+      message.onerror = playFallbackTone;
+      window.speechSynthesis.speak(message);
+    }
+  };
+
+  useEffect(() => {
+    if (!authReady || isAdmin || publicViewMode !== "checkin" || !isAuthorizedDevice || !latestRemoteVoice?.id) return;
+    if (localStorage.getItem(CHECKIN_AUDIO_ENABLED_KEY) !== "true") return;
+    if (Number(latestRemoteVoice.expiresAt || 0) < Date.now()) return;
+    const deviceStore = currentDeviceStoreName.includes("西螺")
+      ? "西螺"
+      : currentDeviceStoreName.includes("斗南")
+        ? "斗南"
+        : "";
+    if (!deviceStore || !["全部", deviceStore].includes(latestRemoteVoice.targetStore)) return;
+    const playedKey = `remote_voice_played_${latestRemoteVoice.id}`;
+    if (localStorage.getItem(playedKey)) return;
+
+    localStorage.setItem(playedKey, String(Date.now()));
+    playRemoteVoice(latestRemoteVoice.text, Math.min(3, Math.max(1, Number(latestRemoteVoice.repeats) || 1)));
+    set(ref(db, `remote_voice_receipts/${latestRemoteVoice.id}/${safeFirebaseKey(myDevice)}`), {
+      device: myDevice,
+      deviceLabel: currentDeviceStoreName,
+      receivedAt: Date.now(),
+      status: "played",
+    }).catch((error) => console.error("遠端語音回報失敗:", error));
+  }, [authReady, isAdmin, publicViewMode, isAuthorizedDevice, currentDeviceStoreName, latestRemoteVoice, myDevice]);
+
   useEffect(() => {
     if (!authReady || isAdmin || breakReminderModal || missedPunchModal || lateCheckInModal || lateDrinkModal || longBreakModal) return;
 
@@ -1720,6 +1785,41 @@ ${url}`);
       alert(`儲存公告失敗：${error.message || "請稍後再試"}`);
     } finally {
       setAnnouncementSaving(false);
+    }
+  };
+
+  const sendRemoteVoice = async () => {
+    if (!isAdmin) return;
+    const text = remoteVoiceText.trim();
+    if (!text) {
+      alert("請輸入要讓平板播報的文字");
+      return;
+    }
+    if (text.length > 200) {
+      alert("播報內容請控制在 200 個字以內");
+      return;
+    }
+
+    setRemoteVoiceSaving(true);
+    try {
+      const createdAt = Date.now();
+      const id = String(createdAt);
+      await set(ref(db, "remote_voice_broadcasts/current"), {
+        id,
+        text,
+        targetStore: remoteVoiceTarget,
+        repeats: Math.min(3, Math.max(1, Number(remoteVoiceRepeats) || 1)),
+        createdAt,
+        expiresAt: createdAt + 10 * 60 * 1000,
+        sentBy: "admin",
+      });
+      setRemoteVoiceText("");
+      alert("語音訊息已送出，目標平板連線後會立即播放");
+    } catch (error) {
+      console.error("遠端語音送出失敗:", error);
+      alert(`語音訊息送出失敗：${error.message || "請稍後再試"}`);
+    } finally {
+      setRemoteVoiceSaving(false);
     }
   };
 
@@ -3982,6 +4082,60 @@ ${url}`);
 
       <div className="admin-grid" style={styles.adminGrid}>
         <div className="admin-left-col" style={styles.leftCol}>
+          <div className="admin-remote-voice-panel" style={styles.panelCard}>
+            <div style={styles.listHeader}>
+              <div style={styles.panelTitle}>遠端平板語音播報</div>
+              <div style={styles.badge}>🔊</div>
+            </div>
+            <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, marginBottom: 12 }}>
+              只有管理員後台能輸入訊息；公司平板保持打卡頁開啟且已啟用聲音時會立即朗讀。
+            </div>
+            <textarea
+              value={remoteVoiceText}
+              onChange={(event) => setRemoteVoiceText(event.target.value)}
+              placeholder="輸入要讓公司平板說出的內容"
+              rows={4}
+              maxLength={200}
+              style={styles.announcementTextarea}
+              aria-label="遠端語音內容"
+            />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
+              <select
+                value={remoteVoiceTarget}
+                onChange={(event) => setRemoteVoiceTarget(event.target.value)}
+                style={styles.monthInput}
+                aria-label="播報店別"
+              >
+                <option value="全部">兩間店</option>
+                <option value="西螺">西螺平板</option>
+                <option value="斗南">斗南平板</option>
+              </select>
+              <select
+                value={remoteVoiceRepeats}
+                onChange={(event) => setRemoteVoiceRepeats(Number(event.target.value))}
+                style={styles.monthInput}
+                aria-label="播放次數"
+              >
+                <option value={1}>播放 1 次</option>
+                <option value={2}>播放 2 次</option>
+                <option value={3}>播放 3 次</option>
+              </select>
+            </div>
+            <button
+              style={{ ...styles.fullMainBtn, marginTop: 12, opacity: remoteVoiceSaving ? 0.7 : 1 }}
+              onClick={sendRemoteVoice}
+              disabled={remoteVoiceSaving}
+            >
+              {remoteVoiceSaving ? "傳送中…" : "立即語音播報"}
+            </button>
+            {latestRemoteVoice ? (
+              <div style={{ marginTop: 10, fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>
+                最近送出：{latestRemoteVoice.targetStore === "全部" ? "兩間店" : latestRemoteVoice.targetStore}｜
+                已收到 {Object.keys(remoteVoiceReceipts).length} 台｜{latestRemoteVoice.text}
+              </div>
+            ) : null}
+          </div>
+
           <div className="admin-announcement-panel" style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div style={styles.panelTitle}>每日員工公告</div>
