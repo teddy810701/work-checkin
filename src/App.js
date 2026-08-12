@@ -5,6 +5,7 @@ import { initializeApp, getApp, getApps } from "firebase/app";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import { getFirestore, collection as fsCollection, doc as fsDoc, getDocs, serverTimestamp, setDoc as fsSetDoc } from "firebase/firestore";
 import { exportFormulaWorkbook } from "./exportFormulaWorkbook";
+import { buildMonthlyArchive } from "./monthlyArchive";
 
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
@@ -2621,36 +2622,94 @@ ${url}`);
     return getMonthValue(d.getTime());
   };
 
-  const deleteLastMonthRecords = async () => {
+  const archiveAndDeleteLastMonthRecords = async () => {
     const monthKey = getLastMonthKey();
-    const password = window.prompt("請輸入刪除密碼");
+    const password = window.prompt("請輸入管理員密碼，開始封存上個月資料");
 
     if (password !== "8888") {
-      alert("密碼錯誤，已取消刪除");
+      alert("密碼錯誤，已取消封存");
       return;
     }
 
-    const ok = window.confirm(`確定要刪除 ${monthKey} 的全部打卡紀錄嗎？此動作無法復原。`);
-    if (!ok) return;
-
     try {
-      const snap = await get(ref(db, "records"));
-      const data = snap.val() || {};
-      const targets = Object.entries(data).filter(([_, value]) => {
+      const [recordSnap, scheduleSnap] = await Promise.all([
+        get(ref(db, "records")),
+        get(ref(db, "schedules")),
+      ]);
+      const data = recordSnap.val() || {};
+      const targets = Object.fromEntries(Object.entries(data).filter(([_, value]) => {
         const key = value?.monthKey || getMonthValue(value?.createdAt || Date.now());
         return key === monthKey;
-      });
+      }));
 
-      if (!targets.length) {
-        alert(`${monthKey} 沒有可刪除的打卡紀錄`);
+      if (!Object.keys(targets).length) {
+        alert(`${monthKey} 沒有可封存的打卡紀錄`);
         return;
       }
 
-      await Promise.all(targets.map(([id]) => remove(ref(db, `records/${id}`))));
-      alert(`已刪除 ${monthKey} 的 ${targets.length} 筆打卡紀錄`);
+      const archivedAt = Date.now();
+      const archive = buildMonthlyArchive({
+        monthKey,
+        recordsById: targets,
+        schedules: scheduleSnap.val() || {},
+        archivedAt,
+      });
+      const ok = window.confirm(
+        `${monthKey} 將先封存再清除常用打卡資料：\n` +
+        `原始打卡 ${archive.manifest.sourceRecordCount} 筆\n` +
+        `每日工時快照 ${archive.manifest.snapshotDayCount} 筆\n` +
+        `可計算 ${archive.manifest.completeDayCount} 天、異常 ${archive.manifest.incompleteDayCount} 天\n` +
+        `員工餐補助合計 ${archive.manifest.subsidyTotal} 元\n\n` +
+        "封存與驗證成功後才會清除常用區，原始資料仍可復原。是否繼續？"
+      );
+      if (!ok) return;
+
+      const archiveUpdates = {};
+      Object.entries(archive.rawRecords).forEach(([id, record]) => {
+        archiveUpdates[`attendance_archives/${monthKey}/records/${id}`] = record;
+      });
+      Object.entries(archive.schedules).forEach(([dateKey, schedule]) => {
+        archiveUpdates[`attendance_archives/${monthKey}/schedules/${dateKey}`] = schedule;
+      });
+      Object.entries(archive.days).forEach(([dayKey, snapshot]) => {
+        archiveUpdates[`monthly_attendance_snapshots/${monthKey}/days/${dayKey}`] = snapshot;
+      });
+      archiveUpdates[`attendance_archives/${monthKey}/manifest`] = archive.manifest;
+      archiveUpdates[`monthly_attendance_snapshots/${monthKey}/manifest`] = archive.manifest;
+      await update(ref(db), archiveUpdates);
+
+      const [rawVerifySnap, dayVerifySnap, manifestVerifySnap] = await Promise.all([
+        get(ref(db, `attendance_archives/${monthKey}/records`)),
+        get(ref(db, `monthly_attendance_snapshots/${monthKey}/days`)),
+        get(ref(db, `monthly_attendance_snapshots/${monthKey}/manifest`)),
+      ]);
+      const verifiedRawCount = Object.keys(rawVerifySnap.val() || {}).length;
+      const verifiedDayCount = Object.keys(dayVerifySnap.val() || {}).length;
+      const verifiedManifest = manifestVerifySnap.val() || {};
+      if (
+        verifiedRawCount !== archive.manifest.sourceRecordCount ||
+        verifiedDayCount !== archive.manifest.snapshotDayCount ||
+        Number(verifiedManifest.subsidyTotal) !== archive.manifest.subsidyTotal
+      ) {
+        throw new Error("封存驗證失敗，常用打卡資料未清除");
+      }
+
+      const cleanupUpdates = {};
+      Object.keys(targets).forEach((id) => {
+        cleanupUpdates[`records/${id}`] = null;
+      });
+      cleanupUpdates[`attendance_archives/${monthKey}/manifest/status`] = "cleaned";
+      cleanupUpdates[`attendance_archives/${monthKey}/manifest/cleanedAt`] = Date.now();
+      cleanupUpdates[`monthly_attendance_snapshots/${monthKey}/manifest/status`] = "cleaned";
+      cleanupUpdates[`monthly_attendance_snapshots/${monthKey}/manifest/cleanedAt`] = Date.now();
+      await update(ref(db), cleanupUpdates);
+      alert(
+        `${monthKey} 月結完成：已封存 ${verifiedRawCount} 筆原始打卡、` +
+        `${verifiedDayCount} 筆每日快照，並從常用區清除。資料可復原。`
+      );
     } catch (error) {
       console.error(error);
-      alert("刪除上個月打卡紀錄失敗");
+      alert(`封存或驗證失敗，沒有清除常用打卡資料：${error?.message || "請稍後再試"}`);
     }
   };
 
@@ -4264,8 +4323,8 @@ ${url}`);
                 onChange={(e) => setRecordSearch(e.target.value)}
                 style={styles.recordFilterInput}
               />
-              <button style={styles.recordDangerBtn} onClick={deleteLastMonthRecords}>
-                刪除上個月打卡紀錄
+              <button style={styles.recordDangerBtn} onClick={archiveAndDeleteLastMonthRecords}>
+                封存並清除上個月
               </button>
             </div>
 
