@@ -471,6 +471,9 @@ export default function App() {
   const [missedPunchReason, setMissedPunchReason] = useState("");
   const [missedPunchSaving, setMissedPunchSaving] = useState(false);
   const [lateCheckInModal, setLateCheckInModal] = useState(null);
+  const [lateDrinkModal, setLateDrinkModal] = useState(null);
+  const [lateDrinkReason, setLateDrinkReason] = useState("");
+  const [lateDrinkMakeUpAt, setLateDrinkMakeUpAt] = useState("");
   const [longBreakModal, setLongBreakModal] = useState(null);
   const [longBreakReason, setLongBreakReason] = useState("");
   const [breakReminderModal, setBreakReminderModal] = useState(null);
@@ -1441,7 +1444,7 @@ ${url}`);
   };
 
   useEffect(() => {
-    if (!authReady || isAdmin || breakReminderModal || missedPunchModal || lateCheckInModal || longBreakModal) return;
+    if (!authReady || isAdmin || breakReminderModal || missedPunchModal || lateCheckInModal || lateDrinkModal || longBreakModal) return;
 
     const restingEmployees = employees.filter((emp) => emp.status === "休息中");
     for (const emp of restingEmployees) {
@@ -1474,7 +1477,7 @@ ${url}`);
         : `${emp.name}休息時間已到，請打休息結束卡`);
       break;
     }
-  }, [authReady, isAdmin, nowTime, employees, todayRecords, todayKey, breakReminderModal, missedPunchModal, lateCheckInModal, longBreakModal]);
+  }, [authReady, isAdmin, nowTime, employees, todayRecords, todayKey, breakReminderModal, missedPunchModal, lateCheckInModal, lateDrinkModal, longBreakModal]);
 
   useEffect(() => {
     if (!breakReminderModal) return;
@@ -1748,6 +1751,50 @@ ${url}`);
     setMissedPunchReason("");
   };
 
+  const getEmployeeTodayLateMinutes = (emp) => {
+    const empId = normalizeEmpId(emp.empId || emp.id);
+    const schedule = todayScheduleData?.[emp.empId || emp.id] || todayScheduleData?.[empId];
+    if (!schedule?.working || !schedule?.startTime) return 0;
+    const firstWorkIn = todayRecords
+      .filter((record) => normalizeEmpId(record.empId) === empId && record.type === "上班")
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))[0];
+    if (!firstWorkIn?.createdAt) return 0;
+    const scheduledAt = getTaipeiTimestampFromDateTime(todayKey, schedule.startTime);
+    return scheduledAt ? Math.max(0, Math.floor((firstWorkIn.createdAt - scheduledAt) / 60000)) : 0;
+  };
+
+  const continueLateCheckout = (treated) => {
+    if (!lateDrinkModal) return;
+    const reason = lateDrinkReason.trim();
+    if (!treated && !reason) {
+      alert("請填寫今天尚未請飲料的原因");
+      return;
+    }
+    if (!treated && !lateDrinkMakeUpAt) {
+      alert("請填寫預計什麼時候補請");
+      return;
+    }
+    if (!treated && datetimeLocalToTimestamp(lateDrinkMakeUpAt) <= Date.now()) {
+      alert("補請時間必須晚於現在");
+      return;
+    }
+
+    const { emp, lateMinutes } = lateDrinkModal;
+    setLateDrinkModal(null);
+    setLateDrinkReason("");
+    setLateDrinkMakeUpAt("");
+    checkIn("下班", {
+      emp,
+      skipDrinkConfirmation: true,
+      drinkFollowup: {
+        treated,
+        reason: treated ? "" : reason,
+        makeUpAt: treated ? "" : lateDrinkMakeUpAt,
+        lateMinutes,
+      },
+    });
+  };
+
   const checkIn = async (type, options = {}) => {
     // 手機與平板要求音訊必須在使用者點擊當下解鎖，不能等 Firebase 查詢完成後才啟動。
     unlockMobileAudio();
@@ -1803,6 +1850,16 @@ ${url}`);
       }
     }
 
+    if (type === "下班" && !options.skipDrinkConfirmation) {
+      const lateMinutes = getEmployeeTodayLateMinutes(emp);
+      if (lateMinutes > 0) {
+        setLateDrinkModal({ emp, lateMinutes });
+        setLateDrinkReason("");
+        setLateDrinkMakeUpAt("");
+        return;
+      }
+    }
+
     const lastRecord = records.find(
       (r) => (r.empId === (emp.empId || emp.id))
     );
@@ -1845,13 +1902,31 @@ ${url}`);
       };
 
       // 紀錄與員工狀態必須同時成功，避免只寫入其中一邊造成畫面仍顯示未打卡。
-      await update(ref(db), {
+      const checkInUpdates = {
         [`records/${recordId}`]: record,
         [`employees/${emp.id}/status`]: newStatus,
         [`employees/${emp.id}/lastAction`]: type,
         [`employees/${emp.id}/lastActionAt`]: createdAt,
         [`employees/${emp.id}/updatedAt`]: createdAt,
-      });
+      };
+      if (type === "下班" && options.drinkFollowup) {
+        checkInUpdates[`late_drink_followups/${dateKey}/${safeFirebaseKey(emp.empId || emp.id)}`] = {
+          empId: emp.empId || emp.id,
+          name: emp.name || "",
+          store: todaySchedule.isSupport && todaySchedule.supportStore
+            ? todaySchedule.supportStore
+            : (emp.store || ""),
+          dateKey,
+          lateMinutes: options.drinkFollowup.lateMinutes || 0,
+          treated: Boolean(options.drinkFollowup.treated),
+          reason: options.drinkFollowup.reason || "",
+          makeUpAt: options.drinkFollowup.makeUpAt || "",
+          checkoutAt: createdAt,
+          createdAt,
+          updatedAt: createdAt,
+        };
+      }
+      await update(ref(db), checkInUpdates);
 
       setEmployeeId("");
 
@@ -3208,6 +3283,63 @@ ${url}`);
                   取消
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {lateDrinkModal && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.modalCard}>
+              <div style={{ fontSize: 46, textAlign: "center", marginBottom: 8 }}>🥤</div>
+              <div style={styles.modalTitle}>遲到飲料確認</div>
+              <div style={{ color: "#475569", lineHeight: 1.7, marginBottom: 16, textAlign: "center" }}>
+                {lateDrinkModal.emp.name} 今天遲到 {lateDrinkModal.lateMinutes} 分鐘。<br />
+                今天有請大家喝飲料嗎？
+              </div>
+              <button
+                style={{ ...styles.modalLoginBtn, width: "100%", marginBottom: 16 }}
+                onClick={() => continueLateCheckout(true)}
+                disabled={checkInSaving}
+              >
+                是，今天已經請了
+              </button>
+              <div style={{ borderTop: "1px solid #e2e8f0", paddingTop: 16 }}>
+                <div style={{ color: "#92400e", fontWeight: 900, marginBottom: 10 }}>否，尚未請飲料</div>
+                <input
+                  style={{ ...styles.bigInput, marginBottom: 10 }}
+                  value={lateDrinkReason}
+                  onChange={(event) => setLateDrinkReason(event.target.value)}
+                  placeholder="請填寫原因"
+                  aria-label="尚未請飲料的原因"
+                />
+                <div style={{ color: "#475569", fontWeight: 800, marginBottom: 6 }}>預計補請時間</div>
+                <input
+                  style={{ ...styles.bigInput, marginBottom: 12 }}
+                  type="datetime-local"
+                  min={formatDateTimeLocalValue(Date.now())}
+                  value={lateDrinkMakeUpAt}
+                  onChange={(event) => setLateDrinkMakeUpAt(event.target.value)}
+                  aria-label="預計補請時間"
+                />
+                <button
+                  style={{ ...styles.modalLoginBtn, width: "100%", background: "linear-gradient(135deg, #f97316, #ea580c)" }}
+                  onClick={() => continueLateCheckout(false)}
+                  disabled={checkInSaving}
+                >
+                  儲存原因並完成下班打卡
+                </button>
+              </div>
+              <button
+                style={{ ...styles.mealLaterBtn, width: "100%", marginTop: 10 }}
+                onClick={() => {
+                  setLateDrinkModal(null);
+                  setLateDrinkReason("");
+                  setLateDrinkMakeUpAt("");
+                }}
+                disabled={checkInSaving}
+              >
+                取消下班打卡
+              </button>
             </div>
           </div>
         )}
