@@ -1485,23 +1485,24 @@ ${url}`);
   const loadMealModalAccount = async (employee, dateKey) => {
     const monthKey = getMonthKeyFromDateKey(dateKey);
     const empKey = normalizeEmpId(employee.empId || employee.id);
-    setMealModalAccount({ loading: true, multiplier: 1, outstanding: 0, isPaid: false });
+    setMealModalAccount({ loading: true, multiplier: 1, outstanding: 0, previousDebts: [] });
 
     try {
-      const [mealsSnap, adjustmentSnap] = await Promise.all([
+      const [mealsSnap, adjustmentsSnap] = await Promise.all([
         get(ref(db, "meal_records")),
-        get(ref(db, `meal_subsidy_adjustments/${monthKey}/${empKey}`)),
+        get(ref(db, "meal_subsidy_adjustments")),
       ]);
       const meals = mealsSnap.val() || {};
-      const multiplier = normalizeSubsidyMultiplier(adjustmentSnap.val()?.multiplier);
-      let totalMeal = 0;
-      let totalSubsidy = 0;
+      const adjustments = adjustmentsSnap.val() || {};
+      const monthlyTotals = {};
 
       Object.entries(meals).forEach(([key, item]) => {
         if (key === "payments" || !item || typeof item !== "object") return;
-        if (getMonthKeyFromDateKey(item.dateKey) !== monthKey) return;
         if (normalizeEmpId(item.empId) !== empKey) return;
-        totalMeal += Math.max(0, Number(item.mealAmount) || 0);
+        const itemMonthKey = getMonthKeyFromDateKey(item.dateKey);
+        if (!itemMonthKey || itemMonthKey < "2026-06" || itemMonthKey > monthKey) return;
+        if (!monthlyTotals[itemMonthKey]) monthlyTotals[itemMonthKey] = { totalMeal: 0, totalSubsidy: 0 };
+        monthlyTotals[itemMonthKey].totalMeal += Math.max(0, Number(item.mealAmount) || 0);
         const approvalRequired = Boolean(item.approvalRequired);
         const approved = !approvalRequired || (item.approvalStatus || "approved") === "approved";
         if (!approved) return;
@@ -1512,15 +1513,26 @@ ${url}`);
             : item.workHours !== undefined
               ? (Number(item.workHours) >= 6 ? 100 : Number(item.workHours) >= 4 ? 60 : 0)
               : Number(item.subsidyAmount) || 0;
-        totalSubsidy += applySubsidyMultiplier(baseSubsidy, multiplier);
+        const itemMultiplier = normalizeSubsidyMultiplier(adjustments?.[itemMonthKey]?.[empKey]?.multiplier);
+        monthlyTotals[itemMonthKey].totalSubsidy += applySubsidyMultiplier(baseSubsidy, itemMultiplier);
       });
 
-      const isPaid = Boolean(meals?.payments?.[`${monthKey}_${employee.empId || employee.id}`]?.paid);
-      const outstanding = isPaid ? 0 : Math.round(Math.max(0, totalMeal - totalSubsidy) * 0.9);
-      setMealModalAccount({ loading: false, multiplier, outstanding, isPaid, totalMeal, totalSubsidy });
+      const getMonthDebt = (targetMonth) => {
+        const totals = monthlyTotals[targetMonth] || { totalMeal: 0, totalSubsidy: 0 };
+        const payment = meals?.payments?.[`${targetMonth}_${employee.empId || employee.id}`]
+          || meals?.payments?.[`${targetMonth}_${empKey}`];
+        return payment?.paid ? 0 : Math.round(Math.max(0, totals.totalMeal - totals.totalSubsidy) * 0.9);
+      };
+      const previousDebts = Object.keys(monthlyTotals)
+        .filter((itemMonthKey) => itemMonthKey < monthKey)
+        .map((itemMonthKey) => ({ monthKey: itemMonthKey, amount: getMonthDebt(itemMonthKey) }))
+        .filter((item) => item.amount > 0)
+        .sort((a, b) => a.monthKey.localeCompare(b.monthKey));
+      const multiplier = normalizeSubsidyMultiplier(adjustments?.[monthKey]?.[empKey]?.multiplier);
+      setMealModalAccount({ loading: false, multiplier, outstanding: getMonthDebt(monthKey), previousDebts });
     } catch (error) {
       console.error("讀取員工餐月結失敗：", error);
-      setMealModalAccount({ loading: false, multiplier: 1, outstanding: 0, isPaid: false, error: true });
+      setMealModalAccount({ loading: false, multiplier: 1, outstanding: 0, previousDebts: [], error: true });
     }
   };
 
@@ -3258,13 +3270,20 @@ ${url}`);
               </div>
               <div style={styles.mealAccountBox}>
                 {mealModalAccount?.loading ? (
-                  <span>正在計算本月員工餐欠款…</span>
+                  <span>正在計算各月份員工餐欠款…</span>
                 ) : mealModalAccount?.error ? (
                   <span>暫時無法讀取本月欠款，仍可先登記餐費。</span>
                 ) : (
                   <>
-                    <b>目前尚欠：{mealModalAccount?.outstanding || 0} 元</b>
-                    <span>本月補助倍率 {mealModalAccount?.multiplier ?? 1}（{Math.round((mealModalAccount?.multiplier ?? 1) * 100)}%）{mealModalAccount?.isPaid ? "｜本月已收款" : ""}</span>
+                    {(mealModalAccount?.previousDebts || []).length > 0 ? (
+                      <>
+                        <b>尚未繳清月份</b>
+                        {mealModalAccount.previousDebts.map((item) => (
+                          <span key={item.monthKey}>{Number(item.monthKey.slice(5))} 月尚欠：{item.amount} 元</span>
+                        ))}
+                      </>
+                    ) : <span>之前月份皆無欠款</span>}
+                    <b>本月目前尚欠：{mealModalAccount?.outstanding || 0} 元</b>
                   </>
                 )}
               </div>
