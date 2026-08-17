@@ -4,6 +4,8 @@ import { ref, set, onValue, update, remove, get, query, orderByChild, limitToLas
 import { initializeApp, getApp, getApps } from "firebase/app";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import { getFirestore, collection as fsCollection, doc as fsDoc, getDocs, serverTimestamp, setDoc as fsSetDoc } from "firebase/firestore";
+import { exportFormulaWorkbook } from "./exportFormulaWorkbook";
+import { buildMonthlyArchive } from "./monthlyArchive";
 
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
@@ -16,6 +18,7 @@ const DEVICE_BIND_OPTIONS = [
   "老闆娘手機",
   "老闆電腦",
 ];
+const CHECKIN_AUDIO_ENABLED_KEY = "checkin_audio_enabled";
 
 // ===== 積分系統 Firebase（Firestore） =====
 // 這組是績效考核系統 Firebase，打卡系統會在打卡成功後讀取本月積分。
@@ -436,6 +439,16 @@ const savePendingAnomalies = (items) => {
   }
 };
 
+const normalizeSubsidyMultiplier = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.min(1, Math.max(0, Math.round(parsed * 1000) / 1000));
+};
+
+const applySubsidyMultiplier = (amount, multiplier) => (
+  Math.round(Math.max(0, Number(amount) || 0) * normalizeSubsidyMultiplier(multiplier))
+);
+
 
 export default function App() {
   const [authReady, setAuthReady] = useState(false);
@@ -445,6 +458,7 @@ export default function App() {
   const [employeeId, setEmployeeId] = useState("");
   const [scoreToast, setScoreToast] = useState(null);
   const [mealModalData, setMealModalData] = useState(null);
+  const [mealModalAccount, setMealModalAccount] = useState(null);
   const [mealAmount, setMealAmount] = useState("");
   const [mealSaving, setMealSaving] = useState(false);
   const [dailyAnnouncement, setDailyAnnouncement] = useState(null);
@@ -452,11 +466,24 @@ export default function App() {
   const [announcementDate, setAnnouncementDate] = useState(formatTaipeiDateKey());
   const [announcementContent, setAnnouncementContent] = useState("");
   const [announcementSaving, setAnnouncementSaving] = useState(false);
+  const [remoteVoiceText, setRemoteVoiceText] = useState("");
+  const [remoteVoiceTarget, setRemoteVoiceTarget] = useState("全部");
+  const [remoteVoiceRepeats, setRemoteVoiceRepeats] = useState(1);
+  const [remoteVoiceSaving, setRemoteVoiceSaving] = useState(false);
+  const [latestRemoteVoice, setLatestRemoteVoice] = useState(null);
+  const [remoteVoiceReceipts, setRemoteVoiceReceipts] = useState({});
+  const [remoteRefreshTarget, setRemoteRefreshTarget] = useState("全部");
+  const [remoteRefreshSaving, setRemoteRefreshSaving] = useState(false);
+  const [latestRemoteRefresh, setLatestRemoteRefresh] = useState(null);
+  const [remoteRefreshReceipts, setRemoteRefreshReceipts] = useState({});
   const [missedPunchModal, setMissedPunchModal] = useState(null);
   const [missedPunchTime, setMissedPunchTime] = useState("");
   const [missedPunchReason, setMissedPunchReason] = useState("");
   const [missedPunchSaving, setMissedPunchSaving] = useState(false);
   const [lateCheckInModal, setLateCheckInModal] = useState(null);
+  const [lateDrinkModal, setLateDrinkModal] = useState(null);
+  const [lateDrinkReason, setLateDrinkReason] = useState("");
+  const [lateDrinkMakeUpAt, setLateDrinkMakeUpAt] = useState("");
   const [longBreakModal, setLongBreakModal] = useState(null);
   const [longBreakReason, setLongBreakReason] = useState("");
   const [breakReminderModal, setBreakReminderModal] = useState(null);
@@ -786,11 +813,13 @@ ${message}
 
       // 新版：config/device/devices 可綁定多台設備。
       // 舊版：config/device/id 只有單台設備，這裡保留相容，避免更新後原本設備失效。
-      const nextDevices = data.devices || {};
+      const nextDevices = { ...(data.devices || {}) };
       if (data.id && !Object.values(nextDevices).some((item) => item?.id === data.id)) {
-        nextDevices["原本已綁定設備"] = {
+        const legacyStoreName = data.store || data.storeName || "西螺文昌店";
+        nextDevices[legacyStoreName] = {
           id: data.id,
           boundAt: data.boundAt || 0,
+          migratedFromLegacy: true,
         };
       }
 
@@ -816,6 +845,63 @@ ${message}
       setTodayScheduleData(snap.val() || {});
     });
   }, [authReady, todayKey]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    return onValue(ref(db, "remote_voice_broadcasts/current"), (snap) => {
+      setLatestRemoteVoice(snap.val() || null);
+    });
+  }, [authReady]);
+
+  useEffect(() => {
+    if (!authReady || !latestRemoteVoice?.id) {
+      setRemoteVoiceReceipts({});
+      return;
+    }
+    return onValue(ref(db, `remote_voice_receipts/${latestRemoteVoice.id}`), (snap) => {
+      setRemoteVoiceReceipts(snap.val() || {});
+    });
+  }, [authReady, latestRemoteVoice?.id]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    return onValue(ref(db, "remote_refresh_commands/current"), (snap) => {
+      setLatestRemoteRefresh(snap.val() || null);
+    });
+  }, [authReady]);
+
+  useEffect(() => {
+    if (!authReady || !latestRemoteRefresh?.id) {
+      setRemoteRefreshReceipts({});
+      return;
+    }
+    return onValue(ref(db, `remote_refresh_receipts/${latestRemoteRefresh.id}`), (snap) => {
+      setRemoteRefreshReceipts(snap.val() || {});
+    });
+  }, [authReady, latestRemoteRefresh?.id]);
+
+  useEffect(() => {
+    if (!authReady || isAdmin || publicViewMode !== "checkin" || !isAuthorizedDevice || !latestRemoteRefresh?.id) return;
+    if (Number(latestRemoteRefresh.expiresAt || 0) < Date.now()) return;
+    const deviceStore = currentDeviceStoreName.includes("西螺")
+      ? "西螺"
+      : currentDeviceStoreName.includes("斗南")
+        ? "斗南"
+        : "";
+    if (!deviceStore || !["全部", deviceStore].includes(latestRemoteRefresh.targetStore)) return;
+    const handledKey = `remote_refresh_handled_${latestRemoteRefresh.id}`;
+    if (localStorage.getItem(handledKey)) return;
+
+    localStorage.setItem(handledKey, String(Date.now()));
+    set(ref(db, `remote_refresh_receipts/${latestRemoteRefresh.id}/${safeFirebaseKey(myDevice)}`), {
+      device: myDevice,
+      deviceLabel: currentDeviceStoreName,
+      receivedAt: Date.now(),
+      status: "reloading",
+    }).finally(() => {
+      window.setTimeout(() => window.location.reload(), 500);
+    });
+  }, [authReady, isAdmin, publicViewMode, isAuthorizedDevice, currentDeviceStoreName, latestRemoteRefresh, myDevice]);
 
   useEffect(() => {
     if (!authReady || !todayKey) return;
@@ -1373,6 +1459,7 @@ ${url}`);
 
   const unlockMobileAudio = (testVoice = false) => {
     try {
+      localStorage.setItem(CHECKIN_AUDIO_ENABLED_KEY, "true");
       const audioContext = getCheckInAudioContext();
       audioContext?.resume?.();
 
@@ -1431,8 +1518,78 @@ ${url}`);
     }
   };
 
+  const speakLateEmployeesTwice = (employeeNames) => {
+    try {
+      if (!employeeNames.length) return;
+      if (!window.speechSynthesis) {
+        playFallbackTone();
+        return;
+      }
+
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.resume();
+      employeeNames.forEach((name) => {
+        const text = `${name}員工已超過上班打卡時間`;
+        for (let repeat = 0; repeat < 2; repeat += 1) {
+          const message = new SpeechSynthesisUtterance(text);
+          message.lang = "zh-TW";
+          message.rate = 1;
+          message.pitch = 1;
+          message.volume = 1;
+          message.onerror = playFallbackTone;
+          window.speechSynthesis.speak(message);
+        }
+      });
+    } catch (error) {
+      console.error("遲到語音提醒失敗:", error);
+      playFallbackTone();
+    }
+  };
+
+  const playRemoteVoice = (text, repeats) => {
+    if (!text) return;
+    if (!window.speechSynthesis) {
+      playFallbackTone();
+      return;
+    }
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.resume();
+    for (let repeat = 0; repeat < repeats; repeat += 1) {
+      const message = new SpeechSynthesisUtterance(text);
+      message.lang = "zh-TW";
+      message.rate = 1;
+      message.pitch = 1;
+      message.volume = 1;
+      message.onerror = playFallbackTone;
+      window.speechSynthesis.speak(message);
+    }
+  };
+
   useEffect(() => {
-    if (!authReady || isAdmin || breakReminderModal || missedPunchModal || lateCheckInModal || longBreakModal) return;
+    if (!authReady || isAdmin || publicViewMode !== "checkin" || !isAuthorizedDevice || !latestRemoteVoice?.id) return;
+    if (localStorage.getItem(CHECKIN_AUDIO_ENABLED_KEY) !== "true") return;
+    if (Number(latestRemoteVoice.expiresAt || 0) < Date.now()) return;
+    const deviceStore = currentDeviceStoreName.includes("西螺")
+      ? "西螺"
+      : currentDeviceStoreName.includes("斗南")
+        ? "斗南"
+        : "";
+    if (!deviceStore || !["全部", deviceStore].includes(latestRemoteVoice.targetStore)) return;
+    const playedKey = `remote_voice_played_${latestRemoteVoice.id}`;
+    if (localStorage.getItem(playedKey)) return;
+
+    localStorage.setItem(playedKey, String(Date.now()));
+    playRemoteVoice(latestRemoteVoice.text, Math.min(3, Math.max(1, Number(latestRemoteVoice.repeats) || 1)));
+    set(ref(db, `remote_voice_receipts/${latestRemoteVoice.id}/${safeFirebaseKey(myDevice)}`), {
+      device: myDevice,
+      deviceLabel: currentDeviceStoreName,
+      receivedAt: Date.now(),
+      status: "played",
+    }).catch((error) => console.error("遠端語音回報失敗:", error));
+  }, [authReady, isAdmin, publicViewMode, isAuthorizedDevice, currentDeviceStoreName, latestRemoteVoice, myDevice]);
+
+  useEffect(() => {
+    if (!authReady || isAdmin || breakReminderModal || missedPunchModal || lateCheckInModal || lateDrinkModal || longBreakModal) return;
 
     const restingEmployees = employees.filter((emp) => emp.status === "休息中");
     for (const emp of restingEmployees) {
@@ -1465,7 +1622,7 @@ ${url}`);
         : `${emp.name}休息時間已到，請打休息結束卡`);
       break;
     }
-  }, [authReady, isAdmin, nowTime, employees, todayRecords, todayKey, breakReminderModal, missedPunchModal, lateCheckInModal, longBreakModal]);
+  }, [authReady, isAdmin, nowTime, employees, todayRecords, todayKey, breakReminderModal, missedPunchModal, lateCheckInModal, lateDrinkModal, longBreakModal]);
 
   useEffect(() => {
     if (!breakReminderModal) return;
@@ -1501,6 +1658,60 @@ ${url}`);
   const showScoreToast = (payload) => {
     setScoreToast(payload);
     setTimeout(() => setScoreToast(null), 7000);
+  };
+
+  const loadMealModalAccount = async (employee, dateKey) => {
+    const monthKey = getMonthKeyFromDateKey(dateKey);
+    const empKey = normalizeEmpId(employee.empId || employee.id);
+    setMealModalAccount({ loading: true, multiplier: 1, outstanding: 0, previousDebts: [] });
+
+    try {
+      const [mealsSnap, adjustmentsSnap] = await Promise.all([
+        get(ref(db, "meal_records")),
+        get(ref(db, "meal_subsidy_adjustments")),
+      ]);
+      const meals = mealsSnap.val() || {};
+      const adjustments = adjustmentsSnap.val() || {};
+      const monthlyTotals = {};
+
+      Object.entries(meals).forEach(([key, item]) => {
+        if (key === "payments" || !item || typeof item !== "object") return;
+        if (normalizeEmpId(item.empId) !== empKey) return;
+        const itemMonthKey = getMonthKeyFromDateKey(item.dateKey);
+        if (!itemMonthKey || itemMonthKey < "2026-06" || itemMonthKey > monthKey) return;
+        if (!monthlyTotals[itemMonthKey]) monthlyTotals[itemMonthKey] = { totalMeal: 0, totalSubsidy: 0 };
+        monthlyTotals[itemMonthKey].totalMeal += Math.max(0, Number(item.mealAmount) || 0);
+        const approvalRequired = Boolean(item.approvalRequired);
+        const approved = !approvalRequired || (item.approvalStatus || "approved") === "approved";
+        if (!approved) return;
+        const baseSubsidy = item.baseSubsidyAmount !== undefined
+          ? Number(item.baseSubsidyAmount) || 0
+          : item.calculatedSubsidyAmount !== undefined
+            ? Number(item.calculatedSubsidyAmount) || 0
+            : item.workHours !== undefined
+              ? (Number(item.workHours) >= 6 ? 100 : Number(item.workHours) >= 4 ? 60 : 0)
+              : Number(item.subsidyAmount) || 0;
+        const itemMultiplier = normalizeSubsidyMultiplier(adjustments?.[itemMonthKey]?.[empKey]?.multiplier);
+        monthlyTotals[itemMonthKey].totalSubsidy += applySubsidyMultiplier(baseSubsidy, itemMultiplier);
+      });
+
+      const getMonthDebt = (targetMonth) => {
+        const totals = monthlyTotals[targetMonth] || { totalMeal: 0, totalSubsidy: 0 };
+        const payment = meals?.payments?.[`${targetMonth}_${employee.empId || employee.id}`]
+          || meals?.payments?.[`${targetMonth}_${empKey}`];
+        return payment?.paid ? 0 : Math.round(Math.max(0, totals.totalMeal - totals.totalSubsidy) * 0.9);
+      };
+      const previousDebts = Object.keys(monthlyTotals)
+        .filter((itemMonthKey) => itemMonthKey < monthKey)
+        .map((itemMonthKey) => ({ monthKey: itemMonthKey, amount: getMonthDebt(itemMonthKey) }))
+        .filter((item) => item.amount > 0)
+        .sort((a, b) => a.monthKey.localeCompare(b.monthKey));
+      const multiplier = normalizeSubsidyMultiplier(adjustments?.[monthKey]?.[empKey]?.multiplier);
+      setMealModalAccount({ loading: false, multiplier, outstanding: getMonthDebt(monthKey), previousDebts });
+    } catch (error) {
+      console.error("讀取員工餐月結失敗：", error);
+      setMealModalAccount({ loading: false, multiplier: 1, outstanding: 0, previousDebts: [], error: true });
+    }
   };
 
   const closeScoreToast = () => {
@@ -1545,7 +1756,9 @@ ${url}`);
         : 0;
       const workHours = Number((workMinutes / 60).toFixed(2));
       const breakHours = Number((breakMinutes / 60).toFixed(2));
-      const subsidyAmount = workHours >= 6 ? 100 : workHours >= 4 ? 60 : 0;
+      const baseSubsidyAmount = workHours >= 6 ? 100 : workHours >= 4 ? 60 : 0;
+      const subsidyMultiplier = normalizeSubsidyMultiplier(mealModalAccount?.multiplier);
+      const subsidyAmount = applySubsidyMultiplier(baseSubsidyAmount, subsidyMultiplier);
       const overAmount = Math.max(0, amount - subsidyAmount);
       const employeePay = Math.round(overAmount * 0.9);
 
@@ -1561,6 +1774,9 @@ ${url}`);
         workHours,
         breakHours,
         mealAmount: amount,
+        baseSubsidyAmount,
+        calculatedSubsidyAmount: subsidyAmount,
+        subsidyMultiplier,
         subsidyAmount,
         overAmount,
         discountRate: 0.9,
@@ -1569,11 +1785,12 @@ ${url}`);
         createdAt: nowTs,
         updatedAt: nowTs,
         source: "checkout",
-        rule: "未滿4小時0元；滿4小時未滿6小時60元；滿6小時以上100元；超出補貼部分打9折",
+        rule: "未滿4小時0元；滿4小時未滿6小時60元；滿6小時以上100元；當月補助依個人倍率調整；超出補貼部分打9折",
       });
 
       const finishedMealData = { ...mealModalData };
       setMealModalData(null);
+      setMealModalAccount(null);
       setMealAmount("");
 
       if (dailyAnnouncement?.content) {
@@ -1617,6 +1834,7 @@ ${url}`);
   const closeMealModalWithoutSaving = () => {
     if (mealSaving) return;
     setMealModalData(null);
+    setMealModalAccount(null);
     setMealAmount("");
   };
 
@@ -1650,6 +1868,66 @@ ${url}`);
     }
   };
 
+  const sendRemoteVoice = async () => {
+    if (!isAdmin) return;
+    const text = remoteVoiceText.trim();
+    if (!text) {
+      alert("請輸入要讓平板播報的文字");
+      return;
+    }
+    if (text.length > 200) {
+      alert("播報內容請控制在 200 個字以內");
+      return;
+    }
+
+    setRemoteVoiceSaving(true);
+    try {
+      const createdAt = Date.now();
+      const id = String(createdAt);
+      await set(ref(db, "remote_voice_broadcasts/current"), {
+        id,
+        text,
+        targetStore: remoteVoiceTarget,
+        repeats: Math.min(3, Math.max(1, Number(remoteVoiceRepeats) || 1)),
+        createdAt,
+        expiresAt: createdAt + 10 * 60 * 1000,
+        sentBy: "admin",
+      });
+      setRemoteVoiceText("");
+      alert("語音訊息已送出，目標平板連線後會立即播放");
+    } catch (error) {
+      console.error("遠端語音送出失敗:", error);
+      alert(`語音訊息送出失敗：${error.message || "請稍後再試"}`);
+    } finally {
+      setRemoteVoiceSaving(false);
+    }
+  };
+
+  const sendRemoteRefresh = async () => {
+    if (!isAdmin || remoteRefreshSaving) return;
+    const targetLabel = remoteRefreshTarget === "全部" ? "兩間店平板" : `${remoteRefreshTarget}平板`;
+    if (!window.confirm(`確定要遠端重新整理${targetLabel}的打卡系統嗎？`)) return;
+
+    setRemoteRefreshSaving(true);
+    try {
+      const createdAt = Date.now();
+      const id = String(createdAt);
+      await set(ref(db, "remote_refresh_commands/current"), {
+        id,
+        targetStore: remoteRefreshTarget,
+        createdAt,
+        expiresAt: createdAt + 10 * 60 * 1000,
+        sentBy: "admin",
+      });
+      alert("重新整理指令已送出，平板連線後會自動重載打卡頁面");
+    } catch (error) {
+      console.error("遠端重新整理指令送出失敗:", error);
+      alert(`重新整理指令送出失敗：${error.message || "請稍後再試"}`);
+    } finally {
+      setRemoteRefreshSaving(false);
+    }
+  };
+
   const acknowledgeAnnouncement = async () => {
     if (!announcementModalData) return;
     try {
@@ -1676,6 +1954,50 @@ ${url}`);
     setMissedPunchModal({ emp, missingType, targetType });
     setMissedPunchTime(defaultTime);
     setMissedPunchReason("");
+  };
+
+  const getEmployeeTodayLateMinutes = (emp) => {
+    const empId = normalizeEmpId(emp.empId || emp.id);
+    const schedule = todayScheduleData?.[emp.empId || emp.id] || todayScheduleData?.[empId];
+    if (!schedule?.working || !schedule?.startTime) return 0;
+    const firstWorkIn = todayRecords
+      .filter((record) => normalizeEmpId(record.empId) === empId && record.type === "上班")
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))[0];
+    if (!firstWorkIn?.createdAt) return 0;
+    const scheduledAt = getTaipeiTimestampFromDateTime(todayKey, schedule.startTime);
+    return scheduledAt ? Math.max(0, Math.floor((firstWorkIn.createdAt - scheduledAt) / 60000)) : 0;
+  };
+
+  const continueLateCheckout = (treated) => {
+    if (!lateDrinkModal) return;
+    const reason = lateDrinkReason.trim();
+    if (!treated && !reason) {
+      alert("請填寫今天尚未請飲料的原因");
+      return;
+    }
+    if (!treated && !lateDrinkMakeUpAt) {
+      alert("請填寫預計什麼時候補請");
+      return;
+    }
+    if (!treated && datetimeLocalToTimestamp(lateDrinkMakeUpAt) <= Date.now()) {
+      alert("補請時間必須晚於現在");
+      return;
+    }
+
+    const { emp, lateMinutes } = lateDrinkModal;
+    setLateDrinkModal(null);
+    setLateDrinkReason("");
+    setLateDrinkMakeUpAt("");
+    checkIn("下班", {
+      emp,
+      skipDrinkConfirmation: true,
+      drinkFollowup: {
+        treated,
+        reason: treated ? "" : reason,
+        makeUpAt: treated ? "" : lateDrinkMakeUpAt,
+        lateMinutes,
+      },
+    });
   };
 
   const checkIn = async (type, options = {}) => {
@@ -1733,6 +2055,16 @@ ${url}`);
       }
     }
 
+    if (type === "下班" && !options.skipDrinkConfirmation) {
+      const lateMinutes = getEmployeeTodayLateMinutes(emp);
+      if (lateMinutes > 0) {
+        setLateDrinkModal({ emp, lateMinutes });
+        setLateDrinkReason("");
+        setLateDrinkMakeUpAt("");
+        return;
+      }
+    }
+
     const lastRecord = records.find(
       (r) => (r.empId === (emp.empId || emp.id))
     );
@@ -1775,13 +2107,31 @@ ${url}`);
       };
 
       // 紀錄與員工狀態必須同時成功，避免只寫入其中一邊造成畫面仍顯示未打卡。
-      await update(ref(db), {
+      const checkInUpdates = {
         [`records/${recordId}`]: record,
         [`employees/${emp.id}/status`]: newStatus,
         [`employees/${emp.id}/lastAction`]: type,
         [`employees/${emp.id}/lastActionAt`]: createdAt,
         [`employees/${emp.id}/updatedAt`]: createdAt,
-      });
+      };
+      if (type === "下班" && options.drinkFollowup) {
+        checkInUpdates[`late_drink_followups/${dateKey}/${safeFirebaseKey(emp.empId || emp.id)}`] = {
+          empId: emp.empId || emp.id,
+          name: emp.name || "",
+          store: todaySchedule.isSupport && todaySchedule.supportStore
+            ? todaySchedule.supportStore
+            : (emp.store || ""),
+          dateKey,
+          lateMinutes: options.drinkFollowup.lateMinutes || 0,
+          treated: Boolean(options.drinkFollowup.treated),
+          reason: options.drinkFollowup.reason || "",
+          makeUpAt: options.drinkFollowup.makeUpAt || "",
+          checkoutAt: createdAt,
+          createdAt,
+          updatedAt: createdAt,
+        };
+      }
+      await update(ref(db), checkInUpdates);
 
       setEmployeeId("");
 
@@ -1794,6 +2144,7 @@ ${url}`);
           dateKey: formatTaipeiDateKey(createdAt),
           checkoutAt: createdAt,
         });
+        loadMealModalAccount(emp, formatTaipeiDateKey(createdAt));
         setMealAmount("");
       }
 
@@ -2595,6 +2946,30 @@ ${url}`);
     }
   };
 
+  const exportMonthlyFormulaXLSX = async () => {
+    try {
+      const allRecords = await getAllRecordsForExport();
+      const targetMonthRecords = allRecords.filter((record) => {
+        const key = record.monthKey || getMonthValue(record.createdAt || Date.now());
+        return key === selectedMonth;
+      });
+      if (!targetMonthRecords.length) {
+        alert(`${selectedMonth} 沒有統計資料可匯出`);
+        return;
+      }
+      await exportFormulaWorkbook({
+        monthKey: selectedMonth,
+        employees,
+        records: targetMonthRecords,
+        schedulesByDate: await getAllSchedulesForMonth(selectedMonth),
+        days: getDaysInSelectedMonth(selectedMonth),
+      });
+    } catch (error) {
+      console.error("匯出公式版 Excel 失敗：", error);
+      alert("匯出公式版 Excel 失敗，請稍後再試");
+    }
+  };
+
   const toggleAdminPanel = (key) => {
     setAdminPanels((prev) => ({
       ...prev,
@@ -2698,36 +3073,94 @@ ${url}`);
     return getMonthValue(d.getTime());
   };
 
-  const deleteLastMonthRecords = async () => {
+  const archiveAndDeleteLastMonthRecords = async () => {
     const monthKey = getLastMonthKey();
-    const password = window.prompt("請輸入刪除密碼");
+    const password = window.prompt("請輸入管理員密碼，開始封存上個月資料");
 
     if (password !== "8888") {
-      alert("密碼錯誤，已取消刪除");
+      alert("密碼錯誤，已取消封存");
       return;
     }
 
-    const ok = window.confirm(`確定要刪除 ${monthKey} 的全部打卡紀錄嗎？此動作無法復原。`);
-    if (!ok) return;
-
     try {
-      const snap = await get(ref(db, "records"));
-      const data = snap.val() || {};
-      const targets = Object.entries(data).filter(([_, value]) => {
+      const [recordSnap, scheduleSnap] = await Promise.all([
+        get(ref(db, "records")),
+        get(ref(db, "schedules")),
+      ]);
+      const data = recordSnap.val() || {};
+      const targets = Object.fromEntries(Object.entries(data).filter(([_, value]) => {
         const key = value?.monthKey || getMonthValue(value?.createdAt || Date.now());
         return key === monthKey;
-      });
+      }));
 
-      if (!targets.length) {
-        alert(`${monthKey} 沒有可刪除的打卡紀錄`);
+      if (!Object.keys(targets).length) {
+        alert(`${monthKey} 沒有可封存的打卡紀錄`);
         return;
       }
 
-      await Promise.all(targets.map(([id]) => remove(ref(db, `records/${id}`))));
-      alert(`已刪除 ${monthKey} 的 ${targets.length} 筆打卡紀錄`);
+      const archivedAt = Date.now();
+      const archive = buildMonthlyArchive({
+        monthKey,
+        recordsById: targets,
+        schedules: scheduleSnap.val() || {},
+        archivedAt,
+      });
+      const ok = window.confirm(
+        `${monthKey} 將先封存再清除常用打卡資料：\n` +
+        `原始打卡 ${archive.manifest.sourceRecordCount} 筆\n` +
+        `每日工時快照 ${archive.manifest.snapshotDayCount} 筆\n` +
+        `可計算 ${archive.manifest.completeDayCount} 天、異常 ${archive.manifest.incompleteDayCount} 天\n` +
+        `員工餐補助合計 ${archive.manifest.subsidyTotal} 元\n\n` +
+        "封存與驗證成功後才會清除常用區，原始資料仍可復原。是否繼續？"
+      );
+      if (!ok) return;
+
+      const archiveUpdates = {};
+      Object.entries(archive.rawRecords).forEach(([id, record]) => {
+        archiveUpdates[`attendance_archives/${monthKey}/records/${id}`] = record;
+      });
+      Object.entries(archive.schedules).forEach(([dateKey, schedule]) => {
+        archiveUpdates[`attendance_archives/${monthKey}/schedules/${dateKey}`] = schedule;
+      });
+      Object.entries(archive.days).forEach(([dayKey, snapshot]) => {
+        archiveUpdates[`monthly_attendance_snapshots/${monthKey}/days/${dayKey}`] = snapshot;
+      });
+      archiveUpdates[`attendance_archives/${monthKey}/manifest`] = archive.manifest;
+      archiveUpdates[`monthly_attendance_snapshots/${monthKey}/manifest`] = archive.manifest;
+      await update(ref(db), archiveUpdates);
+
+      const [rawVerifySnap, dayVerifySnap, manifestVerifySnap] = await Promise.all([
+        get(ref(db, `attendance_archives/${monthKey}/records`)),
+        get(ref(db, `monthly_attendance_snapshots/${monthKey}/days`)),
+        get(ref(db, `monthly_attendance_snapshots/${monthKey}/manifest`)),
+      ]);
+      const verifiedRawCount = Object.keys(rawVerifySnap.val() || {}).length;
+      const verifiedDayCount = Object.keys(dayVerifySnap.val() || {}).length;
+      const verifiedManifest = manifestVerifySnap.val() || {};
+      if (
+        verifiedRawCount !== archive.manifest.sourceRecordCount ||
+        verifiedDayCount !== archive.manifest.snapshotDayCount ||
+        Number(verifiedManifest.subsidyTotal) !== archive.manifest.subsidyTotal
+      ) {
+        throw new Error("封存驗證失敗，常用打卡資料未清除");
+      }
+
+      const cleanupUpdates = {};
+      Object.keys(targets).forEach((id) => {
+        cleanupUpdates[`records/${id}`] = null;
+      });
+      cleanupUpdates[`attendance_archives/${monthKey}/manifest/status`] = "cleaned";
+      cleanupUpdates[`attendance_archives/${monthKey}/manifest/cleanedAt`] = Date.now();
+      cleanupUpdates[`monthly_attendance_snapshots/${monthKey}/manifest/status`] = "cleaned";
+      cleanupUpdates[`monthly_attendance_snapshots/${monthKey}/manifest/cleanedAt`] = Date.now();
+      await update(ref(db), cleanupUpdates);
+      alert(
+        `${monthKey} 月結完成：已封存 ${verifiedRawCount} 筆原始打卡、` +
+        `${verifiedDayCount} 筆每日快照，並從常用區清除。資料可復原。`
+      );
     } catch (error) {
       console.error(error);
-      alert("刪除上個月打卡紀錄失敗");
+      alert(`封存或驗證失敗，沒有清除常用打卡資料：${error?.message || "請稍後再試"}`);
     }
   };
 
@@ -2795,6 +3228,31 @@ ${url}`);
       .filter(Boolean)
       .sort((a, b) => b.lateMinutes - a.lateMinutes);
   }, [todayScheduleList, firstWorkInByEmpToday, todayKey, nowTime]);
+
+  useEffect(() => {
+    if (!authReady || isAdmin || publicViewMode !== "checkin" || !isAuthorizedDevice) return;
+    if (localStorage.getItem(CHECKIN_AUDIO_ENABLED_KEY) !== "true") return;
+    const deviceStore = currentDeviceStoreName.includes("西螺")
+      ? "西螺"
+      : currentDeviceStoreName.includes("斗南")
+        ? "斗南"
+        : "";
+    if (!deviceStore) return;
+
+    const newlyLateEmployees = lateDashboardList.filter((item) => {
+      if (item.status !== "尚未打卡") return false;
+      const workStore = item.isSupport && item.supportStore ? item.supportStore : item.store;
+      if (!String(workStore || "").includes(deviceStore)) return false;
+      const reminderKey = `late_voice_${todayKey}_${safeFirebaseKey(item.empId)}_${item.startTime}`;
+      if (localStorage.getItem(reminderKey)) return false;
+      localStorage.setItem(reminderKey, String(Date.now()));
+      return true;
+    });
+
+    if (newlyLateEmployees.length > 0) {
+      speakLateEmployeesTwice(newlyLateEmployees.map((item) => item.name));
+    }
+  }, [authReady, isAdmin, publicViewMode, isAuthorizedDevice, currentDeviceStoreName, lateDashboardList, todayKey]);
 
   const dashboardStats = useMemo(() => {
     const scheduledCount = todayScheduleList.length;
@@ -3114,6 +3572,63 @@ ${url}`);
           </div>
         )}
 
+        {lateDrinkModal && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.modalCard}>
+              <div style={{ fontSize: 46, textAlign: "center", marginBottom: 8 }}>🥤</div>
+              <div style={styles.modalTitle}>遲到飲料確認</div>
+              <div style={{ color: "#475569", lineHeight: 1.7, marginBottom: 16, textAlign: "center" }}>
+                {lateDrinkModal.emp.name} 今天遲到 {lateDrinkModal.lateMinutes} 分鐘。<br />
+                今天有請大家喝飲料嗎？
+              </div>
+              <button
+                style={{ ...styles.modalLoginBtn, width: "100%", marginBottom: 16 }}
+                onClick={() => continueLateCheckout(true)}
+                disabled={checkInSaving}
+              >
+                是，今天已經請了
+              </button>
+              <div style={{ borderTop: "1px solid #e2e8f0", paddingTop: 16 }}>
+                <div style={{ color: "#92400e", fontWeight: 900, marginBottom: 10 }}>否，尚未請飲料</div>
+                <input
+                  style={{ ...styles.bigInput, marginBottom: 10 }}
+                  value={lateDrinkReason}
+                  onChange={(event) => setLateDrinkReason(event.target.value)}
+                  placeholder="請填寫原因"
+                  aria-label="尚未請飲料的原因"
+                />
+                <div style={{ color: "#475569", fontWeight: 800, marginBottom: 6 }}>預計補請時間</div>
+                <input
+                  style={{ ...styles.bigInput, marginBottom: 12 }}
+                  type="datetime-local"
+                  min={formatDateTimeLocalValue(Date.now())}
+                  value={lateDrinkMakeUpAt}
+                  onChange={(event) => setLateDrinkMakeUpAt(event.target.value)}
+                  aria-label="預計補請時間"
+                />
+                <button
+                  style={{ ...styles.modalLoginBtn, width: "100%", background: "linear-gradient(135deg, #f97316, #ea580c)" }}
+                  onClick={() => continueLateCheckout(false)}
+                  disabled={checkInSaving}
+                >
+                  儲存原因並完成下班打卡
+                </button>
+              </div>
+              <button
+                style={{ ...styles.mealLaterBtn, width: "100%", marginTop: 10 }}
+                onClick={() => {
+                  setLateDrinkModal(null);
+                  setLateDrinkReason("");
+                  setLateDrinkMakeUpAt("");
+                }}
+                disabled={checkInSaving}
+              >
+                取消下班打卡
+              </button>
+            </div>
+          </div>
+        )}
+
         {longBreakModal && (
           <div style={styles.modalOverlay}>
             <div style={styles.modalCard}>
@@ -3224,6 +3739,25 @@ ${url}`);
               <div style={styles.modalTitle}>下班員工餐登記</div>
               <div style={styles.mealModalDesc}>
                 {mealModalData.name} 今天有吃員工餐嗎？請輸入金額，沒有吃就按「沒有吃」。
+              </div>
+              <div style={styles.mealAccountBox}>
+                {mealModalAccount?.loading ? (
+                  <span>正在計算各月份員工餐欠款…</span>
+                ) : mealModalAccount?.error ? (
+                  <span>暫時無法讀取本月欠款，仍可先登記餐費。</span>
+                ) : (
+                  <>
+                    {(mealModalAccount?.previousDebts || []).length > 0 ? (
+                      <>
+                        <b>尚未繳清月份</b>
+                        {mealModalAccount.previousDebts.map((item) => (
+                          <span key={item.monthKey}>{Number(item.monthKey.slice(5))} 月尚欠：{item.amount} 元</span>
+                        ))}
+                      </>
+                    ) : <span>之前月份皆無欠款</span>}
+                    <b>本月目前尚欠：{mealModalAccount?.outstanding || 0} 元</b>
+                  </>
+                )}
               </div>
               <input
                 style={styles.mealAmountInput}
@@ -3731,6 +4265,88 @@ ${url}`);
         </button>
       </div>
 
+      <div className="admin-remote-voice-panel" style={{ ...styles.panelCard, marginBottom: 20 }}>
+            <div style={styles.listHeader}>
+              <div style={styles.panelTitle}>遠端平板語音播報</div>
+              <div style={styles.badge}>🔊</div>
+            </div>
+            <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, marginBottom: 12 }}>
+              只有管理員後台能輸入訊息；公司平板保持打卡頁開啟且已啟用聲音時會立即朗讀。
+            </div>
+            <textarea
+              value={remoteVoiceText}
+              onChange={(event) => setRemoteVoiceText(event.target.value)}
+              placeholder="輸入要讓公司平板說出的內容"
+              rows={4}
+              maxLength={200}
+              style={styles.announcementTextarea}
+              aria-label="遠端語音內容"
+            />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
+              <select
+                value={remoteVoiceTarget}
+                onChange={(event) => setRemoteVoiceTarget(event.target.value)}
+                style={styles.monthInput}
+                aria-label="播報店別"
+              >
+                <option value="全部">兩間店</option>
+                <option value="西螺">西螺平板</option>
+                <option value="斗南">斗南平板</option>
+              </select>
+              <select
+                value={remoteVoiceRepeats}
+                onChange={(event) => setRemoteVoiceRepeats(Number(event.target.value))}
+                style={styles.monthInput}
+                aria-label="播放次數"
+              >
+                <option value={1}>播放 1 次</option>
+                <option value={2}>播放 2 次</option>
+                <option value={3}>播放 3 次</option>
+              </select>
+            </div>
+            <button
+              style={{ ...styles.fullMainBtn, marginTop: 12, opacity: remoteVoiceSaving ? 0.7 : 1 }}
+              onClick={sendRemoteVoice}
+              disabled={remoteVoiceSaving}
+            >
+              {remoteVoiceSaving ? "傳送中…" : "立即語音播報"}
+            </button>
+            {latestRemoteVoice ? (
+              <div style={{ marginTop: 10, fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>
+                最近送出：{latestRemoteVoice.targetStore === "全部" ? "兩間店" : latestRemoteVoice.targetStore}｜
+                已收到 {Object.keys(remoteVoiceReceipts).length} 台｜{latestRemoteVoice.text}
+              </div>
+            ) : null}
+            <div style={{ borderTop: "1px solid #e2e8f0", marginTop: 16, paddingTop: 16 }}>
+              <div style={{ ...styles.deviceLabel, marginBottom: 8 }}>遠端重新整理打卡頁面</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10 }}>
+                <select
+                  value={remoteRefreshTarget}
+                  onChange={(event) => setRemoteRefreshTarget(event.target.value)}
+                  style={styles.monthInput}
+                  aria-label="重新整理店別"
+                >
+                  <option value="全部">兩間店</option>
+                  <option value="西螺">西螺平板</option>
+                  <option value="斗南">斗南平板</option>
+                </select>
+                <button
+                  style={{ ...styles.fullMainBtn, width: "auto", background: "linear-gradient(135deg, #f97316, #ea580c)", opacity: remoteRefreshSaving ? 0.7 : 1 }}
+                  onClick={sendRemoteRefresh}
+                  disabled={remoteRefreshSaving}
+                >
+                  {remoteRefreshSaving ? "傳送中…" : "遠端重新整理"}
+                </button>
+              </div>
+              {latestRemoteRefresh ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: "#64748b" }}>
+                  最近指令：{latestRemoteRefresh.targetStore === "全部" ? "兩間店" : latestRemoteRefresh.targetStore}｜
+                  已回報 {Object.keys(remoteRefreshReceipts).length} 台
+                </div>
+              ) : null}
+            </div>
+      </div>
+
       <div className="admin-grid" style={styles.adminGrid}>
         <div className="admin-left-col" style={styles.leftCol}>
           <div className="admin-announcement-panel" style={styles.panelCard}>
@@ -3949,6 +4565,10 @@ ${url}`);
 
             <button style={styles.fullOrangeBtn} onClick={exportMonthlyCSV}>
               匯出薪資核對版 Excel
+            </button>
+
+            <button style={{ ...styles.fullGreenBtn, marginTop: 10 }} onClick={exportMonthlyFormulaXLSX}>
+              薪資核定版（公式版）
             </button>
           </div>
 
@@ -4429,8 +5049,8 @@ ${url}`);
                 onChange={(e) => setRecordSearch(e.target.value)}
                 style={styles.recordFilterInput}
               />
-              <button style={styles.recordDangerBtn} onClick={deleteLastMonthRecords}>
-                刪除上個月打卡紀錄
+              <button style={styles.recordDangerBtn} onClick={archiveAndDeleteLastMonthRecords}>
+                封存並清除上個月
               </button>
             </div>
 
@@ -5936,6 +6556,17 @@ const styles = {
     fontWeight: 700,
     lineHeight: 1.7,
     marginBottom: 16,
+  },
+  mealAccountBox: {
+    display: "grid",
+    gap: 4,
+    padding: "12px 14px",
+    marginBottom: 14,
+    borderRadius: 14,
+    background: "#fef3c7",
+    color: "#92400e",
+    fontSize: 14,
+    lineHeight: 1.5,
   },
   mealAmountInput: {
     width: "100%",
