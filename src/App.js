@@ -568,6 +568,7 @@ export default function App() {
   const [publicScheduleData, setPublicScheduleData] = useState({});
   const [publicScheduleExceptions, setPublicScheduleExceptions] = useState({});
   const [todayScheduleData, setTodayScheduleData] = useState({});
+  const [todayAttendanceExceptions, setTodayAttendanceExceptions] = useState({});
   const [scheduleLinkCopied, setScheduleLinkCopied] = useState(false);
 
   const reportCheckInAnomaly = async ({ error, emp, type, phase }) => {
@@ -843,6 +844,13 @@ ${message}
     const schedRef = ref(db, `schedules/${todayKey}`);
     return onValue(schedRef, (snap) => {
       setTodayScheduleData(snap.val() || {});
+    });
+  }, [authReady, todayKey]);
+
+  useEffect(() => {
+    if (!authReady || !todayKey) return;
+    return onValue(ref(db, `attendance_exceptions/${todayKey}`), (snap) => {
+      setTodayAttendanceExceptions(snap.val() || {});
     });
   }, [authReady, todayKey]);
 
@@ -3176,10 +3184,11 @@ ${url}`);
         working: !!item?.working,
         isSupport: !!item?.isSupport,
         supportStore: item?.supportStore || "",
+        attendanceException: todayAttendanceExceptions[item?.empId || empKey] || null,
       }))
       .filter((item) => item.working)
       .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")));
-  }, [todayScheduleData]);
+  }, [todayScheduleData, todayAttendanceExceptions]);
 
   const firstWorkInByEmpToday = useMemo(() => {
     const map = {};
@@ -3197,6 +3206,7 @@ ${url}`);
   const lateDashboardList = useMemo(() => {
     const nowTs = Date.now();
     return todayScheduleList
+      .filter((item) => !item.attendanceException)
       .map((item) => {
         const startTs = getTaipeiTimestampFromDateTime(todayKey, item.startTime);
         if (!startTs) return null;
@@ -3259,6 +3269,7 @@ ${url}`);
     const checkedInCount = todayScheduleList.filter((item) => firstWorkInByEmpToday[item.empId]).length;
     const lateCount = lateDashboardList.length;
     const notCheckedCount = todayScheduleList.filter((item) => {
+      if (item.attendanceException) return false;
       const startTs = getTaipeiTimestampFromDateTime(todayKey, item.startTime);
       return startTs && Date.now() > startTs && !firstWorkInByEmpToday[item.empId];
     }).length;
