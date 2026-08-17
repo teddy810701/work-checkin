@@ -464,7 +464,14 @@ export default function App() {
   const [exceptionRecordsLoading, setExceptionRecordsLoading] = useState(false);
   const [exceptionRecordsError, setExceptionRecordsError] = useState("");
   const [missedPunchReviewTimes, setMissedPunchReviewTimes] = useState({});
+  const [missedPunchReviewTypes, setMissedPunchReviewTypes] = useState({});
   const [missedPunchReviewSavingId, setMissedPunchReviewSavingId] = useState("");
+  const [attendanceExceptions, setAttendanceExceptions] = useState([]);
+  const [attendanceExceptionDate, setAttendanceExceptionDate] = useState(formatTaipeiDateKey());
+  const [attendanceExceptionEmpId, setAttendanceExceptionEmpId] = useState("");
+  const [attendanceExceptionType, setAttendanceExceptionType] = useState("請假");
+  const [attendanceExceptionReason, setAttendanceExceptionReason] = useState("");
+  const [attendanceExceptionSaving, setAttendanceExceptionSaving] = useState(false);
   const [systemAnomalies, setSystemAnomalies] = useState([]);
   const [anomalyRepairingId, setAnomalyRepairingId] = useState("");
   const [checkInSaving, setCheckInSaving] = useState(false);
@@ -532,6 +539,7 @@ export default function App() {
   );
   const [publicEmployeeKeyword, setPublicEmployeeKeyword] = useState("");
   const [publicScheduleData, setPublicScheduleData] = useState({});
+  const [publicScheduleExceptions, setPublicScheduleExceptions] = useState({});
   const [todayScheduleData, setTodayScheduleData] = useState({});
   const [scheduleLinkCopied, setScheduleLinkCopied] = useState(false);
 
@@ -614,7 +622,8 @@ export default function App() {
 
           for (const logDoc of logSnap.docs) {
             const log = logDoc.data() || {};
-            if (log.actionType !== "missed_clock_request" || log.requestStatus !== "pending") continue;
+            if (log.actionType !== "missed_clock_request") continue;
+            if (!["pending", "approved"].includes(log.requestStatus)) continue;
             if (migratedLegacyIds.has(logDoc.id)) continue;
             const matchedEmployee = employeeMap.get(log.empId) || {};
             const requestId = `legacy_${storeId}_${safeFirebaseKey(logDoc.id)}`;
@@ -637,7 +646,9 @@ export default function App() {
               requestDate: log.requestDate || getDateKeyFromAnyDate(requestedAt),
               requestDateTime: log.requestDateTime || formatDateTimeLocalValue(requestedAt),
               requestedAt,
+              // 積分系統的「批准」不代表打卡資料已補登；一律交由打卡系統再次確認類型與時間。
               requestStatus: "pending",
+              legacyRequestStatus: log.requestStatus || "pending",
               source: "legacy_points_migration",
               missingType: log.missingType || "",
               targetType: log.targetType || "",
@@ -849,6 +860,21 @@ ${message}
     });
   }, [authReady, isAdmin, adminPanels.exceptionRecords]);
 
+  useEffect(() => {
+    if (!authReady || !isAdmin || !adminPanels.exceptionRecords) return;
+    return onValue(ref(db, "attendance_exceptions"), (snap) => {
+      const data = snap.val() || {};
+      const entries = [];
+      Object.entries(data).forEach(([dateKey, dayData]) => {
+        Object.entries(dayData || {}).forEach(([empId, item]) => {
+          entries.push({ dateKey, empId, ...(item || {}) });
+        });
+      });
+      entries.sort((a, b) => String(b.dateKey).localeCompare(String(a.dateKey)) || (b.updatedAt || 0) - (a.updatedAt || 0));
+      setAttendanceExceptions(entries);
+    });
+  }, [authReady, isAdmin, adminPanels.exceptionRecords]);
+
   const storeGroups = useMemo(() => {
     const groups = {};
     employees.forEach((emp) => {
@@ -913,6 +939,14 @@ ${message}
     const schedRef = ref(db, `schedules/${publicScheduleDate || formatTaipeiDateKey()}`);
     return onValue(schedRef, (snap) => {
       setPublicScheduleData(snap.val() || {});
+    });
+  }, [authReady, publicScheduleDate]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    const dateKey = publicScheduleDate || formatTaipeiDateKey();
+    return onValue(ref(db, `attendance_exceptions/${dateKey}`), (snap) => {
+      setPublicScheduleExceptions(snap.val() || {});
     });
   }, [authReady, publicScheduleDate]);
 
@@ -1971,6 +2005,11 @@ ${url}`);
 
   const approveMissedPunchRequest = async (request) => {
     if (!request?.id || missedPunchReviewSavingId) return;
+    const approvedPunchType = missedPunchReviewTypes[request.id] || request.missingType || "";
+    if (!["上班", "休息開始", "休息結束", "下班"].includes(approvedPunchType)) {
+      alert("請先選擇要補登的打卡類型");
+      return;
+    }
     const reviewTime = missedPunchReviewTimes[request.id]
       || request.requestDateTime
       || formatDateTimeLocalValue(request.requestedAt);
@@ -1999,7 +2038,7 @@ ${url}`);
         name: request.name || employee.name,
         store: request.store || employee.store || "",
         role: request.role || employee.role || "",
-        type: request.missingType,
+        type: approvedPunchType,
         time: approvedDate.toLocaleTimeString("zh-TW", { hour12: false }),
         date: approvedDate.toLocaleDateString("zh-TW"),
         dateKey,
@@ -2027,24 +2066,86 @@ ${url}`);
         [`employees/${employee.id}/updatedAt`]: reviewedAt,
         [`missed_punch_requests/${request.id}/requestStatus`]: "approved",
         [`missed_punch_requests/${request.id}/approvedPunchAt`]: approvedPunchAt,
+        [`missed_punch_requests/${request.id}/missingType`]: approvedPunchType,
         [`missed_punch_requests/${request.id}/approvedRecordId`]: recordId,
         [`missed_punch_requests/${request.id}/reviewedAt`]: reviewedAt,
         [`missed_punch_requests/${request.id}/reviewedBy`]: "打卡系統管理員",
         [`missed_punch_requests/${request.id}/updatedAt`]: reviewedAt,
       });
 
-      const pointsSynced = await syncMissedPunchDecisionToPoints(request, "approved", reviewedAt, approvedPunchAt);
+      const pointsSynced = await syncMissedPunchDecisionToPoints(
+        { ...request, missingType: approvedPunchType },
+        "approved",
+        reviewedAt,
+        approvedPunchAt
+      );
       await update(ref(db, `missed_punch_requests/${request.id}`), {
         pointsSyncStatus: pointsSynced ? "synced" : "failed",
         pointsSyncedAt: pointsSynced ? Date.now() : 0,
       });
-      alert(`${request.name || request.empId} 的「${request.missingType}」已補登${pointsSynced ? "，審核結果已同步積分系統" : "；積分系統同步失敗，但打卡資料已完成"}`);
+      alert(`${request.name || request.empId} 的「${approvedPunchType}」已補登${pointsSynced ? "，審核結果已同步積分系統" : "；積分系統同步失敗，但打卡資料已完成"}`);
     } catch (error) {
       console.error("核准忘打卡申請失敗：", error);
       alert(`核准失敗：${error?.message || "請稍後再試"}`);
     } finally {
       setMissedPunchReviewSavingId("");
     }
+  };
+
+  const saveAttendanceException = async () => {
+    if (attendanceExceptionSaving) return;
+    const emp = employees.find((item) => (item.empId || item.id) === attendanceExceptionEmpId);
+    if (!emp) {
+      alert("請選擇員工");
+      return;
+    }
+    if (!attendanceExceptionDate) {
+      alert("請選擇日期");
+      return;
+    }
+    if (!attendanceExceptionReason.trim()) {
+      alert(`請填寫${attendanceExceptionType}原因`);
+      return;
+    }
+
+    setAttendanceExceptionSaving(true);
+    try {
+      const scheduleSnap = await get(ref(db, `schedules/${attendanceExceptionDate}/${attendanceExceptionEmpId}`));
+      const schedule = scheduleSnap.val() || {};
+      if (!schedule.working) {
+        alert("這位員工當天沒有排班，無需標記請假或曠職");
+        return;
+      }
+      const updatedAt = Date.now();
+      await set(ref(db, `attendance_exceptions/${attendanceExceptionDate}/${attendanceExceptionEmpId}`), {
+        empId: attendanceExceptionEmpId,
+        employeeKey: emp.id,
+        name: emp.name,
+        store: schedule.supportStore || emp.store || "",
+        homeStore: emp.store || "",
+        type: attendanceExceptionType,
+        reason: attendanceExceptionReason.trim(),
+        scheduledStart: schedule.startTime || "",
+        scheduledEnd: schedule.endTime || "",
+        schedulePreserved: true,
+        source: "admin_attendance_exception",
+        createdAt: updatedAt,
+        updatedAt,
+        createdBy: "打卡系統管理員",
+      });
+      setAttendanceExceptionReason("");
+      alert(`${emp.name} ${attendanceExceptionDate} 已標記為「${attendanceExceptionType}」，原班表會保留`);
+    } catch (error) {
+      console.error("儲存請假／曠職失敗：", error);
+      alert(`儲存失敗：${error?.message || "請稍後再試"}`);
+    } finally {
+      setAttendanceExceptionSaving(false);
+    }
+  };
+
+  const clearAttendanceException = async (item) => {
+    if (!window.confirm(`確定取消 ${item.name || item.empId} ${item.dateKey} 的「${item.type}」標記嗎？`)) return;
+    await remove(ref(db, `attendance_exceptions/${item.dateKey}/${item.empId}`));
   };
 
   const rejectMissedPunchRequest = async (request) => {
@@ -2520,6 +2621,7 @@ ${url}`);
     const keyword = publicEmployeeKeyword.trim().toLowerCase();
     return Object.values(publicScheduleData || {})
       .filter((item) => item?.working)
+      .map((item) => ({ ...item, attendanceException: publicScheduleExceptions[item.empId] || null }))
       .filter((item) => isScheduleVisibleForStore(item, publicScheduleStore))
       .filter((item) => {
         if (!keyword) return true;
@@ -2529,7 +2631,7 @@ ${url}`);
         );
       })
       .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")));
-  }, [publicScheduleData, publicScheduleStore, publicEmployeeKeyword]);
+  }, [publicScheduleData, publicScheduleExceptions, publicScheduleStore, publicEmployeeKeyword]);
 
   const publicScheduledCount = useMemo(() => {
     if (publicScheduleStore === "全部") return publicScheduleList.length;
@@ -2897,7 +2999,14 @@ ${url}`);
                     ...(item.isSupport ? { background: "#dbeafe", borderColor: "#93c5fd" } : {}),
                   }}>
                     <div>
-                      <div style={styles.publicScheduleName}>{item.name}</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <div style={styles.publicScheduleName}>{item.name}</div>
+                        {item.attendanceException ? (
+                          <span style={{ ...styles.statusBadge, color: item.attendanceException.type === "曠職" ? "#991b1b" : "#1d4ed8", background: item.attendanceException.type === "曠職" ? "#fee2e2" : "#dbeafe" }}>
+                            {item.attendanceException.type}
+                          </span>
+                        ) : null}
+                      </div>
                       <div style={styles.publicScheduleMeta}>
                         {item.empId} ・ {item.isSupport && item.supportStore
                           ? `所屬${item.store || "未填店名"}・支援${item.supportStore}`
@@ -2906,6 +3015,11 @@ ${url}`);
                     </div>
                     <div style={styles.publicScheduleTime}>
                       {item.startTime || "未填"} - {item.endTime || "未填"}
+                      {item.attendanceException?.reason ? (
+                        <div style={{ fontSize: 11, marginTop: 4, color: "#64748b", maxWidth: 220 }}>
+                          {item.attendanceException.reason}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 ))}
@@ -4157,6 +4271,18 @@ ${url}`);
                     </div>
                     {request.requestStatus === "pending" ? (
                       <div style={{ marginTop: 12 }}>
+                        <div style={styles.deviceLabel}>要補登的打卡類型</div>
+                        <select
+                          value={missedPunchReviewTypes[request.id] ?? request.missingType ?? ""}
+                          onChange={(e) => setMissedPunchReviewTypes((prev) => ({ ...prev, [request.id]: e.target.value }))}
+                          style={{ ...styles.modalInput, marginTop: 6 }}
+                        >
+                          <option value="">請選擇打卡類型</option>
+                          <option value="上班">上班</option>
+                          <option value="休息開始">休息開始</option>
+                          <option value="休息結束">休息結束</option>
+                          <option value="下班">下班</option>
+                        </select>
                         <div style={styles.deviceLabel}>核准補登時間</div>
                         <input
                           type="datetime-local"
@@ -4193,6 +4319,74 @@ ${url}`);
                 );
               })
             )}
+
+                <div style={{ ...styles.deviceLabel, marginTop: 22 }}>整日請假／曠職</div>
+                <div style={styles.exceptionRecordCard}>
+                  <div style={{ color: "#64748b", fontSize: 12, fontWeight: 700, lineHeight: 1.6 }}>
+                    員工原本有排班但整天未出勤時，保留班表並標記為請假或曠職；不要建立假的上下班時間。
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, marginTop: 12 }}>
+                    <input
+                      type="date"
+                      value={attendanceExceptionDate}
+                      onChange={(e) => setAttendanceExceptionDate(e.target.value)}
+                      style={styles.modalInput}
+                    />
+                    <select
+                      value={attendanceExceptionEmpId}
+                      onChange={(e) => setAttendanceExceptionEmpId(e.target.value)}
+                      style={styles.modalInput}
+                    >
+                      <option value="">選擇員工</option>
+                      {employees.map((emp) => (
+                        <option key={`absence-${emp.id}`} value={emp.empId || emp.id}>
+                          {emp.name}｜{emp.store || "未填店名"}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={attendanceExceptionType}
+                      onChange={(e) => setAttendanceExceptionType(e.target.value)}
+                      style={styles.modalInput}
+                    >
+                      <option value="請假">請假</option>
+                      <option value="曠職">曠職</option>
+                    </select>
+                  </div>
+                  <textarea
+                    value={attendanceExceptionReason}
+                    onChange={(e) => setAttendanceExceptionReason(e.target.value)}
+                    placeholder={attendanceExceptionType === "請假" ? "請填寫假別或原因，例如：病假" : "請填寫曠職原因或聯絡狀況"}
+                    style={{ ...styles.modalInput, marginTop: 10, minHeight: 76, resize: "vertical" }}
+                  />
+                  <button
+                    style={{ ...styles.editBtn, marginTop: 10 }}
+                    disabled={attendanceExceptionSaving}
+                    onClick={saveAttendanceException}
+                  >
+                    {attendanceExceptionSaving ? "儲存中…" : `標記${attendanceExceptionType}`}
+                  </button>
+                </div>
+
+                {attendanceExceptions.slice(0, 20).map((item) => (
+                  <div key={`attendance-exception-${item.dateKey}-${item.empId}`} style={styles.exceptionRecordCard}>
+                    <div style={styles.exceptionRecordHeader}>
+                      <div>
+                        <div style={styles.employeeName}>{item.name || item.empId}</div>
+                        <div style={styles.employeeId}>
+                          {item.dateKey} ・ 原排班 {item.scheduledStart || "-"}–{item.scheduledEnd || "-"} ・ {item.store || "未填店名"}
+                        </div>
+                      </div>
+                      <span style={{ ...styles.statusBadge, color: item.type === "曠職" ? "#991b1b" : "#1d4ed8", background: item.type === "曠職" ? "#fee2e2" : "#dbeafe" }}>
+                        {item.type}
+                      </span>
+                    </div>
+                    <div style={styles.exceptionReasonText}>{item.reason || "未填原因"}</div>
+                    <button style={{ ...styles.deleteBtn, marginTop: 10 }} onClick={() => clearAttendanceException(item)}>
+                      取消標記
+                    </button>
+                  </div>
+                ))}
 
                 <div style={{ ...styles.deviceLabel, marginTop: 18 }}>確實休息超時</div>
                 {longBreakExceptionRecords.length === 0 ? (
