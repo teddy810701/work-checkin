@@ -3903,6 +3903,20 @@ ${url}`);
           </button>
 
           <button
+            className="checkin-sidebar-nav"
+            style={styles.sidebarNav}
+            onClick={() =>
+              window.open(
+                "https://breakfast-system.vercel.app/",
+                "_blank",
+                "noopener,noreferrer"
+              )
+            }
+          >
+            📢 公告
+          </button>
+
+          <button
             className="checkin-sidebar-admin"
             style={styles.sidebarAdminBtn}
             onClick={() => setShowLoginModal(true)}
