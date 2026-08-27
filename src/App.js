@@ -1255,6 +1255,16 @@ ${url}`);
         Object.keys(finalSchedule).length > 0 ? finalSchedule : null
       );
 
+      const notificationResponse = await fetch("/api/publish-employee-schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dateKey: targetDate, schedules: finalSchedule }),
+      });
+      const notificationResult = await notificationResponse.json().catch(() => ({}));
+      if (!notificationResponse.ok) {
+        throw new Error(notificationResult.message || "班表已儲存，但 App 通知暫時無法發送");
+      }
+
       const scheduleList = Object.values(finalSchedule).sort((a, b) =>
         String(a.startTime || "").localeCompare(String(b.startTime || ""))
       );
@@ -1269,23 +1279,28 @@ ${url}`);
         pending: false,
         savedAt: Date.now(),
         source: "saveScheduleOnly",
-        mode: "web_link_only",
+        mode: "employee_app_push",
         targetStore: targetStoreName,
         shareUrl,
         count: targetScheduleList.length,
+        appPush: {
+          matched: Number(notificationResult.matched || 0),
+          sent: Number(notificationResult.sent || 0),
+          skipped: Number(notificationResult.skipped || 0),
+        },
       });
 
       setScheduleSent(true);
       setTimeout(() => setScheduleSent(false), 4000);
 
       if (!targetScheduleList.length) {
-        alert("班表發送成功");
+        alert("班表已儲存；明天沒有需要通知的員工。");
         return;
       }
 
-      alert("班表發送成功");
+      alert(`班表已發布，已通知 ${Number(notificationResult.sent || 0)} 位員工。`);
     } catch (err) {
-      alert(`班表儲存失敗：${err.message}`);
+      alert(`班表通知處理失敗：${err.message}`);
     } finally {
       setScheduleSaving(false);
     }
