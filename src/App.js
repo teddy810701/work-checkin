@@ -390,6 +390,19 @@ const getScheduleWorkStore = (item) => {
     : homeStore;
 };
 
+// 班表通知只比較會影響員工的欄位；revision 只用來讓每次真正修改
+// 產生新的通知事件，避免同一版班表在輪詢時重複推播。
+const getComparableSchedule = (item = {}) => ({
+  working: item.working === true,
+  startTime: item.startTime || "",
+  endTime: item.endTime || "",
+  store: item.store || "",
+  isSupport: item.isSupport === true,
+  supportStore: item.supportStore || "",
+});
+
+const getComparableScheduleKey = (item = {}) => JSON.stringify(getComparableSchedule(item));
+
 const isScheduleVisibleForStore = (item, storeName) => {
   if (storeName === "全部") return true;
 
@@ -1013,6 +1026,7 @@ ${message}
             endTime: schedData.endTime || "14:00",
             isSupport: !!schedData.isSupport,
             supportStore: schedData.supportStore || "",
+            revision: schedData.revision || "",
           };
         });
         return next;
@@ -1231,34 +1245,44 @@ ${url}`);
     setScheduleSaving(true);
     try {
       const targetDate = scheduleDate || formatTaipeiDateKey();
+      const previousSnapshot = await get(ref(db, `schedules/${targetDate}`));
+      const previousSchedule = previousSnapshot.val() || {};
+      const publishRevision = String(Date.now());
       const finalSchedule = {};
 
       employees.forEach((emp) => {
         const key = emp.empId || emp.id;
-        const item = scheduleItems[key];
-        if (item?.working) {
-          finalSchedule[key] = {
-            empId: key,
-            name: emp.name,
-            store: emp.store || "",
-            startTime: item.startTime || getDefaultScheduleStartTime(emp.store, targetDate),
-            endTime: item.endTime || "14:00",
-            working: true,
-            isSupport: !!item.supportStore,
-            supportStore: item.supportStore || "",
-          };
-        }
+        const item = scheduleItems[key] || {};
+        const previous = previousSchedule[key] || {};
+        const next = {
+          empId: key,
+          name: emp.name,
+          store: emp.store || "",
+          startTime: item.startTime || getDefaultScheduleStartTime(emp.store, targetDate),
+          endTime: item.endTime || "14:00",
+          working: item.working === true,
+          isSupport: !!item.supportStore,
+          supportStore: item.supportStore || "",
+        };
+
+        // 儲存完整的人員狀態（包含休假），才能辨識「原本上班、後來改休假」。
+        // 未變更的項目沿用 revision，變更的項目才換新 revision。
+        next.revision = getComparableScheduleKey(previous) === getComparableScheduleKey(next)
+          ? String(previous.revision || "")
+          : publishRevision;
+        finalSchedule[key] = next;
       });
 
-      await set(
-        ref(db, `schedules/${targetDate}`),
-        Object.keys(finalSchedule).length > 0 ? finalSchedule : null
-      );
+      await set(ref(db, `schedules/${targetDate}`), finalSchedule);
 
       const notificationResponse = await fetch("/api/publish-employee-schedule", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dateKey: targetDate, schedules: finalSchedule }),
+        body: JSON.stringify({
+          dateKey: targetDate,
+          schedules: finalSchedule,
+          previousSchedules: previousSchedule,
+        }),
       });
       const notificationResult = await notificationResponse.json().catch(() => ({}));
       if (!notificationResponse.ok) {
@@ -1287,18 +1311,26 @@ ${url}`);
           matched: Number(notificationResult.matched || 0),
           sent: Number(notificationResult.sent || 0),
           skipped: Number(notificationResult.skipped || 0),
+          changed: Number(notificationResult.changed || notificationResult.matched || 0),
+          notified: notificationResult.notified !== false,
+          reason: notificationResult.reason || "",
         },
       });
 
       setScheduleSent(true);
       setTimeout(() => setScheduleSent(false), 4000);
 
+      if (notificationResult.reason === "not-tomorrow") {
+        alert("班表已儲存；這不是明天的班表，系統會在它成為明日班表時自動通知受影響員工。");
+        return;
+      }
+
       if (!targetScheduleList.length) {
         alert("班表已儲存；明天沒有需要通知的員工。");
         return;
       }
 
-      alert(`班表已發布，已通知 ${Number(notificationResult.sent || 0)} 位員工。`);
+      alert(`班表已發布，已通知 ${Number(notificationResult.sent || 0)} 位受影響員工。`);
     } catch (err) {
       alert(`班表通知處理失敗：${err.message}`);
     } finally {
@@ -4435,7 +4467,7 @@ ${url}`);
             </div>
 
             <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, marginTop: 6 }}>
-              排班設定已整合進員工名單。現在改為「儲存班表＋複製班表連結」，不再自動 LINE 推播完整班表。
+              儲存後會立即通知有變動的員工；晚上 10:00 只提醒尚未按「收到」的人。修改上班、休假或時段都會視為變動。
             </div>
 
             <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
