@@ -76,6 +76,12 @@ const getTomorrowTaipeiDateKey = () => {
   return formatTaipeiDateKey(tomorrow);
 };
 
+const addDateKeyDays = (dateKey, days) => {
+  const [year, month, day] = String(dateKey || "").split("-").map(Number);
+  if (!year || !month || !day || !Number.isFinite(days)) return "";
+  return new Date(Date.UTC(year, month - 1, day + Number(days))).toISOString().slice(0, 10);
+};
+
 const getYesterdayTaipeiDateKey = () => {
   const yesterday = Date.now() - 24 * 60 * 60 * 1000;
   return formatTaipeiDateKey(yesterday);
@@ -5600,7 +5606,8 @@ function LeaveAdjustmentRequestPage({ employees, todayKey, close }) {
   const [employeeId, setEmployeeId] = useState("");
   const requestType = "調假";
   const [swapWithEmployeeId, setSwapWithEmployeeId] = useState("");
-  const [requestDate, setRequestDate] = useState(getTomorrowTaipeiDateKey());
+  const earliestRequestDate = addDateKeyDays(todayKey, 3) || getTomorrowTaipeiDateKey();
+  const [requestDate, setRequestDate] = useState(earliestRequestDate);
   const [adjustmentDate, setAdjustmentDate] = useState("");
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
@@ -5613,9 +5620,11 @@ function LeaveAdjustmentRequestPage({ employees, todayKey, close }) {
     const swapWithEmployee = employees.find((item) => (item.empId || item.id) === swapWithEmployeeId);
     if (!swapWithEmployee) return setMessage("請選擇要調班的對象");
     if (swapWithEmployeeId === employeeId) return setMessage("調班對象不能是自己");
-    if (!requestDate || requestDate < todayKey) return setMessage("申請日期不能早於今天");
-    if (!adjustmentDate || adjustmentDate < todayKey || adjustmentDate === requestDate) {
-      return setMessage("調假請選擇不同且不早於今天的調整後日期");
+    if (!requestDate || requestDate < earliestRequestDate || !adjustmentDate || adjustmentDate < earliestRequestDate) {
+      return setMessage(`調假需要至少提前 3 天申請，請選擇 ${earliestRequestDate}（含）之後的日期`);
+    }
+    if (adjustmentDate === requestDate) {
+      return setMessage("調假請選擇不同的原排班日與調整後日期");
     }
     if (!reason.trim()) return setMessage(`請填寫${requestType}原因`);
     setSaving(true);
@@ -5709,11 +5718,11 @@ function LeaveAdjustmentRequestPage({ employees, todayKey, close }) {
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <label style={styles.leaveFieldLabel}>
                 原休假日期
-                <input type="date" min={todayKey} value={requestDate} onChange={(event) => setRequestDate(event.target.value)} style={styles.scheduleInput} disabled={saving} />
+                <input type="date" min={earliestRequestDate} value={requestDate} onChange={(event) => setRequestDate(event.target.value)} style={styles.scheduleInput} disabled={saving} />
               </label>
               <label style={styles.leaveFieldLabel}>
                 申請調假日期
-                <input type="date" min={todayKey} value={adjustmentDate} onChange={(event) => setAdjustmentDate(event.target.value)} style={styles.scheduleInput} disabled={saving} />
+                <input type="date" min={earliestRequestDate} value={adjustmentDate} onChange={(event) => setAdjustmentDate(event.target.value)} style={styles.scheduleInput} disabled={saving} />
               </label>
             </div>
             <label style={styles.leaveFieldLabel}>
@@ -5721,7 +5730,7 @@ function LeaveAdjustmentRequestPage({ employees, todayKey, close }) {
               <textarea value={reason} onChange={(event) => setReason(event.target.value)} maxLength={300} rows={5} placeholder="例如：原本 9/2 上班，想調到 9/4。" style={{ ...styles.scheduleInput, resize: "vertical", minHeight: 120 }} disabled={saving} />
             </label>
             <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, padding: "10px 12px", borderRadius: 14, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-              調班必須同時填寫調整後日期與調班對象。對方同意後才會送店長／管理員審核；因班表每天晚上才發布隔天內容，若核准時班表尚未建立，核准結果會先保留，發布相關班表時自動套用。
+              調班必須至少提前 3 天申請，並同時填寫調整後日期與調班對象。對方同意後才會送店長／管理員審核；因班表每天晚上才發布隔天內容，若核准時班表尚未建立，核准結果會先保留，發布相關班表時自動套用。
             </div>
             <button type="submit" style={{ ...styles.fullMainBtn, opacity: saving ? 0.7 : 1 }} disabled={saving || !employees.length}>
               {saving ? "送出中…" : "送出申請"}
