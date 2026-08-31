@@ -506,6 +506,7 @@ export default function App() {
   const [lateDrinkFollowups, setLateDrinkFollowups] = useState([]);
   const [lateDrinkFollowupSavingId, setLateDrinkFollowupSavingId] = useState("");
   const [lateDrinkReminderModal, setLateDrinkReminderModal] = useState(null);
+  const [lateDrinkReminderDate, setLateDrinkReminderDate] = useState("");
   const [longBreakModal, setLongBreakModal] = useState(null);
   const [longBreakReason, setLongBreakReason] = useState("");
   const [breakReminderModal, setBreakReminderModal] = useState(null);
@@ -1139,43 +1140,14 @@ ${message}
     lateDrinkFollowups.slice(0, 20)
   ), [lateDrinkFollowups]);
 
-  useEffect(() => {
-    if (
-      !authReady
-      || isAdmin
-      || publicViewMode !== "checkin"
-      || !employeeId.trim()
-      || !currentEmployeeLateDrinkFollowups.length
-      || lateDrinkReminderModal
-      || breakReminderModal
-      || missedPunchModal
-      || lateCheckInModal
-      || lateDrinkModal
-      || longBreakModal
-    ) return;
-
-    const employeeKey = normalizeEmpId(employeeId);
-    if (!employeeKey) return;
-
-    const reminderKey = `late_drink_daily_reminder_${todayKey}_${safeFirebaseKey(employeeKey)}`;
-    if (localStorage.getItem(reminderKey)) return;
-
-    localStorage.setItem(reminderKey, String(Date.now()));
-    setLateDrinkReminderModal(currentEmployeeLateDrinkFollowups[0]);
-  }, [
-    authReady,
-    isAdmin,
-    publicViewMode,
-    employeeId,
-    currentEmployeeLateDrinkFollowups,
-    todayKey,
-    lateDrinkReminderModal,
-    breakReminderModal,
-    missedPunchModal,
-    lateCheckInModal,
-    lateDrinkModal,
-    longBreakModal,
-  ]);
+  const getPendingLateDrinkFollowups = (emp) => {
+    const targetId = normalizeEmpId(emp?.empId || emp?.id);
+    if (!targetId) return [];
+    return lateDrinkFollowups
+      .filter((item) => normalizeEmpId(item.empId) === targetId)
+      .filter((item) => item.treated !== true && item.status !== "completed" && item.status !== "rejected")
+      .sort((a, b) => String(a.makeUpAt || "").localeCompare(String(b.makeUpAt || "")));
+  };
 
   const liveStatusList = useMemo(() => {
     const map = {};
@@ -2343,10 +2315,10 @@ ${url}`);
   };
 
   const markLateDrinkFollowupComplete = async (item) => {
-    if (!item?.dateKey || !item?.empKey || lateDrinkFollowupSavingId) return;
+    if (!item?.dateKey || !item?.empKey || lateDrinkFollowupSavingId) return false;
     const targetId = normalizeEmpId(employeeId);
-    if (targetId && targetId !== normalizeEmpId(item.empId)) return;
-    if (!window.confirm(`確認已完成 ${item.dateKey} 的遲到飲料嗎？`)) return;
+    if (targetId && targetId !== normalizeEmpId(item.empId)) return false;
+    if (!window.confirm(`確認已完成 ${item.dateKey} 的遲到飲料嗎？`)) return false;
 
     setLateDrinkFollowupSavingId(item.id);
     try {
@@ -2357,12 +2329,48 @@ ${url}`);
         completedBy: "employee",
         updatedAt: Date.now(),
       });
+      return true;
     } catch (error) {
       console.error("更新遲到飲料狀態失敗：", error);
       alert(`更新遲到飲料狀態失敗：${error?.message || "請稍後再試"}`);
+      return false;
     } finally {
       setLateDrinkFollowupSavingId("");
     }
+  };
+
+  const continueAfterLateDrinkReminder = async (item, emp, completeFirst) => {
+    if (!item || !emp) return;
+    if (completeFirst) {
+      const completed = await markLateDrinkFollowupComplete(item);
+      if (!completed) return;
+    } else {
+      const minDate = addDateKeyDays(todayKey, 1);
+      const maxDate = addDateKeyDays(todayKey, 3);
+      const selectedDate = String(lateDrinkReminderDate || "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate) || selectedDate < minDate || selectedDate > maxDate) {
+        alert("補請日期請選擇明天起三天內");
+        return;
+      }
+
+      setLateDrinkFollowupSavingId(item.id);
+      try {
+        await update(ref(db, `late_drink_followups/${item.dateKey}/${item.empKey}`), {
+          makeUpDate: selectedDate,
+          makeUpAt: `${selectedDate}T12:00`,
+          updatedAt: Date.now(),
+        });
+      } catch (error) {
+        console.error("更新遲到飲料補請日期失敗：", error);
+        alert(`更新補請日期失敗：${error?.message || "請稍後再試"}`);
+        return;
+      } finally {
+        setLateDrinkFollowupSavingId("");
+      }
+    }
+    setLateDrinkReminderModal(null);
+    setLateDrinkReminderDate("");
+    checkIn("下班", { emp, skipLateDrinkFollowupReminder: true });
   };
 
   const rejectLateDrinkFollowup = async (item) => {
@@ -2435,6 +2443,24 @@ ${url}`);
         if (breakMinutes > LONG_BREAK_MINUTES) {
           setLongBreakModal({ emp, breakMinutes });
           setLongBreakReason("");
+          return;
+        }
+      }
+    }
+
+    if (type === "下班" && !options.skipLateDrinkFollowupReminder && !isAdmin) {
+      const pendingFollowup = getPendingLateDrinkFollowups(emp)[0];
+      if (pendingFollowup) {
+        const reminderKey = `late_drink_checkout_reminder_${todayKey}_${safeFirebaseKey(emp.empId || emp.id)}`;
+        if (!localStorage.getItem(reminderKey)) {
+          localStorage.setItem(reminderKey, String(Date.now()));
+          setLateDrinkReminderModal({ emp, item: pendingFollowup });
+          const minDate = addDateKeyDays(todayKey, 1);
+          const maxDate = addDateKeyDays(todayKey, 3);
+          const existingDate = getDateKeyFromAnyDate(pendingFollowup.makeUpDate || pendingFollowup.makeUpAt);
+          setLateDrinkReminderDate(
+            existingDate >= minDate && existingDate <= maxDate ? existingDate : minDate
+          );
           return;
         }
       }
@@ -4179,36 +4205,53 @@ ${url}`);
               <div style={{ fontSize: 46, textAlign: "center", marginBottom: 8 }}>🔔</div>
               <div id="late-drink-daily-reminder-title" style={styles.modalTitle}>遲到飲料提醒</div>
               <div style={styles.lateDrinkReminderModalNotice}>
-                你之前選擇「改天補請飲料」，在完成前每天都會提醒你。
+                你之前選擇「改天補請飲料」，現在下班打卡時提醒你。
               </div>
               <div style={styles.lateDrinkReminderModalInfo}>
                 <div style={styles.lateDrinkReminderItemTitle}>
-                  {lateDrinkReminderModal.dateKey} ・ 遲到 {lateDrinkReminderModal.lateMinutes || 0} 分鐘
+                  {lateDrinkReminderModal.item.dateKey} ・ 遲到 {lateDrinkReminderModal.item.lateMinutes || 0} 分鐘
                 </div>
                 <div style={styles.lateDrinkReminderMeta}>
-                  預計補請：{String(lateDrinkReminderModal.makeUpAt || "尚未填寫").replace("T", " ")}
+                  原預計補請：{String(lateDrinkReminderModal.item.makeUpDate || lateDrinkReminderModal.item.makeUpAt || "尚未填寫").replace("T", " ")}
                 </div>
                 <div style={styles.lateDrinkReminderMeta}>
-                  原因：{lateDrinkReminderModal.reason || "未填寫"}
+                  原因：{lateDrinkReminderModal.item.reason || "未填寫"}
                 </div>
               </div>
               <button
                 type="button"
                 style={{ ...styles.modalLoginBtn, width: "100%", background: "linear-gradient(135deg, #ea580c, #c2410c)" }}
-                onClick={() => {
-                  setLateDrinkReminderModal(null);
-                  markLateDrinkFollowupComplete(lateDrinkReminderModal);
-                }}
-                disabled={lateDrinkFollowupSavingId === lateDrinkReminderModal.id}
+                onClick={() => continueAfterLateDrinkReminder(
+                  lateDrinkReminderModal.item,
+                  lateDrinkReminderModal.emp,
+                  true,
+                )}
+                disabled={lateDrinkFollowupSavingId === lateDrinkReminderModal.item.id}
               >
-                {lateDrinkFollowupSavingId === lateDrinkReminderModal.id ? "儲存中…" : "我已請飲料"}
+                {lateDrinkFollowupSavingId === lateDrinkReminderModal.item.id ? "儲存中…" : "我已請飲料並繼續下班打卡"}
               </button>
+              <div style={styles.lateDrinkReminderDateLabel}>尚未請飲料，請選擇補請日期（明天起三天內）</div>
+              <input
+                style={{ ...styles.bigInput, marginTop: 8 }}
+                type="date"
+                min={addDateKeyDays(todayKey, 1)}
+                max={addDateKeyDays(todayKey, 3)}
+                value={lateDrinkReminderDate}
+                onChange={(event) => setLateDrinkReminderDate(event.target.value)}
+                aria-label="遲到飲料補請日期"
+                disabled={lateDrinkFollowupSavingId === lateDrinkReminderModal.item.id}
+              />
               <button
                 type="button"
                 style={{ ...styles.mealLaterBtn, width: "100%", marginTop: 10 }}
-                onClick={() => setLateDrinkReminderModal(null)}
+                onClick={() => continueAfterLateDrinkReminder(
+                  lateDrinkReminderModal.item,
+                  lateDrinkReminderModal.emp,
+                  false,
+                )}
+                disabled={lateDrinkFollowupSavingId === lateDrinkReminderModal.item.id}
               >
-                今天先關閉提醒
+                儲存補請日期並繼續下班打卡
               </button>
             </div>
           </div>
@@ -4596,7 +4639,7 @@ ${url}`);
               <section style={styles.lateDrinkReminderCard} aria-live="polite">
                 <div style={styles.lateDrinkReminderTitle}>🥤 遲到飲料待處理</div>
                 <div style={styles.lateDrinkReminderHint}>
-                  你選擇了改天補請；每天輸入工號都會提醒，完成後請按「我已請飲料」。
+                  你選擇了改天補請；每天按下班打卡時會提醒，完成後請按「我已請飲料」。
                 </div>
                 {currentEmployeeLateDrinkFollowups.map((item) => (
                   <div key={item.id} style={styles.lateDrinkReminderRow}>
@@ -5646,7 +5689,7 @@ ${url}`);
 
                 <div style={{ ...styles.deviceLabel, marginTop: 22 }}>遲到飲料追蹤</div>
                 <div style={{ color: "#64748b", fontSize: 12, fontWeight: 700, lineHeight: 1.6 }}>
-                  員工選擇「改天」後會每天看到提醒；員工按「我已請飲料」或管理員駁回後，這筆提醒就會停止。
+                  員工選擇「改天」後，每天下班打卡時會看到提醒；員工按「我已請飲料」或管理員駁回後，這筆提醒就會停止。
                 </div>
                 {adminLateDrinkFollowups.length === 0 ? (
                   <div style={styles.emptyText}>目前沒有遲到飲料紀錄</div>
@@ -6269,6 +6312,13 @@ const styles = {
     borderRadius: 14,
     background: "#fffbeb",
     border: "1px solid #fde68a",
+  },
+  lateDrinkReminderDateLabel: {
+    marginTop: 14,
+    color: "#7c2d12",
+    fontSize: 13,
+    fontWeight: 900,
+    lineHeight: 1.5,
   },
   dashboardTopGrid: {
     display: "grid",
