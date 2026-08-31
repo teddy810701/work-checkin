@@ -512,6 +512,8 @@ export default function App() {
   const [attendanceExceptionType, setAttendanceExceptionType] = useState("請假");
   const [attendanceExceptionReason, setAttendanceExceptionReason] = useState("");
   const [attendanceExceptionSaving, setAttendanceExceptionSaving] = useState(false);
+  const [leaveRequests, setLeaveRequests] = useState([]);
+  const [leaveRequestSavingId, setLeaveRequestSavingId] = useState("");
   const [systemAnomalies, setSystemAnomalies] = useState([]);
   const [anomalyRepairingId, setAnomalyRepairingId] = useState("");
   const [checkInSaving, setCheckInSaving] = useState(false);
@@ -569,7 +571,7 @@ export default function App() {
 
   const urlParams = new URLSearchParams(window.location.search);
   const [publicViewMode, setPublicViewMode] = useState(
-    urlParams.get("view") === "schedule" ? "schedule" : "checkin"
+    ["schedule", "leave"].includes(urlParams.get("view")) ? urlParams.get("view") : "checkin"
   );
   const [publicScheduleDate, setPublicScheduleDate] = useState(
     urlParams.get("date") || getTomorrowTaipeiDateKey()
@@ -982,6 +984,25 @@ ${message}
     });
   }, [authReady, isAdmin, adminPanels.exceptionRecords]);
 
+  useEffect(() => {
+    if (!authReady || !isAdmin) {
+      setLeaveRequests([]);
+      return;
+    }
+    const requestsRef = query(
+      ref(db, "leave_requests"),
+      orderByChild("createdAt"),
+      limitToLast(100),
+    );
+    return onValue(requestsRef, (snap) => {
+      const data = snap.val() || {};
+      const entries = Object.keys(data)
+        .map((key) => ({ id: key, ...(data[key] || {}) }))
+        .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+      setLeaveRequests(entries);
+    });
+  }, [authReady, isAdmin]);
+
   const storeGroups = useMemo(() => {
     const groups = {};
     employees.forEach((emp) => {
@@ -1273,7 +1294,171 @@ ${url}`);
         finalSchedule[key] = next;
       });
 
+      // 班表採「每天晚上發布隔天」的作法，因此先前核准但當時尚無班表的申請，
+      // 要在對應日期發布時才套用。這也避免員工太早申請時被錯誤判定為無法調假。
+      const pendingScheduleUpdates = {};
+      let leaveScheduleApplied = 0;
+      let leaveSchedulePending = 0;
+      let approvedPendingRequests = [];
+      try {
+        const leaveRequestsSnapshot = await get(ref(db, "leave_requests"));
+        approvedPendingRequests = Object.entries(leaveRequestsSnapshot.val() || {})
+          .map(([id, value]) => ({ id, ...(value || {}) }))
+          .filter((request) => request.status === "approved_pending_schedule");
+      } catch (leaveReadError) {
+        // 申請資料讀取失敗時仍要允許班表正常發布；這次不套用待處理申請，下一次發布再重試。
+        console.warn("讀取待套用請假／調假申請失敗：", leaveReadError);
+      }
+
+      for (const request of approvedPendingRequests) {
+        const requestType = request.requestType || request.type || "請假";
+        const key = request.empId || request.employeeKey;
+        if (!key || !employees.some((emp) => (emp.empId || emp.id) === key)) continue;
+
+        if (requestType === "請假" && request.requestDate === targetDate) {
+          const current = finalSchedule[key] || {};
+          const appliedAt = Date.now();
+          finalSchedule[key] = {
+            ...current,
+            empId: key,
+            name: request.name || current.name || "",
+            store: request.store || current.store || "",
+            working: false,
+            isSupport: false,
+            supportStore: "",
+            leaveRequestId: request.id,
+          };
+          pendingScheduleUpdates[`attendance_exceptions/${targetDate}/${key}`] = {
+            empId: key,
+            employeeKey: request.employeeKey || key,
+            name: request.name || current.name || "",
+            store: request.store || current.store || "",
+            homeStore: request.store || current.store || "",
+            type: "請假",
+            reason: `${request.reason || "員工請假"}（系統申請核准）`,
+            scheduledStart: current.startTime || "",
+            scheduledEnd: current.endTime || "",
+            schedulePreserved: true,
+            source: "leave_request_schedule_publish",
+            requestId: request.id,
+            createdAt: appliedAt,
+            updatedAt: appliedAt,
+            createdBy: "打卡系統管理員",
+          };
+          pendingScheduleUpdates[`leave_requests/${request.id}`] = {
+            status: "approved",
+            scheduleAppliedAt: appliedAt,
+            pendingReason: "",
+            updatedAt: appliedAt,
+          };
+          leaveScheduleApplied += 1;
+          continue;
+        }
+
+        if (requestType !== "調假") continue;
+        const fromDate = String(request.requestDate || "");
+        const toDate = String(request.adjustmentDate || "");
+        if (!fromDate || !toDate || fromDate === toDate) continue;
+
+        if (fromDate === targetDate) {
+          const current = finalSchedule[key] || {};
+          if (current.working !== true) {
+            leaveSchedulePending += 1;
+            continue;
+          }
+          const appliedAt = Date.now();
+          const sourceSchedule = { ...current };
+          finalSchedule[key] = {
+            ...current,
+            working: false,
+            isSupport: false,
+            supportStore: "",
+            adjustedToDate: toDate,
+            adjustmentRequestId: request.id,
+          };
+          pendingScheduleUpdates[`attendance_exceptions/${fromDate}/${key}`] = {
+            empId: key,
+            employeeKey: request.employeeKey || key,
+            name: request.name || current.name || "",
+            store: request.store || current.store || "",
+            homeStore: request.store || current.store || "",
+            type: "調假",
+            reason: `${request.reason || "調假申請"}（已調至 ${toDate}）`,
+            scheduledStart: current.startTime || "",
+            scheduledEnd: current.endTime || "",
+            schedulePreserved: true,
+            source: "leave_request_schedule_publish",
+            requestId: request.id,
+            createdAt: appliedAt,
+            updatedAt: appliedAt,
+            createdBy: "打卡系統管理員",
+          };
+          pendingScheduleUpdates[`leave_requests/${request.id}`] = {
+            approvedSchedule: sourceSchedule,
+            sourceScheduleAppliedAt: appliedAt,
+            pendingReason: `等待 ${toDate} 班表發布後套用`,
+            updatedAt: appliedAt,
+          };
+          leaveScheduleApplied += 1;
+          continue;
+        }
+
+        if (toDate === targetDate) {
+          let sourceSchedule = request.approvedSchedule || null;
+          if (!sourceSchedule) {
+            const sourceSnap = await get(ref(db, `schedules/${fromDate}/${key}`));
+            sourceSchedule = sourceSnap.val() || null;
+          }
+          const destination = finalSchedule[key] || {};
+          if (!sourceSchedule || sourceSchedule.working !== true || destination.working === true) {
+            leaveSchedulePending += 1;
+            continue;
+          }
+
+          const appliedAt = Date.now();
+          finalSchedule[key] = {
+            ...sourceSchedule,
+            empId: key,
+            name: request.name || sourceSchedule.name || "",
+            store: request.store || sourceSchedule.store || "",
+            working: true,
+            isSupport: false,
+            supportStore: "",
+            adjustedFromDate: fromDate,
+            adjustmentRequestId: request.id,
+            revision: String(appliedAt),
+          };
+          pendingScheduleUpdates[`attendance_exceptions/${fromDate}/${key}`] = {
+            empId: key,
+            employeeKey: request.employeeKey || key,
+            name: request.name || sourceSchedule.name || "",
+            store: request.store || sourceSchedule.store || "",
+            homeStore: request.store || sourceSchedule.store || "",
+            type: "調假",
+            reason: `${request.reason || "調假申請"}（已調至 ${toDate}）`,
+            scheduledStart: sourceSchedule.startTime || "",
+            scheduledEnd: sourceSchedule.endTime || "",
+            schedulePreserved: true,
+            source: "leave_request_schedule_publish",
+            requestId: request.id,
+            createdAt: appliedAt,
+            updatedAt: appliedAt,
+            createdBy: "打卡系統管理員",
+          };
+          pendingScheduleUpdates[`leave_requests/${request.id}`] = {
+            status: "approved",
+            targetScheduleAppliedAt: appliedAt,
+            pendingReason: "",
+            updatedAt: appliedAt,
+          };
+          leaveScheduleApplied += 1;
+        }
+      }
+
       await set(ref(db, `schedules/${targetDate}`), finalSchedule);
+      if (Object.keys(pendingScheduleUpdates).length) {
+        await update(ref(db), pendingScheduleUpdates);
+      }
 
       const notificationResponse = await fetch("/api/publish-employee-schedule", {
         method: "POST",
@@ -1307,6 +1492,8 @@ ${url}`);
         targetStore: targetStoreName,
         shareUrl,
         count: targetScheduleList.length,
+        leaveScheduleApplied,
+        leaveSchedulePending,
         appPush: {
           matched: Number(notificationResult.matched || 0),
           sent: Number(notificationResult.sent || 0),
@@ -1330,7 +1517,12 @@ ${url}`);
         return;
       }
 
-      alert(`班表已發布，已通知 ${Number(notificationResult.sent || 0)} 位受影響員工。`);
+      const leaveSummary = leaveScheduleApplied
+        ? `，另套用 ${leaveScheduleApplied} 筆請假／調假申請`
+        : leaveSchedulePending
+          ? `；另有 ${leaveSchedulePending} 筆調假待相關班表發布`
+          : "";
+      alert(`班表已發布，已通知 ${Number(notificationResult.sent || 0)} 位受影響員工${leaveSummary}。`);
     } catch (err) {
       alert(`班表通知處理失敗：${err.message}`);
     } finally {
@@ -2554,6 +2746,136 @@ ${url}`);
     await remove(ref(db, `attendance_exceptions/${item.dateKey}/${item.empId}`));
   };
 
+  const reviewLeaveRequest = async (request, decision) => {
+    if (!request?.id || leaveRequestSavingId) return;
+    const requestType = request.requestType || request.type || "請假";
+    const decisionLabel = decision === "approved" ? "核准" : "駁回";
+    if (!window.confirm(`確定${decisionLabel}${request.name || request.empId} 的${requestType}申請嗎？`)) return;
+    setLeaveRequestSavingId(request.id);
+    try {
+      const reviewedAt = Date.now();
+      const employee = employees.find((item) => (item.empId || item.id) === request.empId);
+      if (!employee) throw new Error("找不到這位員工，無法處理申請");
+
+      if (decision === "approved") {
+        if (requestType === "請假") {
+          const scheduleSnap = await get(ref(db, `schedules/${request.requestDate}/${request.empId}`));
+          const schedule = scheduleSnap.val() || {};
+          if (!scheduleSnap.exists()) {
+            await update(ref(db, `leave_requests/${request.id}`), {
+              status: "approved_pending_schedule",
+              pendingReason: "等待班表發布後套用",
+              reviewedAt,
+              reviewedBy: "打卡系統管理員",
+              updatedAt: reviewedAt,
+            });
+            alert(`${request.name || request.empId} 的${requestType}已核准，待班表發布後套用。`);
+            return;
+          }
+          await set(ref(db, `attendance_exceptions/${request.requestDate}/${request.empId}`), {
+            empId: request.empId,
+            employeeKey: employee.id,
+            name: request.name || employee.name,
+            store: schedule.supportStore || request.store || employee.store || "",
+            homeStore: employee.store || "",
+            type: "請假",
+            reason: `${request.reason || "員工請假"}（系統申請核准）`,
+            scheduledStart: schedule.startTime || "",
+            scheduledEnd: schedule.endTime || "",
+            schedulePreserved: true,
+            source: "leave_request_approval",
+            requestId: request.id,
+            createdAt: reviewedAt,
+            updatedAt: reviewedAt,
+            createdBy: "打卡系統管理員",
+          });
+        } else {
+          const fromDate = String(request.requestDate || "");
+          const toDate = String(request.adjustmentDate || "");
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate) || fromDate === toDate) {
+            throw new Error("調假申請需要不同的原排班日與調整後日期");
+          }
+          const [fromSnap, toSnap] = await Promise.all([
+            get(ref(db, `schedules/${fromDate}/${request.empId}`)),
+            get(ref(db, `schedules/${toDate}/${request.empId}`)),
+          ]);
+          const fromSchedule = fromSnap.val() || {};
+          const toSchedule = toSnap.val() || {};
+          // 班表是每天晚上才發布隔天的內容；申請可能早於班表建立。
+          // 這時先保留核准結果，待相關日期班表發布後再套用，不讓申請因「尚未排班」失敗。
+          if (fromSchedule.working !== true) {
+            await update(ref(db, `leave_requests/${request.id}`), {
+              status: "approved_pending_schedule",
+              pendingReason: "等待班表發布後套用",
+              reviewedAt,
+              reviewedBy: "打卡系統管理員",
+              updatedAt: reviewedAt,
+            });
+            alert(`${request.name || request.empId} 的${requestType}已核准，待班表發布後套用。`);
+            return;
+          }
+          if (toSchedule.working === true) throw new Error("調整後日期已有排班，請先確認班表");
+          const revision = String(reviewedAt);
+          const movedSchedule = {
+            ...fromSchedule,
+            empId: request.empId,
+            name: request.name || employee.name,
+            store: request.store || employee.store || fromSchedule.store || "",
+            working: true,
+            isSupport: false,
+            supportStore: "",
+            adjustedFromDate: fromDate,
+            adjustmentRequestId: request.id,
+            revision,
+          };
+          const originalSchedule = {
+            ...fromSchedule,
+            working: false,
+            isSupport: false,
+            supportStore: "",
+            adjustedToDate: toDate,
+            adjustmentRequestId: request.id,
+            revision,
+          };
+          await update(ref(db), {
+            [`schedules/${fromDate}/${request.empId}`]: originalSchedule,
+            [`schedules/${toDate}/${request.empId}`]: movedSchedule,
+            [`attendance_exceptions/${fromDate}/${request.empId}`]: {
+              empId: request.empId,
+              employeeKey: employee.id,
+              name: request.name || employee.name,
+              store: request.store || employee.store || "",
+              homeStore: employee.store || "",
+              type: "調假",
+              reason: `${request.reason || "調假申請"}（已調至 ${toDate}）`,
+              scheduledStart: fromSchedule.startTime || "",
+              scheduledEnd: fromSchedule.endTime || "",
+              schedulePreserved: true,
+              source: "leave_request_approval",
+              requestId: request.id,
+              createdAt: reviewedAt,
+              updatedAt: reviewedAt,
+              createdBy: "打卡系統管理員",
+            },
+          });
+        }
+      }
+
+      await update(ref(db, `leave_requests/${request.id}`), {
+        status: decision,
+        reviewedAt,
+        reviewedBy: "打卡系統管理員",
+        updatedAt: reviewedAt,
+      });
+      alert(`${request.name || request.empId} 的${requestType}申請已${decisionLabel}`);
+    } catch (error) {
+      console.error("處理請假／調假申請失敗：", error);
+      alert(`${decisionLabel}失敗：${error?.message || "請稍後再試"}`);
+    } finally {
+      setLeaveRequestSavingId("");
+    }
+  };
+
   const rejectMissedPunchRequest = async (request) => {
     if (!request?.id || missedPunchReviewSavingId) return;
     if (!window.confirm(`確定駁回 ${request.name || request.empId} 的「${request.missingType || "打卡"}」申請嗎？`)) return;
@@ -3091,6 +3413,16 @@ ${url}`);
     window.history.replaceState(null, "", window.location.pathname);
   };
 
+  const openLeaveRequest = () => {
+    setPublicViewMode("leave");
+    window.history.replaceState(null, "", `${window.location.pathname}?view=leave`);
+  };
+
+  const closeLeaveRequest = () => {
+    setPublicViewMode("checkin");
+    window.history.replaceState(null, "", window.location.pathname);
+  };
+
   const adminFilteredRecords = useMemo(() => {
     return records.filter((r) => {
       const keyword = recordSearch.trim().toLowerCase();
@@ -3546,6 +3878,16 @@ ${url}`);
       </div>
     );
   }
+
+  if (!isAdmin && publicViewMode === "leave") {
+    return (
+      <LeaveAdjustmentRequestPage
+        employees={employees}
+        todayKey={todayKey}
+        close={closeLeaveRequest}
+      />
+    );
+  }
             if (!isAdmin) {
     return (
       <div className="checkin-page" style={styles.tabletPage}>
@@ -3919,6 +4261,14 @@ ${url}`);
             onClick={() => openPublicSchedule("全部", getTomorrowTaipeiDateKey())}
           >
             📅 查看班表
+          </button>
+
+          <button
+            className="checkin-sidebar-nav"
+            style={styles.sidebarNav}
+            onClick={openLeaveRequest}
+          >
+            📝 請假／調假
           </button>
 
           <button
@@ -4495,7 +4845,7 @@ ${url}`);
                   }}
                 />
                 <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5 }}>
-                  例如今天先發布明天早班，就把日期改成明天再傳送。
+                  例如今天晚上發布明天早班，就把日期改成明天再傳送；已核准的請假／調假會在這次發布時自動套用。
                 </div>
               </div>
 
@@ -4547,6 +4897,70 @@ ${url}`);
               </div>
 
             </div>
+          </div>
+
+          <div className="admin-leave-panel" style={styles.panelCard}>
+            <div style={styles.listHeader}>
+              <div style={styles.panelTitle}>請假／調假申請</div>
+              <div style={styles.badge}>{leaveRequests.filter((item) => ["pending_manager", "pending"].includes(item.status || "pending")).length} 待審</div>
+            </div>
+              <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, marginBottom: 12 }}>
+              調班申請會先送到調班對象的員工 App；對方按同意後才會進入店長／管理員審核。班表每天晚上才發布隔天內容；若申請早於班表建立，核准結果會先保留，發布相關班表時再套用。
+            </div>
+            {leaveRequests.length === 0 ? (
+              <div style={styles.emptyText}>目前沒有請假／調假申請</div>
+            ) : (
+              leaveRequests.slice(0, 30).map((request) => {
+                const requestType = request.requestType || request.type || "請假";
+                const status = request.status || "pending";
+                const statusMeta = status === "approved"
+                  ? { label: "已核准", color: "#166534", background: "#dcfce7" }
+                  : status === "rejected"
+                    ? { label: "已駁回", color: "#991b1b", background: "#fee2e2" }
+                    : status === "approved_pending_schedule"
+                      ? { label: "已核准・待班表套用", color: "#1d4ed8", background: "#dbeafe" }
+                      : status === "pending_partner"
+                        ? { label: "等待調班對象同意", color: "#7c3aed", background: "#ede9fe" }
+                        : status === "pending_manager"
+                          ? { label: "待店長／管理員審核", color: "#9a3412", background: "#ffedd5" }
+                          : { label: "待審核", color: "#9a3412", background: "#ffedd5" };
+                return (
+                  <div key={request.id} style={{ ...styles.exceptionRecordCard, marginTop: 10 }}>
+                    <div style={styles.exceptionRecordHeader}>
+                      <div>
+                        <div style={styles.employeeName}>{request.name || request.empId || "未具名員工"}</div>
+                        <div style={styles.employeeId}>{request.store || "未填店名"} ・ {request.empId || "未填工號"}</div>
+                        <div style={{ ...styles.employeeId, marginTop: 5 }}>
+                          {requestType}：{request.requestDate || "未填日期"}{requestType === "調假" ? ` → ${request.adjustmentDate || "未填日期"}` : ""}
+                        </div>
+                        {request.swapWithName && (
+                          <div style={{ ...styles.employeeId, marginTop: 4, color: "#1d4ed8", fontWeight: 700 }}>
+                            跟 {request.swapWithName} 調班{request.swapWithStore ? `（${request.swapWithStore}）` : ""}
+                          </div>
+                        )}
+                      </div>
+                      <span style={{ ...styles.statusBadge, color: statusMeta.color, background: statusMeta.background }}>{statusMeta.label}</span>
+                    </div>
+                    <div style={styles.exceptionReasonText}>{request.reason || "未填原因"}</div>
+                    {request.pendingReason && status === "approved_pending_schedule" && (
+                      <div style={{ ...styles.employeeId, marginTop: 6, color: "#1d4ed8", fontWeight: 700 }}>{request.pendingReason}</div>
+                    )}
+                    {status === "pending_manager" || status === "pending" ? (
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                        <button style={styles.editBtn} disabled={leaveRequestSavingId === request.id} onClick={() => reviewLeaveRequest(request, "approved")}>
+                          {leaveRequestSavingId === request.id ? "處理中…" : "核准申請"}
+                        </button>
+                        <button style={styles.deleteBtn} disabled={leaveRequestSavingId === request.id} onClick={() => reviewLeaveRequest(request, "rejected")}>
+                          駁回申請
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ ...styles.employeeId, marginTop: 8 }}>處理時間：{formatAnyDateTime(request.reviewedAt)} ・ {request.reviewedBy || "管理員"}</div>
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
 
           <div className="admin-device-panel" style={styles.panelCard}>
@@ -5176,6 +5590,144 @@ ${url}`);
               })
             )}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LeaveAdjustmentRequestPage({ employees, todayKey, close }) {
+  const [employeeId, setEmployeeId] = useState("");
+  const requestType = "調假";
+  const [swapWithEmployeeId, setSwapWithEmployeeId] = useState("");
+  const [requestDate, setRequestDate] = useState(getTomorrowTaipeiDateKey());
+  const [adjustmentDate, setAdjustmentDate] = useState("");
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+
+  const submit = async (event) => {
+    event.preventDefault();
+    const employee = employees.find((item) => (item.empId || item.id) === employeeId);
+    if (!employee) return setMessage("請先選擇員工");
+    const swapWithEmployee = employees.find((item) => (item.empId || item.id) === swapWithEmployeeId);
+    if (!swapWithEmployee) return setMessage("請選擇要調班的對象");
+    if (swapWithEmployeeId === employeeId) return setMessage("調班對象不能是自己");
+    if (!requestDate || requestDate < todayKey) return setMessage("申請日期不能早於今天");
+    if (!adjustmentDate || adjustmentDate < todayKey || adjustmentDate === requestDate) {
+      return setMessage("調假請選擇不同且不早於今天的調整後日期");
+    }
+    if (!reason.trim()) return setMessage(`請填寫${requestType}原因`);
+    setSaving(true);
+    setMessage("");
+    try {
+      const requestId = `${Date.now()}_${safeFirebaseKey(employeeId)}_${Math.random().toString(36).slice(2, 8)}`;
+      const adjustmentRequest = {
+        id: requestId,
+        requestType,
+        empId: employee.empId || employee.id,
+        employeeKey: employee.id,
+        name: employee.name || "",
+        store: employee.store || "",
+        storeId: employee.store && employee.store.includes("斗南") ? "storeB" : "storeA",
+        swapWithEmpId: swapWithEmployee.empId || swapWithEmployee.id,
+        swapWithEmployeeKey: swapWithEmployee.id,
+        swapWithName: swapWithEmployee.name || "",
+        swapWithStore: swapWithEmployee.store || "",
+        swapWithStoreId: swapWithEmployee.store && swapWithEmployee.store.includes("斗南") ? "storeB" : "storeA",
+        requestDate,
+        adjustmentDate,
+        reason: reason.trim().slice(0, 300),
+        status: "pending_partner",
+        source: "work_checkin_kiosk",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      await set(ref(db, `leave_requests/${requestId}`), adjustmentRequest);
+      let notificationSent = false;
+      try {
+        const response = await fetch("/api/notify-schedule-adjustment", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requestId, request: adjustmentRequest }),
+        });
+        const notificationResult = await response.json().catch(() => ({}));
+        notificationSent = response.ok && notificationResult.sent !== false;
+      } catch (notificationError) {
+        console.error("調班對象 App 通知失敗：", notificationError);
+      }
+      setReason("");
+      setMessage(notificationSent
+        ? `申請已送出，已通知 ${swapWithEmployee.name || "調班對象"}；對方同意後才會送店長審核。`
+        : "申請已保存，但調班對象的 App 通知暫時失敗，請通知管理員檢查。對方同意後才會送店長審核。");
+    } catch (error) {
+      console.error("送出請假／調假申請失敗：", error);
+      setMessage(`送出失敗：${error?.message || "請稍後再試"}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.overlay} />
+      <div style={styles.topRightBar}>
+        <button style={styles.adminTopBtn} onClick={close}>← 返回打卡</button>
+      </div>
+      <div style={styles.mainWrap}>
+        <div style={styles.brandBar}>
+          <div style={styles.brandDot} />
+          <div>
+            <div style={styles.brandTitle}>店面班表管理系統</div>
+            <div style={styles.brandSub}>Leave & Schedule Adjustment</div>
+          </div>
+        </div>
+        <div style={styles.schedulePublicCard}>
+          <div style={styles.schedulePublicHeader}>
+            <div>
+              <h1 style={styles.kioskTitle}>📝 調假申請</h1>
+              <p style={styles.kioskDesc}>需要調班時，請一併填寫調整後的上班日期；送出後會先通知調班對象，對方同意後再交由店長／管理員審核。</p>
+            </div>
+          </div>
+          <form onSubmit={submit} style={{ display: "grid", gap: 14, maxWidth: 760, margin: "0 auto" }}>
+            <label style={styles.leaveFieldLabel}>
+              申請員工
+              <select value={employeeId} onChange={(event) => { const nextEmployeeId = event.target.value; setEmployeeId(nextEmployeeId); if (swapWithEmployeeId === nextEmployeeId) setSwapWithEmployeeId(""); }} style={styles.scheduleInput} disabled={saving}>
+                <option value="">請選擇員工</option>
+                {employees.map((employee) => <option key={employee.id} value={employee.empId || employee.id}>{employee.name}｜{employee.store || "未填店名"}</option>)}
+              </select>
+            </label>
+            <label style={styles.leaveFieldLabel}>
+              跟誰調
+              <select value={swapWithEmployeeId} onChange={(event) => setSwapWithEmployeeId(event.target.value)} style={styles.scheduleInput} disabled={saving}>
+                <option value="">請選擇調班對象</option>
+                {employees
+                  .filter((employee) => (employee.empId || employee.id) !== employeeId)
+                  .map((employee) => <option key={employee.id} value={employee.empId || employee.id}>{employee.name}｜{employee.store || "未填店名"}</option>)}
+              </select>
+            </label>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <label style={styles.leaveFieldLabel}>
+                原休假日期
+                <input type="date" min={todayKey} value={requestDate} onChange={(event) => setRequestDate(event.target.value)} style={styles.scheduleInput} disabled={saving} />
+              </label>
+              <label style={styles.leaveFieldLabel}>
+                申請調假日期
+                <input type="date" min={todayKey} value={adjustmentDate} onChange={(event) => setAdjustmentDate(event.target.value)} style={styles.scheduleInput} disabled={saving} />
+              </label>
+            </div>
+            <label style={styles.leaveFieldLabel}>
+              調假原因／備註
+              <textarea value={reason} onChange={(event) => setReason(event.target.value)} maxLength={300} rows={5} placeholder="例如：原本 9/2 上班，想調到 9/4。" style={{ ...styles.scheduleInput, resize: "vertical", minHeight: 120 }} disabled={saving} />
+            </label>
+            <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, padding: "10px 12px", borderRadius: 14, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
+              調班必須同時填寫調整後日期與調班對象。對方同意後才會送店長／管理員審核；因班表每天晚上才發布隔天內容，若核准時班表尚未建立，核准結果會先保留，發布相關班表時自動套用。
+            </div>
+            <button type="submit" style={{ ...styles.fullMainBtn, opacity: saving ? 0.7 : 1 }} disabled={saving || !employees.length}>
+              {saving ? "送出中…" : "送出申請"}
+            </button>
+            {message && <div role="status" style={{ color: message.startsWith("申請已") ? "#166534" : "#b91c1c", fontWeight: 800, lineHeight: 1.6, padding: "10px 12px", borderRadius: 12, background: message.startsWith("申請已") ? "#f0fdf4" : "#fef2f2" }}>{message}</div>}
+          </form>
         </div>
       </div>
     </div>
@@ -6456,6 +7008,13 @@ const styles = {
     fontWeight: 900,
     color: "#334155",
     marginBottom: 6,
+  },
+  leaveFieldLabel: {
+    display: "grid",
+    gap: 6,
+    fontSize: 14,
+    fontWeight: 900,
+    color: "#334155",
   },
   scheduleInput: {
     width: "100%",

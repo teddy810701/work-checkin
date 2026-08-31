@@ -141,6 +141,7 @@ code {
   grid-template-areas:
     "announcement schedule device"
     "export schedule history"
+    "leave leave leave"
     "employees employees employees"
     "exceptions exceptions exceptions"
     "records records records";
@@ -158,6 +159,7 @@ code {
 .admin-device-panel { grid-area: device; }
 .admin-export-panel { grid-area: export; }
 .admin-history-panel { grid-area: history; }
+.admin-leave-panel { grid-area: leave; }
 .admin-employees-panel { grid-area: employees; }
 .admin-exceptions-panel { grid-area: exceptions; }
 .admin-record-panel { grid-area: records; }
@@ -169,6 +171,7 @@ code {
       "announcement"
       "schedule"
       "device"
+      "leave"
       "employees"
       "exceptions"
       "records"
@@ -202,6 +205,7 @@ code {
       "announcement"
       "schedule"
       "device"
+      "leave"
       "employees"
       "exceptions"
       "records"
