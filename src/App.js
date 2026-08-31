@@ -505,6 +505,7 @@ export default function App() {
   const [lateDrinkMakeUpAt, setLateDrinkMakeUpAt] = useState("");
   const [lateDrinkFollowups, setLateDrinkFollowups] = useState([]);
   const [lateDrinkFollowupSavingId, setLateDrinkFollowupSavingId] = useState("");
+  const [lateDrinkReminderModal, setLateDrinkReminderModal] = useState(null);
   const [longBreakModal, setLongBreakModal] = useState(null);
   const [longBreakReason, setLongBreakReason] = useState("");
   const [breakReminderModal, setBreakReminderModal] = useState(null);
@@ -1137,6 +1138,44 @@ ${message}
   const adminLateDrinkFollowups = useMemo(() => (
     lateDrinkFollowups.slice(0, 20)
   ), [lateDrinkFollowups]);
+
+  useEffect(() => {
+    if (
+      !authReady
+      || isAdmin
+      || publicViewMode !== "checkin"
+      || !employeeId.trim()
+      || !currentEmployeeLateDrinkFollowups.length
+      || lateDrinkReminderModal
+      || breakReminderModal
+      || missedPunchModal
+      || lateCheckInModal
+      || lateDrinkModal
+      || longBreakModal
+    ) return;
+
+    const employeeKey = normalizeEmpId(employeeId);
+    if (!employeeKey) return;
+
+    const reminderKey = `late_drink_daily_reminder_${todayKey}_${safeFirebaseKey(employeeKey)}`;
+    if (localStorage.getItem(reminderKey)) return;
+
+    localStorage.setItem(reminderKey, String(Date.now()));
+    setLateDrinkReminderModal(currentEmployeeLateDrinkFollowups[0]);
+  }, [
+    authReady,
+    isAdmin,
+    publicViewMode,
+    employeeId,
+    currentEmployeeLateDrinkFollowups,
+    todayKey,
+    lateDrinkReminderModal,
+    breakReminderModal,
+    missedPunchModal,
+    lateCheckInModal,
+    lateDrinkModal,
+    longBreakModal,
+  ]);
 
   const liveStatusList = useMemo(() => {
     const map = {};
@@ -1887,7 +1926,7 @@ ${url}`);
   }, [authReady, isAdmin, publicViewMode, isAuthorizedDevice, currentDeviceStoreName, latestRemoteVoice, myDevice]);
 
   useEffect(() => {
-    if (!authReady || isAdmin || breakReminderModal || missedPunchModal || lateCheckInModal || lateDrinkModal || longBreakModal) return;
+    if (!authReady || isAdmin || breakReminderModal || missedPunchModal || lateCheckInModal || lateDrinkModal || lateDrinkReminderModal || longBreakModal) return;
 
     const restingEmployees = employees.filter((emp) => emp.status === "休息中");
     for (const emp of restingEmployees) {
@@ -1920,7 +1959,7 @@ ${url}`);
         : `${emp.name}休息時間已到，請打休息結束卡`);
       break;
     }
-  }, [authReady, isAdmin, nowTime, employees, todayRecords, todayKey, breakReminderModal, missedPunchModal, lateCheckInModal, lateDrinkModal, longBreakModal]);
+  }, [authReady, isAdmin, nowTime, employees, todayRecords, todayKey, breakReminderModal, missedPunchModal, lateCheckInModal, lateDrinkModal, lateDrinkReminderModal, longBreakModal]);
 
   useEffect(() => {
     if (!breakReminderModal) return;
@@ -4134,6 +4173,47 @@ ${url}`);
           </div>
         )}
 
+        {lateDrinkReminderModal && (
+          <div style={styles.modalOverlay}>
+            <div style={styles.modalCard} role="dialog" aria-modal="true" aria-labelledby="late-drink-daily-reminder-title">
+              <div style={{ fontSize: 46, textAlign: "center", marginBottom: 8 }}>🔔</div>
+              <div id="late-drink-daily-reminder-title" style={styles.modalTitle}>遲到飲料提醒</div>
+              <div style={styles.lateDrinkReminderModalNotice}>
+                你之前選擇「改天補請飲料」，在完成前每天都會提醒你。
+              </div>
+              <div style={styles.lateDrinkReminderModalInfo}>
+                <div style={styles.lateDrinkReminderItemTitle}>
+                  {lateDrinkReminderModal.dateKey} ・ 遲到 {lateDrinkReminderModal.lateMinutes || 0} 分鐘
+                </div>
+                <div style={styles.lateDrinkReminderMeta}>
+                  預計補請：{String(lateDrinkReminderModal.makeUpAt || "尚未填寫").replace("T", " ")}
+                </div>
+                <div style={styles.lateDrinkReminderMeta}>
+                  原因：{lateDrinkReminderModal.reason || "未填寫"}
+                </div>
+              </div>
+              <button
+                type="button"
+                style={{ ...styles.modalLoginBtn, width: "100%", background: "linear-gradient(135deg, #ea580c, #c2410c)" }}
+                onClick={() => {
+                  setLateDrinkReminderModal(null);
+                  markLateDrinkFollowupComplete(lateDrinkReminderModal);
+                }}
+                disabled={lateDrinkFollowupSavingId === lateDrinkReminderModal.id}
+              >
+                {lateDrinkFollowupSavingId === lateDrinkReminderModal.id ? "儲存中…" : "我已請飲料"}
+              </button>
+              <button
+                type="button"
+                style={{ ...styles.mealLaterBtn, width: "100%", marginTop: 10 }}
+                onClick={() => setLateDrinkReminderModal(null)}
+              >
+                今天先關閉提醒
+              </button>
+            </div>
+          </div>
+        )}
+
         {longBreakModal && (
           <div style={styles.modalOverlay}>
             <div style={styles.modalCard}>
@@ -6171,6 +6251,24 @@ const styles = {
     cursor: "pointer",
     whiteSpace: "nowrap",
     flexShrink: 0,
+  },
+  lateDrinkReminderModalNotice: {
+    marginBottom: 14,
+    color: "#7c2d12",
+    background: "#fff7ed",
+    border: "1px solid #fed7aa",
+    borderRadius: 14,
+    padding: "12px 14px",
+    fontWeight: 800,
+    lineHeight: 1.6,
+    textAlign: "center",
+  },
+  lateDrinkReminderModalInfo: {
+    marginBottom: 16,
+    padding: "12px 14px",
+    borderRadius: 14,
+    background: "#fffbeb",
+    border: "1px solid #fde68a",
   },
   dashboardTopGrid: {
     display: "grid",
