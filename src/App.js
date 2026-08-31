@@ -503,6 +503,8 @@ export default function App() {
   const [lateDrinkModal, setLateDrinkModal] = useState(null);
   const [lateDrinkReason, setLateDrinkReason] = useState("");
   const [lateDrinkMakeUpAt, setLateDrinkMakeUpAt] = useState("");
+  const [lateDrinkFollowups, setLateDrinkFollowups] = useState([]);
+  const [lateDrinkFollowupSavingId, setLateDrinkFollowupSavingId] = useState("");
   const [longBreakModal, setLongBreakModal] = useState(null);
   const [longBreakReason, setLongBreakReason] = useState("");
   const [breakReminderModal, setBreakReminderModal] = useState(null);
@@ -829,6 +831,36 @@ ${message}
   useEffect(() => {
     if (!authReady) return;
 
+    return onValue(ref(db, "late_drink_followups"), (snap) => {
+      const data = snap.val() || {};
+      const entries = [];
+      Object.entries(data).forEach(([dateKey, dayData]) => {
+        Object.entries(dayData || {}).forEach(([empKey, item]) => {
+          if (!item || typeof item !== "object") return;
+          entries.push({
+            id: `${dateKey}_${empKey}`,
+            dateKey,
+            empKey,
+            ...item,
+          });
+        });
+      });
+      entries.sort((a, b) => {
+        const aPending = a.treated !== true && a.status !== "completed" && a.status !== "rejected";
+        const bPending = b.treated !== true && b.status !== "completed" && b.status !== "rejected";
+        if (aPending !== bPending) return Number(bPending) - Number(aPending);
+        return Number(b.updatedAt || b.checkoutAt || b.createdAt || 0)
+          - Number(a.updatedAt || a.checkoutAt || a.createdAt || 0);
+      });
+      setLateDrinkFollowups(entries);
+    }, (error) => {
+      console.error("讀取遲到飲料追蹤紀錄失敗：", error);
+    });
+  }, [authReady]);
+
+  useEffect(() => {
+    if (!authReady) return;
+
     const configRef = ref(db, "config/device");
     return onValue(configRef, (snap) => {
       const data = snap.val() || {};
@@ -1092,6 +1124,19 @@ ${message}
       return fallbackKey === todayKey;
     });
   }, [records, todayKey]);
+
+  const currentEmployeeLateDrinkFollowups = useMemo(() => {
+    const targetId = normalizeEmpId(employeeId);
+    if (!targetId) return [];
+    return lateDrinkFollowups
+      .filter((item) => normalizeEmpId(item.empId) === targetId)
+      .filter((item) => item.treated !== true && item.status !== "completed" && item.status !== "rejected")
+      .sort((a, b) => String(a.makeUpAt || "").localeCompare(String(b.makeUpAt || "")));
+  }, [employeeId, lateDrinkFollowups]);
+
+  const adminLateDrinkFollowups = useMemo(() => (
+    lateDrinkFollowups.slice(0, 20)
+  ), [lateDrinkFollowups]);
 
   const liveStatusList = useMemo(() => {
     const map = {};
@@ -2224,6 +2269,7 @@ ${url}`);
   const continueLateCheckout = (treated) => {
     if (!lateDrinkModal) return;
     const reason = lateDrinkReason.trim();
+    const maxMakeUpAt = Date.now() + 3 * 24 * 60 * 60 * 1000;
     if (!treated && !reason) {
       alert("請填寫今天尚未請飲料的原因");
       return;
@@ -2234,6 +2280,10 @@ ${url}`);
     }
     if (!treated && datetimeLocalToTimestamp(lateDrinkMakeUpAt) <= Date.now()) {
       alert("補請時間必須晚於現在");
+      return;
+    }
+    if (!treated && datetimeLocalToTimestamp(lateDrinkMakeUpAt) > maxMakeUpAt) {
+      alert("補請日期只能選擇三天內");
       return;
     }
 
@@ -2251,6 +2301,49 @@ ${url}`);
         lateMinutes,
       },
     });
+  };
+
+  const markLateDrinkFollowupComplete = async (item) => {
+    if (!item?.dateKey || !item?.empKey || lateDrinkFollowupSavingId) return;
+    const targetId = normalizeEmpId(employeeId);
+    if (targetId && targetId !== normalizeEmpId(item.empId)) return;
+    if (!window.confirm(`確認已完成 ${item.dateKey} 的遲到飲料嗎？`)) return;
+
+    setLateDrinkFollowupSavingId(item.id);
+    try {
+      await update(ref(db, `late_drink_followups/${item.dateKey}/${item.empKey}`), {
+        treated: true,
+        status: "completed",
+        completedAt: Date.now(),
+        completedBy: "employee",
+        updatedAt: Date.now(),
+      });
+    } catch (error) {
+      console.error("更新遲到飲料狀態失敗：", error);
+      alert(`更新遲到飲料狀態失敗：${error?.message || "請稍後再試"}`);
+    } finally {
+      setLateDrinkFollowupSavingId("");
+    }
+  };
+
+  const rejectLateDrinkFollowup = async (item) => {
+    if (!isAdmin || !item?.dateKey || !item?.empKey || lateDrinkFollowupSavingId) return;
+    if (!window.confirm(`確定駁回 ${item.name || item.empId || "這筆"} 的遲到飲料紀錄嗎？\n駁回後將停止員工每日提醒。`)) return;
+
+    setLateDrinkFollowupSavingId(item.id);
+    try {
+      await update(ref(db, `late_drink_followups/${item.dateKey}/${item.empKey}`), {
+        status: "rejected",
+        rejectedAt: Date.now(),
+        rejectedBy: "打卡系統管理員",
+        updatedAt: Date.now(),
+      });
+    } catch (error) {
+      console.error("駁回遲到飲料紀錄失敗：", error);
+      alert(`駁回遲到飲料紀錄失敗：${error?.message || "請稍後再試"}`);
+    } finally {
+      setLateDrinkFollowupSavingId("");
+    }
   };
 
   const checkIn = async (type, options = {}) => {
@@ -2377,6 +2470,8 @@ ${url}`);
           dateKey,
           lateMinutes: options.drinkFollowup.lateMinutes || 0,
           treated: Boolean(options.drinkFollowup.treated),
+          status: options.drinkFollowup.treated ? "completed" : "pending",
+          choice: options.drinkFollowup.treated ? "today" : "later",
           reason: options.drinkFollowup.reason || "",
           makeUpAt: options.drinkFollowup.makeUpAt || "",
           checkoutAt: createdAt,
@@ -4008,10 +4103,14 @@ ${url}`);
                   style={{ ...styles.bigInput, marginBottom: 12 }}
                   type="datetime-local"
                   min={formatDateTimeLocalValue(Date.now())}
+                  max={formatDateTimeLocalValue(Date.now() + 3 * 24 * 60 * 60 * 1000)}
                   value={lateDrinkMakeUpAt}
                   onChange={(event) => setLateDrinkMakeUpAt(event.target.value)}
                   aria-label="預計補請時間"
                 />
+                <div style={{ color: "#9a3412", fontSize: 12, fontWeight: 800, marginTop: -4, marginBottom: 10 }}>
+                  補請日期限選今天起三天內
+                </div>
                 <button
                   style={{ ...styles.modalLoginBtn, width: "100%", background: "linear-gradient(135deg, #f97316, #ea580c)" }}
                   onClick={() => continueLateCheckout(false)}
@@ -4412,6 +4511,38 @@ ${url}`);
                 if (e.key === "Enter") checkIn("上班");
               }}
             />
+
+            {currentEmployeeLateDrinkFollowups.length > 0 && (
+              <section style={styles.lateDrinkReminderCard} aria-live="polite">
+                <div style={styles.lateDrinkReminderTitle}>🥤 遲到飲料待處理</div>
+                <div style={styles.lateDrinkReminderHint}>
+                  你選擇了改天補請；每天輸入工號都會提醒，完成後請按「我已請飲料」。
+                </div>
+                {currentEmployeeLateDrinkFollowups.map((item) => (
+                  <div key={item.id} style={styles.lateDrinkReminderRow}>
+                    <div style={styles.lateDrinkReminderInfo}>
+                      <div style={styles.lateDrinkReminderItemTitle}>
+                        {item.dateKey} ・ 遲到 {item.lateMinutes || 0} 分鐘
+                      </div>
+                      <div style={styles.lateDrinkReminderMeta}>
+                        預計補請：{String(item.makeUpAt || "尚未填寫").replace("T", " ")}
+                      </div>
+                      <div style={styles.lateDrinkReminderMeta}>
+                        原因：{item.reason || "未填寫"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      style={styles.lateDrinkReminderBtn}
+                      disabled={lateDrinkFollowupSavingId === item.id}
+                      onClick={() => markLateDrinkFollowupComplete(item)}
+                    >
+                      {lateDrinkFollowupSavingId === item.id ? "儲存中…" : "我已請飲料"}
+                    </button>
+                  </div>
+                ))}
+              </section>
+            )}
 
             <div className="checkin-action-grid" style={styles.dashboardButtonGrid}>
               <button
@@ -5433,6 +5564,56 @@ ${url}`);
               })
             )}
 
+                <div style={{ ...styles.deviceLabel, marginTop: 22 }}>遲到飲料追蹤</div>
+                <div style={{ color: "#64748b", fontSize: 12, fontWeight: 700, lineHeight: 1.6 }}>
+                  員工選擇「改天」後會每天看到提醒；員工按「我已請飲料」或管理員駁回後，這筆提醒就會停止。
+                </div>
+                {adminLateDrinkFollowups.length === 0 ? (
+                  <div style={styles.emptyText}>目前沒有遲到飲料紀錄</div>
+                ) : (
+                  adminLateDrinkFollowups.map((item) => {
+                    const pending = item.treated !== true && item.status !== "completed" && item.status !== "rejected";
+                    const statusMeta = item.status === "rejected"
+                      ? { label: "已駁回", color: "#991b1b", background: "#fee2e2" }
+                      : item.treated === true || item.status === "completed"
+                        ? { label: "已請飲料", color: "#166534", background: "#dcfce7" }
+                        : { label: "待補請", color: "#9a3412", background: "#ffedd5" };
+                    return (
+                      <div key={item.id} style={{ ...styles.exceptionRecordCard, borderLeft: pending ? "5px solid #f97316" : "5px solid #cbd5e1" }}>
+                        <div style={styles.exceptionRecordHeader}>
+                          <div>
+                            <div style={styles.employeeName}>{item.name || item.empId || "未具名員工"}</div>
+                            <div style={styles.employeeId}>
+                              {item.store || "未填店名"} ・ {item.empId || "未填工號"} ・ {item.dateKey || "未填日期"}
+                            </div>
+                            <div style={{ ...styles.employeeId, marginTop: 4 }}>
+                              遲到 {item.lateMinutes || 0} 分鐘 ・ 預計補請 {String(item.makeUpAt || "未填寫").replace("T", " ")}
+                            </div>
+                          </div>
+                          <span style={{ ...styles.statusBadge, color: statusMeta.color, background: statusMeta.background }}>
+                            {statusMeta.label}
+                          </span>
+                        </div>
+                        <div style={{ ...styles.employeeId, marginTop: 8, color: statusMeta.color, fontWeight: 900 }}>
+                          員工選擇：{item.choice === "today" || item.treated === true ? "今天已請" : "改天補請"}
+                        </div>
+                        <div style={styles.exceptionReasonText}>
+                          原因：{item.reason || "未填原因"}
+                        </div>
+                        {pending ? (
+                          <button
+                            style={{ ...styles.deleteBtn, marginTop: 10 }}
+                            disabled={lateDrinkFollowupSavingId === item.id}
+                            onClick={() => rejectLateDrinkFollowup(item)}
+                          >
+                            {lateDrinkFollowupSavingId === item.id ? "處理中…" : "駁回"}
+                          </button>
+                        ) : null}
+                      </div>
+                    );
+                  })
+                )}
+
                 <div style={{ ...styles.deviceLabel, marginTop: 22 }}>整日請假／曠職</div>
                 <div style={styles.exceptionRecordCard}>
                   <div style={{ color: "#64748b", fontSize: 12, fontWeight: 700, lineHeight: 1.6 }}>
@@ -5933,6 +6114,63 @@ const styles = {
     marginBottom: 14,
     fontWeight: 900,
     textAlign: "center",
+  },
+  lateDrinkReminderCard: {
+    marginBottom: 14,
+    padding: "14px 16px",
+    borderRadius: 18,
+    background: "#fff7ed",
+    color: "#7c2d12",
+    border: "1px solid #fdba74",
+  },
+  lateDrinkReminderTitle: {
+    fontSize: 17,
+    fontWeight: 950,
+  },
+  lateDrinkReminderHint: {
+    marginTop: 5,
+    color: "#9a3412",
+    fontSize: 12,
+    fontWeight: 700,
+    lineHeight: 1.6,
+  },
+  lateDrinkReminderRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    flexWrap: "wrap",
+    marginTop: 12,
+    paddingTop: 12,
+    borderTop: "1px solid #fed7aa",
+  },
+  lateDrinkReminderInfo: {
+    minWidth: 0,
+    flex: 1,
+  },
+  lateDrinkReminderItemTitle: {
+    color: "#7c2d12",
+    fontSize: 14,
+    fontWeight: 950,
+  },
+  lateDrinkReminderMeta: {
+    marginTop: 3,
+    color: "#9a3412",
+    fontSize: 12,
+    fontWeight: 700,
+    lineHeight: 1.5,
+    wordBreak: "break-word",
+  },
+  lateDrinkReminderBtn: {
+    border: "none",
+    borderRadius: 12,
+    padding: "10px 12px",
+    background: "#ea580c",
+    color: "#fff",
+    fontWeight: 950,
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+    flexShrink: 0,
   },
   dashboardTopGrid: {
     display: "grid",
