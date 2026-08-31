@@ -4910,6 +4910,7 @@ ${url}`);
               <div style={styles.panelTitle}>請假／調假申請</div>
               <div style={styles.badge}>{leaveRequests.filter((item) => ["pending_manager", "pending"].includes(item.status || "pending")).length} 待審</div>
             </div>
+            <ScheduleAdjustmentFlow compact />
               <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, marginBottom: 12 }}>
               調班申請會先送到調班對象的員工 App；對方按同意後才會進入店長／管理員審核。班表每天晚上才發布隔天內容；若申請早於班表建立，核准結果會先保留，發布相關班表時再套用。
             </div>
@@ -5602,6 +5603,40 @@ ${url}`);
   );
 }
 
+function ScheduleAdjustmentFlow({ compact = false }) {
+  return (
+    <details className={`schedule-flow-details${compact ? " schedule-flow-details-compact" : ""}`}>
+      <summary>查看調班流程</summary>
+      <div className="schedule-flow-grid">
+        <div className="schedule-flow-step">
+          <span className="schedule-flow-number">1</span>
+          <div>
+            <strong>送出調班申請</strong>
+            <p>填寫原休假日期、調整後日期、調班對象，並詳細說明原因。</p>
+          </div>
+        </div>
+        <div className="schedule-flow-step">
+          <span className="schedule-flow-number">2</span>
+          <div>
+            <strong>調班對象先同意</strong>
+            <p>對方 App 會立即收到通知；按同意後才會送出審核。</p>
+          </div>
+        </div>
+        <div className="schedule-flow-step">
+          <span className="schedule-flow-number">3</span>
+          <div>
+            <strong>店長／管理員審核</strong>
+            <p>核准後於班表發布時套用，並通知相關門市人員。</p>
+          </div>
+        </div>
+      </div>
+      <div className="schedule-flow-timeline">
+        送出申請 → 對方 App 同意 → 店長／管理員審核 → 班表發布套用 → 通知門市
+      </div>
+    </details>
+  );
+}
+
 function LeaveAdjustmentRequestPage({ employees, todayKey, close }) {
   const [employeeId, setEmployeeId] = useState("");
   const requestType = "調假";
@@ -5698,6 +5733,7 @@ function LeaveAdjustmentRequestPage({ employees, todayKey, close }) {
               <p style={styles.kioskDesc}>需要調班時，請一併填寫調整後的上班日期；送出後會先通知調班對象，對方同意後再交由店長／管理員審核。</p>
             </div>
           </div>
+          <ScheduleAdjustmentFlow />
           <form onSubmit={submit} style={{ display: "grid", gap: 14, maxWidth: 760, margin: "0 auto" }}>
             <label style={styles.leaveFieldLabel}>
               申請員工
@@ -5727,7 +5763,7 @@ function LeaveAdjustmentRequestPage({ employees, todayKey, close }) {
             </div>
             <label style={styles.leaveFieldLabel}>
               調假原因／備註
-              <textarea value={reason} onChange={(event) => setReason(event.target.value)} maxLength={300} rows={5} placeholder="例如：原本 9/2 上班，想調到 9/4。" style={{ ...styles.scheduleInput, resize: "vertical", minHeight: 120 }} disabled={saving} />
+              <textarea value={reason} onChange={(event) => setReason(event.target.value)} maxLength={300} rows={5} placeholder="請詳細說明原因，例如：家中臨時有事，需要將 9/2 的班調至 9/4，並已先與對方確認。" style={{ ...styles.scheduleInput, resize: "vertical", minHeight: 120 }} disabled={saving} />
             </label>
             <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, padding: "10px 12px", borderRadius: 14, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
               調班必須至少提前 3 天申請，並同時填寫調整後日期與調班對象。對方同意後才會送店長／管理員審核；因班表每天晚上才發布隔天內容，若核准時班表尚未建立，核准結果會先保留，發布相關班表時自動套用。

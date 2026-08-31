@@ -164,6 +164,86 @@ code {
 .admin-exceptions-panel { grid-area: exceptions; }
 .admin-record-panel { grid-area: records; }
 
+.schedule-flow-details {
+  margin: 0 0 16px;
+  border: 1px solid #d8e8dc;
+  border-radius: 16px;
+  background: #f7fbf8;
+  overflow: hidden;
+}
+
+.schedule-flow-details summary {
+  cursor: pointer;
+  padding: 12px 14px;
+  color: #176044;
+  font-size: 14px;
+  font-weight: 900;
+  list-style-position: inside;
+}
+
+.schedule-flow-details[open] summary {
+  border-bottom: 1px solid #d8e8dc;
+}
+
+.schedule-flow-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 14px;
+}
+
+.schedule-flow-step {
+  display: flex;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #dbe9df;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.schedule-flow-number {
+  display: inline-flex;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: #fff;
+  background: #22684f;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.schedule-flow-step strong {
+  display: block;
+  color: #164e39;
+  font-size: 13px;
+}
+
+.schedule-flow-step p {
+  margin: 5px 0 0;
+  color: #718078;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.schedule-flow-timeline {
+  margin: 0 14px 14px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  color: #dff2e5;
+  background: #1d5944;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.6;
+}
+
+.schedule-flow-details-compact {
+  margin-top: 12px;
+  margin-bottom: 12px;
+}
+
 @media (max-width: 900px) {
   .admin-grid {
     grid-template-columns: 1fr !important;
@@ -178,6 +258,12 @@ code {
       "export"
       "history";
     gap: 14px !important;
+  }
+}
+
+@media (max-width: 700px) {
+  .schedule-flow-grid {
+    grid-template-columns: 1fr;
   }
 }
 
