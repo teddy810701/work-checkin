@@ -15,15 +15,16 @@ module.exports = async (request, response) => {
     return;
   }
 
-  const { dateKey, schedules, previousSchedules = {} } = request.body || {};
+  const { dateKey, schedules, previousSchedules = {}, dailyDutyAssignments = {} } = request.body || {};
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateKey || ""))
     || !schedules || typeof schedules !== "object" || Array.isArray(schedules)
-    || !previousSchedules || typeof previousSchedules !== "object" || Array.isArray(previousSchedules)) {
+    || !previousSchedules || typeof previousSchedules !== "object" || Array.isArray(previousSchedules)
+    || !dailyDutyAssignments || typeof dailyDutyAssignments !== "object" || Array.isArray(dailyDutyAssignments)) {
     response.status(400).json({ error: "invalid-payload" });
     return;
   }
 
-  const body = JSON.stringify({ dateKey, schedules, previousSchedules });
+  const body = JSON.stringify({ dateKey, schedules, previousSchedules, dailyDutyAssignments });
   const signature = crypto.createHmac("sha256", PUSH_SECRET).update(body).digest("hex");
 
   try {

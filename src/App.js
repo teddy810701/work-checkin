@@ -396,6 +396,71 @@ const getScheduleWorkStore = (item) => {
     : homeStore;
 };
 
+// 值日生安排固定留在打卡系統：依當天實際上班的人選出每店兩位，
+// 以當月已安排次數最低者優先。店長不另外排除，因此也會和員工一起平均輪值。
+const DAILY_DUTY_STORES = ["西螺文昌店", "斗南站前店"];
+const DAILY_DUTY_MEMBERS_PER_STORE = 2;
+const DAILY_DUTY_STORE_IDS = {
+  "西螺文昌店": "storeA",
+  "斗南站前店": "storeB",
+};
+
+const isWorkingSchedule = (item) => item?.working === true || item?.working === "true";
+
+const getDailyDutyStoreKey = (storeName) => safeFirebaseKey(storeName);
+
+const getDailyDutyMembers = (assignment) => {
+  if (Array.isArray(assignment?.members) && assignment.members.length) return assignment.members;
+  if (assignment?.members && typeof assignment.members === "object") return Object.values(assignment.members).filter(Boolean);
+  return assignment?.empId ? [assignment] : [];
+};
+
+const getDailyDutyCandidates = (employees = [], scheduleData = {}, targetStore = "") => {
+  const scheduleByEmployee = {};
+  Object.entries(scheduleData || {}).forEach(([key, item]) => {
+    const employeeKey = String(item?.empId || key);
+    scheduleByEmployee[employeeKey] = item || {};
+  });
+
+  return employees
+    .map((employee) => {
+      const employeeKey = String(employee.empId || employee.id || "");
+      const schedule = scheduleByEmployee[employeeKey];
+      if (!employeeKey || !isWorkingSchedule(schedule)) return null;
+      if (getScheduleWorkStore({
+        ...schedule,
+        store: schedule.store || employee.store || "",
+      }) !== targetStore) return null;
+      return {
+        empId: employeeKey,
+        name: employee.name || employeeKey,
+        store: targetStore,
+        role: employee.role || "",
+      };
+    })
+    .filter(Boolean);
+};
+
+const getDailyDutyAssignmentCounts = (history = {}, monthKey, targetStore, excludeDateKey = "") => {
+  const counts = {};
+  const storeKey = getDailyDutyStoreKey(targetStore);
+  Object.entries(history || {}).forEach(([dateKey, dayData]) => {
+    if (dateKey === excludeDateKey || !String(dateKey).startsWith(`${monthKey}-`)) return;
+    const assignment = dayData?.[storeKey];
+    const members = getDailyDutyMembers(assignment);
+    members.forEach((member) => {
+      const empId = String(member?.empId || "");
+      if (empId) counts[empId] = (counts[empId] || 0) + 1;
+    });
+  });
+  return counts;
+};
+
+const getDailyDutyTieScore = (dateKey, targetStore, empId) => {
+  const source = `${dateKey}|${targetStore}|${empId}`;
+  return [...source].reduce((total, character) => ((total * 31) + character.charCodeAt(0)) % 1000003, 7);
+};
+
 // 班表通知只比較會影響員工的欄位；revision 只用來讓每次真正修改
 // 產生新的通知事件，避免同一版班表在輪詢時重複推播。
 const getComparableSchedule = (item = {}) => ({
@@ -903,6 +968,15 @@ ${message}
   }, [authReady, todayKey]);
 
   useEffect(() => {
+    if (!authReady || !todayKey || !employees.length || !Object.keys(todayScheduleData || {}).length) return undefined;
+    ensureDailyDutyAssignments(todayKey, todayScheduleData)
+      .catch((error) => {
+        console.error("自動安排今日值日生失敗：", error);
+      });
+    return undefined;
+  }, [authReady, todayKey, employees, todayScheduleData]);
+
+  useEffect(() => {
     if (!authReady || !todayKey) return;
     return onValue(ref(db, `attendance_exceptions/${todayKey}`), (snap) => {
       setTodayAttendanceExceptions(snap.val() || {});
@@ -1052,6 +1126,86 @@ ${message}
     });
     return groups;
   }, [employees]);
+
+  const ensureDailyDutyAssignments = async (dateKey, scheduleData) => {
+    if (!dateKey || !employees.length) return {};
+
+    const historySnapshot = await get(ref(db, "daily_duty_assignments"));
+    const history = historySnapshot.val() || {};
+    const monthKey = getMonthKeyFromDateKey(dateKey);
+    const updates = {};
+    const resolved = {};
+
+    DAILY_DUTY_STORES.forEach((targetStore) => {
+      const storeKey = getDailyDutyStoreKey(targetStore);
+      const candidates = getDailyDutyCandidates(employees, scheduleData, targetStore);
+      const existing = history?.[dateKey]?.[storeKey] || null;
+      const existingMembers = getDailyDutyMembers(existing);
+      const dutyMemberCount = Math.min(DAILY_DUTY_MEMBERS_PER_STORE, candidates.length);
+      const existingIsWorking = existingMembers.length === dutyMemberCount
+        && existingMembers.every((member) => candidates.some((candidate) => candidate.empId === String(member?.empId || "")));
+
+      if (existing && existingIsWorking) {
+        resolved[storeKey] = existing;
+        return;
+      }
+
+      if (!candidates.length) {
+        if (existing) updates[`daily_duty_assignments/${dateKey}/${storeKey}`] = null;
+        return;
+      }
+
+      const counts = getDailyDutyAssignmentCounts(history, monthKey, targetStore, dateKey);
+      const yesterdayKey = addDateKeyDays(dateKey, -1);
+      const yesterdayAssignment = history?.[yesterdayKey]?.[storeKey] || {};
+      const yesterdayMembers = getDailyDutyMembers(yesterdayAssignment);
+      const yesterdayEmpIds = new Set(yesterdayMembers.map((member) => String(member?.empId || "")));
+      const selectedMembers = [];
+      const selectionCounts = { ...counts };
+
+      for (let slot = 0; slot < dutyMemberCount; slot += 1) {
+        const remaining = candidates.filter((candidate) => !selectedMembers.some((member) => member.empId === candidate.empId));
+        const nonYesterday = remaining.filter((candidate) => !yesterdayEmpIds.has(candidate.empId));
+        const pool = nonYesterday.length >= dutyMemberCount - slot ? nonYesterday : remaining;
+        const selected = [...pool].sort((a, b) => (
+          (selectionCounts[a.empId] || 0) - (selectionCounts[b.empId] || 0)
+          || getDailyDutyTieScore(`${dateKey}-${slot}`, targetStore, a.empId) - getDailyDutyTieScore(`${dateKey}-${slot}`, targetStore, b.empId)
+          || a.empId.localeCompare(b.empId)
+        ))[0];
+        if (!selected) break;
+        selectedMembers.push(selected);
+        selectionCounts[selected.empId] = (selectionCounts[selected.empId] || 0) + 1;
+      }
+
+      const now = Date.now();
+      const members = selectedMembers.map((member) => ({
+        ...member,
+        assignmentCountBefore: counts[member.empId] || 0,
+      }));
+      const primaryMember = members[0];
+      const assignment = {
+        dateKey,
+        store: targetStore,
+        storeId: DAILY_DUTY_STORE_IDS[targetStore] || "",
+        // 保留 empId/name 方便舊版畫面讀取；members 是目前正式的多位值日生資料。
+        empId: primaryMember.empId,
+        name: primaryMember.name,
+        role: primaryMember.role,
+        assignmentCountBefore: primaryMember.assignmentCountBefore,
+        members,
+        memberCount: members.length,
+        source: "auto_monthly_balanced",
+        createdAt: existing?.createdAt || now,
+        updatedAt: now,
+      };
+
+      updates[`daily_duty_assignments/${dateKey}/${storeKey}`] = assignment;
+      resolved[storeKey] = assignment;
+    });
+
+    if (Object.keys(updates).length) await update(ref(db), updates);
+    return resolved;
+  };
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -1522,6 +1676,15 @@ ${url}`);
         await update(ref(db), pendingScheduleUpdates);
       }
 
+      // 班表發布後立即建立該日值日生；當天打卡頁也會再次確認，避免尚未發布班表時漏掉安排。
+      let dutyAssignments = {};
+      try {
+        dutyAssignments = await ensureDailyDutyAssignments(targetDate, finalSchedule);
+      } catch (dutyError) {
+        // 值日生是輔助資訊，不能阻斷班表發布；下次打卡頁載入時會再嘗試。
+        console.warn("自動安排值日生失敗，班表仍已保存：", dutyError);
+      }
+
       const notificationResponse = await fetch("/api/publish-employee-schedule", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1529,6 +1692,7 @@ ${url}`);
           dateKey: targetDate,
           schedules: finalSchedule,
           previousSchedules: previousSchedule,
+          dailyDutyAssignments: dutyAssignments,
         }),
       });
       const notificationResult = await notificationResponse.json().catch(() => ({}));
