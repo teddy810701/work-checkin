@@ -415,6 +415,16 @@ const getDailyDutyMembers = (assignment) => {
   return assignment?.empId ? [assignment] : [];
 };
 
+const isEmployeeDailyDuty = (assignments, empId) => {
+  const targetEmpId = String(empId || "").trim().toUpperCase();
+  if (!targetEmpId || !assignments || typeof assignments !== "object") return false;
+  return Object.values(assignments).some((assignment) => (
+    getDailyDutyMembers(assignment).some((member) => (
+      String(member?.empId || "").trim().toUpperCase() === targetEmpId
+    ))
+  ));
+};
+
 const getDailyDutyCandidates = (employees = [], scheduleData = {}, targetStore = "") => {
   const scheduleByEmployee = {};
   Object.entries(scheduleData || {}).forEach(([key, item]) => {
@@ -2661,8 +2671,16 @@ ${url}`);
     const dateKey = formatTaipeiDateKey(createdAt);
 
     try {
-      const scheduleSnap = await get(ref(db, `schedules/${dateKey}/${emp.empId || emp.id}`));
+      const [scheduleSnap, dutySnapshot] = await Promise.all([
+        get(ref(db, `schedules/${dateKey}/${emp.empId || emp.id}`)),
+        type === "上班"
+          ? get(ref(db, `daily_duty_assignments/${dateKey}`))
+          : Promise.resolve(null),
+      ]);
       const todaySchedule = scheduleSnap.val() || {};
+      const isDailyDuty = type === "上班"
+        && isEmployeeDailyDuty(dutySnapshot?.val() || {}, emp.empId || emp.id);
+      const dutyReminderText = isDailyDuty ? "，今天你是值日生" : "";
       const record = {
         empId: emp.empId || emp.id,
         name: emp.name,
@@ -2741,9 +2759,9 @@ ${url}`);
         });
 
         if (lateMinutes > 0) {
-          speakText(`你遲到了，遲到${lateMinutes}分鐘，本月積分${monthlyPointsText}分`);
+          speakText(`你遲到了，遲到${lateMinutes}分鐘，本月積分${monthlyPointsText}分${dutyReminderText}`);
         } else {
-          speakText(`${type}打卡完成，本月積分${monthlyPointsText}分`);
+          speakText(`${type}打卡完成，本月積分${monthlyPointsText}分${dutyReminderText}`);
         }
       } catch (error) {
         console.error("讀取本月積分失敗:", error);
@@ -2759,7 +2777,7 @@ ${url}`);
           createdAt,
         });
 
-        speakText(`${type}打卡完成，積分讀取失敗`);
+        speakText(`${type}打卡完成，積分讀取失敗${dutyReminderText}`);
       }
       return true;
     } catch (error) {
