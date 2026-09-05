@@ -668,6 +668,7 @@ export default function App() {
   const [publicScheduleData, setPublicScheduleData] = useState({});
   const [publicScheduleExceptions, setPublicScheduleExceptions] = useState({});
   const [todayScheduleData, setTodayScheduleData] = useState({});
+  const [todayDutyAssignments, setTodayDutyAssignments] = useState({});
   const [todayAttendanceExceptions, setTodayAttendanceExceptions] = useState({});
   const [scheduleLinkCopied, setScheduleLinkCopied] = useState(false);
 
@@ -974,6 +975,13 @@ ${message}
     const schedRef = ref(db, `schedules/${todayKey}`);
     return onValue(schedRef, (snap) => {
       setTodayScheduleData(snap.val() || {});
+    });
+  }, [authReady, todayKey]);
+
+  useEffect(() => {
+    if (!authReady || !todayKey) return undefined;
+    return onValue(ref(db, `daily_duty_assignments/${todayKey}`), (snap) => {
+      setTodayDutyAssignments(snap.val() || {});
     });
   }, [authReady, todayKey]);
 
@@ -3917,6 +3925,18 @@ ${url}`);
       .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")));
   }, [todayScheduleData, todayAttendanceExceptions]);
 
+  const todayDutyStoreList = useMemo(() => (
+    DAILY_DUTY_STORES.map((storeName) => {
+      const directAssignment = todayDutyAssignments?.[getDailyDutyStoreKey(storeName)];
+      const assignment = directAssignment || Object.values(todayDutyAssignments || {})
+        .find((item) => item?.store === storeName);
+      return {
+        storeName,
+        members: getDailyDutyMembers(assignment),
+      };
+    })
+  ), [todayDutyAssignments]);
+
   const firstWorkInByEmpToday = useMemo(() => {
     const map = {};
     todayRecords
@@ -4759,6 +4779,28 @@ ${url}`);
               此設備尚未授權，請先由管理員進入後台綁定西螺或斗南設備。
             </div>
           )}
+
+          <section style={styles.dailyDutyPanel}>
+            <div style={styles.dailyDutyHeader}>
+              <div>
+                <div style={styles.dailyDutyEyebrow}>TODAY'S DUTY</div>
+                <div style={styles.dailyDutyTitle}>🧹 今日值日生</div>
+              </div>
+              <div style={styles.dailyDutyDate}>{todayKey.replace(/-/g, "/")}</div>
+            </div>
+            <div style={styles.dailyDutyGrid}>
+              {todayDutyStoreList.map(({ storeName, members }) => (
+                <div key={storeName} style={styles.dailyDutyStoreCard}>
+                  <div style={styles.dailyDutyStoreName}>{storeName}</div>
+                  <div style={members.length ? styles.dailyDutyNames : styles.dailyDutyEmpty}>
+                    {members.length
+                      ? members.map((member) => member?.name || member?.empId).filter(Boolean).join("、")
+                      : "尚未安排"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
 
           <section className="checkin-top-grid" style={styles.dashboardTopGrid}>
             <div style={styles.latePanel}>
@@ -6419,6 +6461,66 @@ const styles = {
     marginBottom: 14,
     fontWeight: 900,
     textAlign: "center",
+  },
+  dailyDutyPanel: {
+    background: "linear-gradient(135deg, #ecfdf5 0%, #f0fdf4 55%, #fffbeb 100%)",
+    border: "1px solid #86efac",
+    borderRadius: 22,
+    padding: "16px 18px",
+    marginBottom: 16,
+    boxShadow: "0 10px 28px rgba(22, 101, 52, 0.08)",
+  },
+  dailyDutyHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 12,
+  },
+  dailyDutyEyebrow: {
+    color: "#c66a1b",
+    fontSize: 10,
+    fontWeight: 950,
+    letterSpacing: 1.5,
+  },
+  dailyDutyTitle: {
+    marginTop: 3,
+    color: "#14532d",
+    fontSize: 19,
+    fontWeight: 950,
+  },
+  dailyDutyDate: {
+    color: "#64748b",
+    fontSize: 12,
+    fontWeight: 800,
+  },
+  dailyDutyGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
+    gap: 10,
+  },
+  dailyDutyStoreCard: {
+    background: "rgba(255, 255, 255, 0.88)",
+    border: "1px solid #d1fae5",
+    borderRadius: 16,
+    padding: "12px 14px",
+  },
+  dailyDutyStoreName: {
+    color: "#64748b",
+    fontSize: 12,
+    fontWeight: 850,
+  },
+  dailyDutyNames: {
+    marginTop: 5,
+    color: "#166534",
+    fontSize: 17,
+    fontWeight: 950,
+  },
+  dailyDutyEmpty: {
+    marginTop: 5,
+    color: "#94a3b8",
+    fontSize: 15,
+    fontWeight: 850,
   },
   lateDrinkReminderCard: {
     marginBottom: 14,
