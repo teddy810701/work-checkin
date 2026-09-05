@@ -6417,7 +6417,7 @@ const styles = {
     border: "1px solid #e2e8f0",
   },
   clockTime: {
-    fontSize: 38,
+    fontSize: 42,
     lineHeight: 1,
     color: "#047857",
     fontWeight: 950,

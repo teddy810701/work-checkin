@@ -23,11 +23,18 @@ code {
   }
 
   .checkin-header {
-    grid-template-columns: minmax(0, 1fr) 220px !important;
+    grid-template-columns: minmax(0, 1fr) 260px auto !important;
+    gap: 12px !important;
   }
 
   .checkin-header-actions {
-    grid-column: 1 / -1;
+    grid-column: auto;
+    flex-wrap: nowrap !important;
+  }
+
+  .checkin-header-actions button {
+    white-space: nowrap;
+    padding: 10px 12px !important;
   }
 
   .checkin-action-grid {
@@ -63,11 +70,16 @@ code {
   }
 
   .checkin-header {
-    grid-template-columns: minmax(0, 1fr) auto !important;
+    grid-template-columns: minmax(0, 1fr) 220px auto !important;
   }
 
   .checkin-clock {
-    min-width: 170px;
+    min-width: 0;
+    padding: 10px 14px !important;
+  }
+
+  .checkin-clock > div:first-child {
+    font-size: 34px !important;
   }
 
   .checkin-top-grid,
