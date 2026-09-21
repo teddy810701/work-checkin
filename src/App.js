@@ -87,6 +87,13 @@ const getYesterdayTaipeiDateKey = () => {
   return formatTaipeiDateKey(yesterday);
 };
 
+const getTaipeiWeekdayLabel = (dateKey = "") => {
+  const [year, month, day] = String(dateKey || "").split("-").map(Number);
+  if (!year || !month || !day) return "";
+  const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  return ["日", "一", "二", "三", "四", "五", "六"][weekday] || "";
+};
+
 // 行政院人事行政總處 115 年（2026）政府行政機關辦公日曆表中的平日放假日。
 // 週六、週日會另外依日期自動判斷。
 const TAIWAN_HOLIDAYS_2026 = new Set([
@@ -668,7 +675,7 @@ export default function App() {
   const [publicScheduleData, setPublicScheduleData] = useState({});
   const [publicScheduleExceptions, setPublicScheduleExceptions] = useState({});
   const [todayScheduleData, setTodayScheduleData] = useState({});
-  const [todayDutyAssignments, setTodayDutyAssignments] = useState({});
+  const [dutyDisplayAssignments, setDutyDisplayAssignments] = useState({});
   const [todayAttendanceExceptions, setTodayAttendanceExceptions] = useState({});
   const [scheduleLinkCopied, setScheduleLinkCopied] = useState(false);
 
@@ -969,6 +976,14 @@ ${message}
   }, []);
 
   const todayKey = useMemo(() => formatTaipeiDateKey(), [nowTime]);
+  const dutyDisplayDateKey = useMemo(
+    () => {
+      const currentHour = Number(String(nowTime || "").split(" ")[1]?.split(":")[0]);
+      return currentHour >= 17 ? getTomorrowTaipeiDateKey() : todayKey;
+    },
+    [todayKey, nowTime],
+  );
+  const dutyDisplayIsTomorrow = dutyDisplayDateKey !== todayKey;
 
   useEffect(() => {
     if (!authReady || !todayKey) return;
@@ -979,11 +994,11 @@ ${message}
   }, [authReady, todayKey]);
 
   useEffect(() => {
-    if (!authReady || !todayKey) return undefined;
-    return onValue(ref(db, `daily_duty_assignments/${todayKey}`), (snap) => {
-      setTodayDutyAssignments(snap.val() || {});
+    if (!authReady || !dutyDisplayDateKey) return undefined;
+    return onValue(ref(db, `daily_duty_assignments/${dutyDisplayDateKey}`), (snap) => {
+      setDutyDisplayAssignments(snap.val() || {});
     });
-  }, [authReady, todayKey]);
+  }, [authReady, dutyDisplayDateKey]);
 
   useEffect(() => {
     if (!authReady || !todayKey || !employees.length || !Object.keys(todayScheduleData || {}).length) return undefined;
@@ -1158,20 +1173,19 @@ ${message}
       const storeKey = getDailyDutyStoreKey(targetStore);
       const candidates = getDailyDutyCandidates(employees, scheduleData, targetStore);
       const existing = history?.[dateKey]?.[storeKey] || null;
-      const existingMembers = getDailyDutyMembers(existing);
-      const dutyMemberCount = Math.min(DAILY_DUTY_MEMBERS_PER_STORE, candidates.length);
-      const existingIsWorking = existingMembers.length === dutyMemberCount
-        && existingMembers.every((member) => candidates.some((candidate) => candidate.empId === String(member?.empId || "")));
 
-      if (existing && existingIsWorking) {
+      // 同一日期一旦完成安排就鎖定，避免重新整理或重新發布班表時換人。
+      // 若日後需要改派，應由管理員明確執行重新安排，而不是背景自動改名單。
+      if (existing) {
         resolved[storeKey] = existing;
         return;
       }
 
       if (!candidates.length) {
-        if (existing) updates[`daily_duty_assignments/${dateKey}/${storeKey}`] = null;
         return;
       }
+
+      const dutyMemberCount = Math.min(DAILY_DUTY_MEMBERS_PER_STORE, candidates.length);
 
       const counts = getDailyDutyAssignmentCounts(history, monthKey, targetStore, dateKey);
       const yesterdayKey = addDateKeyDays(dateKey, -1);
@@ -3925,17 +3939,17 @@ ${url}`);
       .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")));
   }, [todayScheduleData, todayAttendanceExceptions]);
 
-  const todayDutyStoreList = useMemo(() => (
+  const dutyDisplayStoreList = useMemo(() => (
     DAILY_DUTY_STORES.map((storeName) => {
-      const directAssignment = todayDutyAssignments?.[getDailyDutyStoreKey(storeName)];
-      const assignment = directAssignment || Object.values(todayDutyAssignments || {})
+      const directAssignment = dutyDisplayAssignments?.[getDailyDutyStoreKey(storeName)];
+      const assignment = directAssignment || Object.values(dutyDisplayAssignments || {})
         .find((item) => item?.store === storeName);
       return {
         storeName,
         members: getDailyDutyMembers(assignment),
       };
     })
-  ), [todayDutyAssignments]);
+  ), [dutyDisplayAssignments]);
 
   const firstWorkInByEmpToday = useMemo(() => {
     const map = {};
@@ -4784,12 +4798,14 @@ ${url}`);
             <div style={styles.dailyDutyHeader}>
               <div>
                 <div style={styles.dailyDutyEyebrow}>TODAY'S DUTY</div>
-                <div style={styles.dailyDutyTitle}>🧹 今日值日生</div>
+                <div style={styles.dailyDutyTitle}>🧹 {dutyDisplayIsTomorrow ? "明日值日生" : "今日值日生"}</div>
               </div>
-              <div style={styles.dailyDutyDate}>{todayKey.replace(/-/g, "/")}</div>
+              <div style={styles.dailyDutyDate}>
+                {dutyDisplayDateKey.replace(/-/g, "/")}（{getTaipeiWeekdayLabel(dutyDisplayDateKey)}）
+              </div>
             </div>
             <div style={styles.dailyDutyGrid}>
-              {todayDutyStoreList.map(({ storeName, members }) => (
+              {dutyDisplayStoreList.map(({ storeName, members }) => (
                 <div key={storeName} style={styles.dailyDutyStoreCard}>
                   <div style={styles.dailyDutyStoreName}>{storeName}</div>
                   <div style={members.length ? styles.dailyDutyNames : styles.dailyDutyEmpty}>
