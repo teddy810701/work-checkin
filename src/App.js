@@ -6,6 +6,7 @@ import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import { getFirestore, collection as fsCollection, doc as fsDoc, getDocs, serverTimestamp, setDoc as fsSetDoc } from "firebase/firestore";
 import { exportFormulaWorkbook } from "./exportFormulaWorkbook";
 import { buildMonthlyArchive } from "./monthlyArchive";
+import { applySubsidyMultiplier, calculateMealAccount, getMealAccountMonths, normalizeSubsidyMultiplier } from "./mealAccount";
 
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
@@ -539,16 +540,6 @@ const savePendingAnomalies = (items) => {
     // 裝置儲存空間不可用時，仍保留畫面上的打卡失敗提示。
   }
 };
-
-const normalizeSubsidyMultiplier = (value) => {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return 1;
-  return Math.min(1, Math.max(0, Math.round(parsed * 1000) / 1000));
-};
-
-const applySubsidyMultiplier = (amount, multiplier) => (
-  Math.round(Math.max(0, Number(amount) || 0) * normalizeSubsidyMultiplier(multiplier))
-);
 
 
 export default function App() {
@@ -2167,52 +2158,29 @@ ${url}`);
 
   const loadMealModalAccount = async (employee, dateKey) => {
     const monthKey = getMonthKeyFromDateKey(dateKey);
-    const empKey = normalizeEmpId(employee.empId || employee.id);
+    const empId = employee.empId || employee.id;
     setMealModalAccount({ loading: true, multiplier: 1, outstanding: 0, previousDebts: [] });
 
     try {
-      const [mealsSnap, adjustmentsSnap] = await Promise.all([
+      const [mealsSnap, adjustmentsSnap, recordSnap] = await Promise.all([
         get(ref(db, "meal_records")),
         get(ref(db, "meal_subsidy_adjustments")),
+        get(ref(db, "records")),
       ]);
-      const meals = mealsSnap.val() || {};
-      const adjustments = adjustmentsSnap.val() || {};
-      const monthlyTotals = {};
-
-      Object.entries(meals).forEach(([key, item]) => {
-        if (key === "payments" || !item || typeof item !== "object") return;
-        if (normalizeEmpId(item.empId) !== empKey) return;
-        const itemMonthKey = getMonthKeyFromDateKey(item.dateKey);
-        if (!itemMonthKey || itemMonthKey < "2026-06" || itemMonthKey > monthKey) return;
-        if (!monthlyTotals[itemMonthKey]) monthlyTotals[itemMonthKey] = { totalMeal: 0, totalSubsidy: 0 };
-        monthlyTotals[itemMonthKey].totalMeal += Math.max(0, Number(item.mealAmount) || 0);
-        const approvalRequired = Boolean(item.approvalRequired);
-        const approved = !approvalRequired || (item.approvalStatus || "approved") === "approved";
-        if (!approved) return;
-        const baseSubsidy = item.baseSubsidyAmount !== undefined
-          ? Number(item.baseSubsidyAmount) || 0
-          : item.calculatedSubsidyAmount !== undefined
-            ? Number(item.calculatedSubsidyAmount) || 0
-            : item.workHours !== undefined
-              ? (Number(item.workHours) >= 6 ? 100 : Number(item.workHours) >= 4 ? 60 : 0)
-              : Number(item.subsidyAmount) || 0;
-        const itemMultiplier = normalizeSubsidyMultiplier(adjustments?.[itemMonthKey]?.[empKey]?.multiplier);
-        monthlyTotals[itemMonthKey].totalSubsidy += applySubsidyMultiplier(baseSubsidy, itemMultiplier);
+      const mealRecords = mealsSnap.val() || {};
+      // The screen only keeps the latest 500 punches; settlement needs the complete history.
+      const accountRecords = Object.values(recordSnap.val() || {})
+        .filter((record) => normalizeEmpId(record?.empId) === normalizeEmpId(empId));
+      const months = getMealAccountMonths({ empId, monthKey, mealRecords, records: accountRecords });
+      const snapshotEntries = await Promise.all(months.map(async (itemMonth) => {
+        const snapshot = await get(ref(db, `monthly_attendance_snapshots/${itemMonth}/days`));
+        return [itemMonth, { days: snapshot.val() || {} }];
+      }));
+      const account = calculateMealAccount({
+        empId, monthKey, mealRecords, records: accountRecords,
+        attendanceSnapshots: Object.fromEntries(snapshotEntries), adjustments: adjustmentsSnap.val() || {},
       });
-
-      const getMonthDebt = (targetMonth) => {
-        const totals = monthlyTotals[targetMonth] || { totalMeal: 0, totalSubsidy: 0 };
-        const payment = meals?.payments?.[`${targetMonth}_${employee.empId || employee.id}`]
-          || meals?.payments?.[`${targetMonth}_${empKey}`];
-        return payment?.paid ? 0 : Math.round(Math.max(0, totals.totalMeal - totals.totalSubsidy) * 0.9);
-      };
-      const previousDebts = Object.keys(monthlyTotals)
-        .filter((itemMonthKey) => itemMonthKey < monthKey)
-        .map((itemMonthKey) => ({ monthKey: itemMonthKey, amount: getMonthDebt(itemMonthKey) }))
-        .filter((item) => item.amount > 0)
-        .sort((a, b) => a.monthKey.localeCompare(b.monthKey));
-      const multiplier = normalizeSubsidyMultiplier(adjustments?.[monthKey]?.[empKey]?.multiplier);
-      setMealModalAccount({ loading: false, multiplier, outstanding: getMonthDebt(monthKey), previousDebts });
+      setMealModalAccount({ loading: false, ...account });
     } catch (error) {
       console.error("讀取員工餐月結失敗：", error);
       setMealModalAccount({ loading: false, multiplier: 1, outstanding: 0, previousDebts: [], error: true });
