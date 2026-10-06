@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { db, auth } from "./firebase";
-import { ref, set, onValue, update, remove, get, query, orderByChild, limitToLast } from "firebase/database";
+import { ref, set, onValue, update, remove, get, query, orderByChild, limitToLast, runTransaction } from "firebase/database";
 import { initializeApp, getApp, getApps } from "firebase/app";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import { getFirestore, collection as fsCollection, doc as fsDoc, getDocs, serverTimestamp, setDoc as fsSetDoc } from "firebase/firestore";
 import { exportFormulaWorkbook } from "./exportFormulaWorkbook";
 import { buildMonthlyArchive } from "./monthlyArchive";
 import { applySubsidyMultiplier, calculateMealAccount, getMealAccountMonths, normalizeSubsidyMultiplier } from "./mealAccount";
+import { completeDailyDutyAssignment, getDailyDutyMembers, getDailyDutyCandidates, getDailyDutyAssignmentCounts } from "./dailyDuty";
 
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
@@ -413,15 +414,7 @@ const DAILY_DUTY_STORE_IDS = {
   "斗南站前店": "storeB",
 };
 
-const isWorkingSchedule = (item) => item?.working === true || item?.working === "true";
-
 const getDailyDutyStoreKey = (storeName) => safeFirebaseKey(storeName);
-
-const getDailyDutyMembers = (assignment) => {
-  if (Array.isArray(assignment?.members) && assignment.members.length) return assignment.members;
-  if (assignment?.members && typeof assignment.members === "object") return Object.values(assignment.members).filter(Boolean);
-  return assignment?.empId ? [assignment] : [];
-};
 
 const isEmployeeDailyDuty = (assignments, empId) => {
   const targetEmpId = String(empId || "").trim().toUpperCase();
@@ -431,52 +424,6 @@ const isEmployeeDailyDuty = (assignments, empId) => {
       String(member?.empId || "").trim().toUpperCase() === targetEmpId
     ))
   ));
-};
-
-const getDailyDutyCandidates = (employees = [], scheduleData = {}, targetStore = "") => {
-  const scheduleByEmployee = {};
-  Object.entries(scheduleData || {}).forEach(([key, item]) => {
-    const employeeKey = String(item?.empId || key);
-    scheduleByEmployee[employeeKey] = item || {};
-  });
-
-  return employees
-    .map((employee) => {
-      const employeeKey = String(employee.empId || employee.id || "");
-      const schedule = scheduleByEmployee[employeeKey];
-      if (!employeeKey || !isWorkingSchedule(schedule)) return null;
-      if (getScheduleWorkStore({
-        ...schedule,
-        store: schedule.store || employee.store || "",
-      }) !== targetStore) return null;
-      return {
-        empId: employeeKey,
-        name: employee.name || employeeKey,
-        store: targetStore,
-        role: employee.role || "",
-      };
-    })
-    .filter(Boolean);
-};
-
-const getDailyDutyAssignmentCounts = (history = {}, monthKey, targetStore, excludeDateKey = "") => {
-  const counts = {};
-  const storeKey = getDailyDutyStoreKey(targetStore);
-  Object.entries(history || {}).forEach(([dateKey, dayData]) => {
-    if (dateKey === excludeDateKey || !String(dateKey).startsWith(`${monthKey}-`)) return;
-    const assignment = dayData?.[storeKey];
-    const members = getDailyDutyMembers(assignment);
-    members.forEach((member) => {
-      const empId = String(member?.empId || "");
-      if (empId) counts[empId] = (counts[empId] || 0) + 1;
-    });
-  });
-  return counts;
-};
-
-const getDailyDutyTieScore = (dateKey, targetStore, empId) => {
-  const source = `${dateKey}|${targetStore}|${empId}`;
-  return [...source].reduce((total, character) => ((total * 31) + character.charCodeAt(0)) % 1000003, 7);
 };
 
 // 班表通知只比較會影響員工的欄位；revision 只用來讓每次真正修改
@@ -666,6 +613,7 @@ export default function App() {
   const [publicScheduleData, setPublicScheduleData] = useState({});
   const [publicScheduleExceptions, setPublicScheduleExceptions] = useState({});
   const [todayScheduleData, setTodayScheduleData] = useState({});
+  const [dutyDisplaySchedule, setDutyDisplaySchedule] = useState({ dateKey: "", data: {} });
   const [dutyDisplayAssignments, setDutyDisplayAssignments] = useState({});
   const [todayAttendanceExceptions, setTodayAttendanceExceptions] = useState({});
   const [scheduleLinkCopied, setScheduleLinkCopied] = useState(false);
@@ -992,6 +940,19 @@ ${message}
   }, [authReady, dutyDisplayDateKey]);
 
   useEffect(() => {
+    if (!authReady || !dutyDisplayIsTomorrow) return undefined;
+    return onValue(ref(db, `schedules/${dutyDisplayDateKey}`), (snap) => {
+      setDutyDisplaySchedule({ dateKey: dutyDisplayDateKey, data: snap.val() || {} });
+    });
+  }, [authReady, dutyDisplayIsTomorrow, dutyDisplayDateKey]);
+
+  useEffect(() => {
+    if (!authReady || !employees.length || !dutyDisplayIsTomorrow || dutyDisplaySchedule.dateKey !== dutyDisplayDateKey || !Object.keys(dutyDisplaySchedule.data).length) return;
+    ensureDailyDutyAssignments(dutyDisplayDateKey, dutyDisplaySchedule.data, { fillExistingOnly: true })
+      .catch((error) => console.error("補足明日值日生失敗：", error));
+  }, [authReady, employees, dutyDisplayIsTomorrow, dutyDisplayDateKey, dutyDisplaySchedule]);
+
+  useEffect(() => {
     if (!authReady || !todayKey || !employees.length || !Object.keys(todayScheduleData || {}).length) return undefined;
     ensureDailyDutyAssignments(todayKey, todayScheduleData)
       .catch((error) => {
@@ -1151,82 +1112,48 @@ ${message}
     return groups;
   }, [employees]);
 
-  const ensureDailyDutyAssignments = async (dateKey, scheduleData) => {
+  const ensureDailyDutyAssignments = async (dateKey, scheduleData, { fillExistingOnly = false } = {}) => {
     if (!dateKey || !employees.length) return {};
 
     const historySnapshot = await get(ref(db, "daily_duty_assignments"));
     const history = historySnapshot.val() || {};
     const monthKey = getMonthKeyFromDateKey(dateKey);
-    const updates = {};
     const resolved = {};
 
-    DAILY_DUTY_STORES.forEach((targetStore) => {
+    await Promise.all(DAILY_DUTY_STORES.map(async (targetStore) => {
       const storeKey = getDailyDutyStoreKey(targetStore);
       const candidates = getDailyDutyCandidates(employees, scheduleData, targetStore);
       const existing = history?.[dateKey]?.[storeKey] || null;
 
-      // 同一日期一旦完成安排就鎖定，避免重新整理或重新發布班表時換人。
-      // 若日後需要改派，應由管理員明確執行重新安排，而不是背景自動改名單。
-      if (existing) {
+      // 過去日期已結束，不回頭補人或改寫歷史輪值。
+      if (existing && dateKey < formatTaipeiDateKey()) {
         resolved[storeKey] = existing;
         return;
       }
-
-      if (!candidates.length) {
-        return;
-      }
-
-      const dutyMemberCount = Math.min(DAILY_DUTY_MEMBERS_PER_STORE, candidates.length);
-
-      const counts = getDailyDutyAssignmentCounts(history, monthKey, targetStore, dateKey);
+      // 明日畫面只補已建立的名單，不搶在班表發布前建立新輪值。
+      if (fillExistingOnly && !existing) return;
+      const counts = getDailyDutyAssignmentCounts(history, monthKey, storeKey, dateKey);
       const yesterdayKey = addDateKeyDays(dateKey, -1);
       const yesterdayAssignment = history?.[yesterdayKey]?.[storeKey] || {};
       const yesterdayMembers = getDailyDutyMembers(yesterdayAssignment);
-      const yesterdayEmpIds = new Set(yesterdayMembers.map((member) => String(member?.empId || "")));
-      const selectedMembers = [];
-      const selectionCounts = { ...counts };
-
-      for (let slot = 0; slot < dutyMemberCount; slot += 1) {
-        const remaining = candidates.filter((candidate) => !selectedMembers.some((member) => member.empId === candidate.empId));
-        const nonYesterday = remaining.filter((candidate) => !yesterdayEmpIds.has(candidate.empId));
-        const pool = nonYesterday.length >= dutyMemberCount - slot ? nonYesterday : remaining;
-        const selected = [...pool].sort((a, b) => (
-          (selectionCounts[a.empId] || 0) - (selectionCounts[b.empId] || 0)
-          || getDailyDutyTieScore(`${dateKey}-${slot}`, targetStore, a.empId) - getDailyDutyTieScore(`${dateKey}-${slot}`, targetStore, b.empId)
-          || a.empId.localeCompare(b.empId)
-        ))[0];
-        if (!selected) break;
-        selectedMembers.push(selected);
-        selectionCounts[selected.empId] = (selectionCounts[selected.empId] || 0) + 1;
-      }
-
-      const now = Date.now();
-      const members = selectedMembers.map((member) => ({
-        ...member,
-        assignmentCountBefore: counts[member.empId] || 0,
-      }));
-      const primaryMember = members[0];
-      const assignment = {
-        dateKey,
-        store: targetStore,
-        storeId: DAILY_DUTY_STORE_IDS[targetStore] || "",
-        // 保留 empId/name 方便舊版畫面讀取；members 是目前正式的多位值日生資料。
-        empId: primaryMember.empId,
-        name: primaryMember.name,
-        role: primaryMember.role,
-        assignmentCountBefore: primaryMember.assignmentCountBefore,
-        members,
-        memberCount: members.length,
-        source: "auto_monthly_balanced",
-        createdAt: existing?.createdAt || now,
-        updatedAt: now,
+      const options = {
+        candidates, counts, yesterdayMembers, dateKey, store: targetStore,
+        storeId: DAILY_DUTY_STORE_IDS[targetStore] || "", memberLimit: DAILY_DUTY_MEMBERS_PER_STORE,
       };
-
-      updates[`daily_duty_assignments/${dateKey}/${storeKey}`] = assignment;
-      resolved[storeKey] = assignment;
-    });
-
-    if (Object.keys(updates).length) await update(ref(db), updates);
+      const proposed = completeDailyDutyAssignment({ ...options, existing });
+      if (proposed === existing) {
+        if (existing) resolved[storeKey] = existing;
+        return;
+      }
+      // Use the latest stored list on every retry so two devices cannot replace
+      // a person already added by the other device.
+      const result = await runTransaction(ref(db, `daily_duty_assignments/${dateKey}/${storeKey}`), (current) => {
+        const next = completeDailyDutyAssignment({ ...options, existing: current });
+        return next && next !== current ? next : undefined;
+      }, { applyLocally: false });
+      const assignment = result.snapshot.val();
+      if (assignment) resolved[storeKey] = assignment;
+    }));
     return resolved;
   };
 
