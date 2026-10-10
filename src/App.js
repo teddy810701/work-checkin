@@ -9,6 +9,7 @@ import { buildMonthlyArchive } from "./monthlyArchive";
 import { applySubsidyMultiplier, calculateMealAccount, getMealAccountMonths, normalizeSubsidyMultiplier } from "./mealAccount";
 import { completeDailyDutyAssignment, createManualDailyDutyAssignment, getDailyDutyFingerprint, getDailyDutyMembers, getDailyDutyCandidates, getDailyDutyAssignmentCounts } from "./dailyDuty";
 import DailyDutyEditor from "./DailyDutyEditor";
+import AdminWorkspace, { AdminSection, EmployeeScheduleCard, AdminHelp } from "./AdminWorkspace";
 
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
@@ -4938,7 +4939,7 @@ ${url}`);
 
 
   return (
-    <div className="admin-page" style={styles.adminPage}>
+    <div className="admin-page admin-layout-page" style={styles.adminPage}>
       {scoreToast && (
         <div style={styles.scoreToastOverlay}>
           <div style={styles.scoreToastCard}>
@@ -5112,147 +5113,25 @@ ${url}`);
       <div className="admin-header" style={styles.adminHeader}>
         <div>
           <div style={styles.adminTitle}>管理後台</div>
-          <div style={styles.adminSub}>員工、設備、紀錄、月報表匯出管理中心</div>
+          <div style={styles.adminSub}>排班、審核與紀錄，各就各位</div>
         </div>
         <button style={styles.logoutBtn} onClick={logout}>
           離開管理模式
         </button>
       </div>
 
-      <DailyDutyEditor employees={employees} initialDate={todayKey} loadDay={loadDutyEditorDay} saveAssignment={saveDutyEditorAssignment} />
-
-      <div className="admin-remote-voice-panel" style={{ ...styles.panelCard, marginBottom: 20 }}>
+<AdminWorkspace
+        pendingCount={leaveRequests.filter((item) => ["pending_manager", "pending"].includes(item.status || "pending")).length + missedPunchRequests.filter((item) => item.requestStatus === "pending").length}
+        anomalyCount={statusMismatchAnomalies.length + openSystemAnomalies.length}
+      >
+        <AdminSection id="daily">
+<div className="admin-schedule-panel" style={styles.panelCard}>
             <div style={styles.listHeader}>
-              <div style={styles.panelTitle}>遠端平板語音播報</div>
-              <div style={styles.badge}>🔊</div>
-            </div>
-            <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, marginBottom: 12 }}>
-              只有管理員後台能輸入訊息；公司平板保持打卡頁開啟且已啟用聲音時會立即朗讀。
-            </div>
-            <textarea
-              value={remoteVoiceText}
-              onChange={(event) => setRemoteVoiceText(event.target.value)}
-              placeholder="輸入要讓公司平板說出的內容"
-              rows={4}
-              maxLength={200}
-              style={styles.announcementTextarea}
-              aria-label="遠端語音內容"
-            />
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
-              <select
-                value={remoteVoiceTarget}
-                onChange={(event) => setRemoteVoiceTarget(event.target.value)}
-                style={styles.monthInput}
-                aria-label="播報店別"
-              >
-                <option value="全部">兩間店</option>
-                <option value="西螺">西螺平板</option>
-                <option value="斗南">斗南平板</option>
-              </select>
-              <select
-                value={remoteVoiceRepeats}
-                onChange={(event) => setRemoteVoiceRepeats(Number(event.target.value))}
-                style={styles.monthInput}
-                aria-label="播放次數"
-              >
-                <option value={1}>播放 1 次</option>
-                <option value={2}>播放 2 次</option>
-                <option value={3}>播放 3 次</option>
-              </select>
-            </div>
-            <button
-              style={{ ...styles.fullMainBtn, marginTop: 12, opacity: remoteVoiceSaving ? 0.7 : 1 }}
-              onClick={sendRemoteVoice}
-              disabled={remoteVoiceSaving}
-            >
-              {remoteVoiceSaving ? "傳送中…" : "立即語音播報"}
-            </button>
-            {latestRemoteVoice ? (
-              <div style={{ marginTop: 10, fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>
-                最近送出：{latestRemoteVoice.targetStore === "全部" ? "兩間店" : latestRemoteVoice.targetStore}｜
-                已收到 {Object.keys(remoteVoiceReceipts).length} 台｜{latestRemoteVoice.text}
-              </div>
-            ) : null}
-            <div style={{ borderTop: "1px solid #e2e8f0", marginTop: 16, paddingTop: 16 }}>
-              <div style={{ ...styles.deviceLabel, marginBottom: 8 }}>遠端重新整理打卡頁面</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10 }}>
-                <select
-                  value={remoteRefreshTarget}
-                  onChange={(event) => setRemoteRefreshTarget(event.target.value)}
-                  style={styles.monthInput}
-                  aria-label="重新整理店別"
-                >
-                  <option value="全部">兩間店</option>
-                  <option value="西螺">西螺平板</option>
-                  <option value="斗南">斗南平板</option>
-                </select>
-                <button
-                  style={{ ...styles.fullMainBtn, width: "auto", background: "linear-gradient(135deg, #f97316, #ea580c)", opacity: remoteRefreshSaving ? 0.7 : 1 }}
-                  onClick={sendRemoteRefresh}
-                  disabled={remoteRefreshSaving}
-                >
-                  {remoteRefreshSaving ? "傳送中…" : "遠端重新整理"}
-                </button>
-              </div>
-              {latestRemoteRefresh ? (
-                <div style={{ marginTop: 8, fontSize: 12, color: "#64748b" }}>
-                  最近指令：{latestRemoteRefresh.targetStore === "全部" ? "兩間店" : latestRemoteRefresh.targetStore}｜
-                  已回報 {Object.keys(remoteRefreshReceipts).length} 台
-                </div>
-              ) : null}
-            </div>
-      </div>
-
-      <div className="admin-grid" style={styles.adminGrid}>
-        <div className="admin-left-col" style={styles.leftCol}>
-          <div className="admin-announcement-panel" style={styles.panelCard}>
-            <div style={styles.listHeader}>
-              <div style={styles.panelTitle}>每日員工公告</div>
-              <div style={styles.badge}>📢</div>
-            </div>
-
-            <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, marginBottom: 12 }}>
-              員工下班打卡並完成員工餐登記後，系統會自動顯示當天公告。
-            </div>
-
-            <div style={styles.deviceLabel}>公告日期</div>
-            <input
-              type="date"
-              value={announcementDate}
-              onChange={(e) => setAnnouncementDate(e.target.value)}
-              style={styles.monthInput}
-            />
-
-            <div style={{ ...styles.deviceLabel, marginTop: 12 }}>公告內容</div>
-            <textarea
-              value={announcementContent}
-              onChange={(e) => setAnnouncementContent(e.target.value)}
-              placeholder="輸入今天要給員工看的公告，例如：明天新品上市，請大家先確認製作流程。"
-              rows={7}
-              style={styles.announcementTextarea}
-            />
-
-            <button
-              style={{ ...styles.fullMainBtn, marginTop: 12, opacity: announcementSaving ? 0.7 : 1 }}
-              onClick={saveDailyAnnouncement}
-              disabled={announcementSaving}
-            >
-              {announcementSaving ? "儲存中…" : "儲存當日公告"}
-            </button>
-            <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
-              將內容全部清空後再按儲存，可刪除該日公告。
-            </div>
-          </div>
-
-          <div className="admin-schedule-panel" style={styles.panelCard}>
-            <div style={styles.listHeader}>
-              <div style={styles.panelTitle}>班表發布</div>
+              <div className="admin-panel-title" style={styles.panelTitle}>班表發布</div>
               <div style={styles.badge}>{adminStoreTab === "全部" ? publishStore : adminStoreTab}</div>
             </div>
 
-            <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, marginTop: 6 }}>
-              儲存後會立即通知有變動的員工；晚上 10:00 只提醒尚未按「收到」的人。修改上班、休假或時段都會視為變動。
-            </div>
+            <AdminHelp>儲存後會立即通知有變動的員工；晚上 10:00 只提醒尚未按「收到」的人。修改上班、休假或時段都會視為變動。</AdminHelp>
 
             <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
               <div style={{
@@ -5278,9 +5157,7 @@ ${url}`);
                     background: "#fff",
                   }}
                 />
-                <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5 }}>
-                  例如今天晚上發布明天早班，就把日期改成明天再傳送；已核准的請假／調假會在這次發布時自動套用。
-                </div>
+                <AdminHelp>例如今天晚上發布明天早班，就把日期改成明天再傳送；已核准的請假／調假會在這次發布時自動套用。</AdminHelp>
               </div>
 
               <select
@@ -5299,7 +5176,7 @@ ${url}`);
                 <option value="斗南站前店">斗南站前店</option>
               </select>
 
-              <button
+              <button className="admin-primary-action"
                 style={{
                   ...styles.fullMainBtn,
                   background: scheduleSent
@@ -5316,7 +5193,7 @@ ${url}`);
                   ? `✓ ${publishStore} ${scheduleDate} 已儲存`
                   : `儲存班表 ${publishStore} ${scheduleDate}`}
               </button>
-              <button
+              <button className="admin-primary-action"
                 style={{
                   ...styles.fullGreenBtn,
                   marginTop: 0,
@@ -5326,22 +5203,176 @@ ${url}`);
                 {scheduleLinkCopied ? "✓ 已複製 LINE 分享文字" : "複製班表連結給 LINE 群組"}
               </button>
 
-              <div style={styles.shareLinkBox}>
+              <AdminHelp label="班表分享連結"><div style={styles.shareLinkBox}>
                 {getScheduleShareUrl(scheduleDate, publishStore)}
-              </div>
+              </div></AdminHelp>
 
             </div>
           </div>
 
-          <div className="admin-leave-panel" style={styles.panelCard}>
+<div className="admin-employees-panel" style={styles.panelCard}>
             <div style={styles.listHeader}>
-              <div style={styles.panelTitle}>請假／調假申請</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div className="admin-panel-title" style={styles.panelTitle}>排班設定＋員工名單</div>
+                <div style={styles.badge}>{employees.length}</div>
+              </div>
+            </div>
+
+            <button className="admin-primary-action admin-small-action" style={styles.addEmployeeFullBtn} onClick={() => setShowAddModal(true)}>
+              ＋ 新增員工
+            </button>
+
+            <div style={styles.storeSwitchWrap}>
+              {["全部", "西螺文昌店", "斗南站前店"].map((storeName) => (
+                <button
+                  key={storeName}
+                  style={{
+                    ...styles.storeSwitchBtn,
+                    ...(adminStoreTab === storeName ? styles.storeSwitchBtnActive : {}),
+                  }}
+                  onClick={() => setAdminStoreTab(storeName)}
+                >
+                  {storeName}
+                </button>
+              ))}
+            </div>
+
+            <div className="admin-employee-list">
+            {employees.length === 0 ? (
+              <div style={styles.emptyText}>目前沒有員工資料</div>
+            ) : (
+              employees
+                .filter((emp) => adminStoreTab === "全部" || emp.store === adminStoreTab)
+                .map((emp) => {
+                  const statusStyle = getStatusStyle(emp.status || "未打卡");
+                  const key = emp.empId || emp.id;
+                  const item = scheduleItems[key] || {
+                    working: false,
+                    startTime: getDefaultScheduleStartTime(emp.store, scheduleDate),
+                    endTime: "14:00",
+                    isSupport: false,
+                  };
+
+                  return (
+                    <EmployeeScheduleCard key={emp.id} name={emp.name}
+                      description={`${key} ・ ${emp.store || "未填店名"}`}
+                      status={emp.status || "未打卡"}
+                      scheduleLabel={item.working ? `${item.startTime || getDefaultScheduleStartTime(emp.store, scheduleDate)}–${item.endTime || "14:00"}${item.isSupport ? "・支援" : ""}` : "未排班"}
+                    >
+                    <div style={styles.integratedEmployeeCard}>
+                      <div style={styles.integratedTopRow}>
+                        <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                          <label style={styles.scheduleCheckWrap}>
+                            <input
+                              type="checkbox"
+                              checked={!!item.working}
+                              onChange={() => toggleScheduleWorking(key)}
+                              style={{ width: 18, height: 18, cursor: "pointer" }}
+                            />
+                          </label>
+
+                          <div>
+                            <div style={styles.employeeTopRow}>
+                              <div style={styles.employeeName}>{emp.name}</div>
+                              <span
+                                style={{
+                                  ...styles.statusBadge,
+                                  background: statusStyle.background,
+                                  color: statusStyle.color,
+                                }}
+                              >
+                                {emp.status || "未打卡"}
+                              </span>
+                            </div>
+                            <div style={styles.employeeId}>
+                              工號：{emp.empId || emp.id} ・ 所屬 {emp.store || "未填店名"} ・ {emp.role || "未設定"}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div style={styles.actionBtns}>
+                          <button style={styles.editBtn} onClick={() => openEdit(emp)}>
+                            編輯
+                          </button>
+                          <button style={styles.deleteBtn} onClick={() => deleteEmployee(emp)}>
+                            停用
+                          </button>
+                        </div>
+                      </div>
+
+                      <div style={styles.integratedSchedulePanel}>
+                        <div style={styles.integratedScheduleLabel}>
+                          {item.working ? `${scheduleDate} 已排班` : "未排班"}
+                        </div>
+
+                        <label style={{
+                          marginBottom: 8,
+                          padding: "8px 10px",
+                          borderRadius: 12,
+                          background: item.isSupport ? "#dbeafe" : "#f8fafc",
+                          color: item.isSupport ? "#1d4ed8" : "#475569",
+                          fontWeight: 900,
+                          opacity: item.working ? 1 : 0.45,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          cursor: item.working ? "pointer" : "not-allowed",
+                          border: item.isSupport ? "1px solid #93c5fd" : "1px solid #e2e8f0",
+                        }}>
+                          <input
+                            type="checkbox"
+                            checked={!!item.isSupport}
+                            onChange={() => toggleScheduleSupport(key, emp.store)}
+                            disabled={!item.working}
+                            style={{ width: 17, height: 17, cursor: item.working ? "pointer" : "not-allowed" }}
+                          />
+                          <span>
+                            支援{getOtherStoreName(emp.store)}
+                          </span>
+                        </label>
+
+                        <div style={styles.integratedTimeRow}>
+                          <div style={{ ...styles.integratedTimeBox, opacity: item.working ? 1 : 0.45 }}>
+                            <div style={styles.integratedTimeTitle}>上班</div>
+                            <input
+                              type="time"
+                              value={item.startTime || getDefaultScheduleStartTime(emp.store, scheduleDate)}
+                              onChange={(e) => setScheduleTime(key, e.target.value)}
+                              disabled={!item.working}
+                              style={styles.integratedTimeInput}
+                            />
+                          </div>
+
+                          <div style={{ ...styles.integratedTimeBox, opacity: item.working ? 1 : 0.45 }}>
+                            <div style={styles.integratedTimeTitle}>下班</div>
+                            <input
+                              type="time"
+                              value={item.endTime || "14:00"}
+                              onChange={(e) => setScheduleEndTime(key, e.target.value)}
+                              disabled={!item.working}
+                              style={styles.integratedTimeInput}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    </EmployeeScheduleCard>
+                  );
+                })
+            )}
+            </div>
+          </div>
+
+<div className="admin-duty-panel"><DailyDutyEditor employees={employees} initialDate={todayKey} loadDay={loadDutyEditorDay} saveAssignment={saveDutyEditorAssignment} /></div>
+        </AdminSection>
+        <AdminSection id="pending">
+<div className="admin-leave-panel" style={styles.panelCard}>
+            <div style={styles.listHeader}>
+              <div className="admin-panel-title" style={styles.panelTitle}>請假／調假申請</div>
               <div style={styles.badge}>{leaveRequests.filter((item) => ["pending_manager", "pending"].includes(item.status || "pending")).length} 待審</div>
             </div>
             <ScheduleAdjustmentFlow compact />
-              <div style={{ color: "#64748b", fontSize: 13, lineHeight: 1.7, marginBottom: 12 }}>
-              調班申請會先送到調班對象的員工 App；對方按同意後才會進入店長／管理員審核。班表每天晚上才發布隔天內容；若申請早於班表建立，核准結果會先保留，發布相關班表時再套用。
-            </div>
+              <AdminHelp>調班申請會先送到調班對象的員工 App；對方按同意後才會進入店長／管理員審核。班表每天晚上才發布隔天內容；若申請早於班表建立，核准結果會先保留，發布相關班表時再套用。</AdminHelp>
             {leaveRequests.length === 0 ? (
               <div style={styles.emptyText}>目前沒有請假／調假申請</div>
             ) : (
@@ -5398,296 +5429,7 @@ ${url}`);
             )}
           </div>
 
-          <div className="admin-device-panel" style={styles.panelCard}>
-            <div style={styles.panelTitle}>設備設定</div>
-            <div style={styles.deviceBox}>
-              <div style={styles.deviceLabel}>目前設備 ID</div>
-              <div style={styles.deviceId}>{myDevice}</div>
-              <div style={{ marginTop: 6, fontSize: 12, color: isAuthorizedDevice ? "#16a34a" : "#dc2626", fontWeight: 800 }}>
-                {isAuthorizedDevice ? `此設備已授權：${currentDeviceStoreName}` : "此設備尚未授權"}
-              </div>
-            </div>
-
-            <div style={styles.deviceBox}>
-              <div style={styles.deviceLabel}>選擇要綁定的店別</div>
-              <select
-                value={bindStore}
-                onChange={(e) => setBindStore(e.target.value)}
-                style={{
-                  width: "100%",
-                  borderRadius: 12,
-                  border: "1px solid #cbd5e1",
-                  padding: "10px 12px",
-                  fontSize: 14,
-                  outline: "none",
-                  marginTop: 8,
-                  background: "#fff",
-                }}
-              >
-                {DEVICE_BIND_OPTIONS.map((option) => (
-                  <option key={option} value={option}>{option}</option>
-                ))}
-              </select>
-            </div>
-
-            <button style={styles.fullDarkBtn} onClick={bindDevice}>
-              綁定這台設備到 {bindStore}
-            </button>
-
-            <div style={{ marginTop: 14 }}>
-              <div style={styles.deviceLabel}>已授權設備列表</div>
-              {Object.keys(authorizedDevices || {}).length === 0 ? (
-                <div style={styles.emptyText}>尚未綁定任何設備</div>
-              ) : (
-                Object.entries(authorizedDevices || {}).map(([storeName, item]) => (
-                  <div key={storeName} style={{ ...styles.deviceBox, marginTop: 10 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={styles.deviceLabel}>{storeName}</div>
-                        <div style={styles.deviceId}>{item?.id || "未設定"}</div>
-                      </div>
-                      <button
-                        style={{
-                          border: "none",
-                          borderRadius: 10,
-                          padding: "8px 10px",
-                          background: "#fee2e2",
-                          color: "#b91c1c",
-                          fontWeight: 900,
-                          cursor: "pointer",
-                          whiteSpace: "nowrap",
-                        }}
-                        onClick={() => unbindDevice(storeName)}
-                      >
-                        解除
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-
-          <div className="admin-export-panel" style={styles.panelCard}>
-            <div style={styles.panelTitle}>資料匯出</div>
-            <button style={styles.fullGreenBtn} onClick={exportAllCSV}>
-              匯出全部打卡 CSV
-            </button>
-
-            <div style={styles.exportDivider} />
-
-            <div style={styles.deviceLabel}>月報表月份</div>
-            <input
-              type="month"
-              value={selectedMonth}
-              onChange={(e) => setSelectedMonth(e.target.value)}
-              style={styles.monthInput}
-            />
-
-            <button style={styles.fullOrangeBtn} onClick={exportMonthlyCSV}>
-              匯出薪資核對版 Excel
-            </button>
-
-            <button style={{ ...styles.fullGreenBtn, marginTop: 10 }} onClick={exportMonthlyFormulaXLSX}>
-              薪資核定版（公式版）
-            </button>
-          </div>
-
-          <div className="admin-history-panel" style={styles.panelCard}>
-            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("scheduleHistory")}>
-              歷史班表 {adminPanels.scheduleHistory ? "－" : "＋"}
-            </button>
-            {adminPanels.scheduleHistory ? (
-              <div style={styles.collapseContent}>
-                {historyScheduleDates.length === 0 ? (
-                  <div style={styles.emptyText}>目前沒有歷史班表</div>
-                ) : (
-                  historyScheduleDates.slice(0, 14).map((dateKey) => {
-                    const dayData = scheduleHistory[dateKey] || {};
-                    const storeMap = {};
-                    Object.entries(dayData).forEach(([empId, item]) => {
-                      if (!item?.working) return;
-                      const storeName = (item.isSupport && item.supportStore) ? item.supportStore : (item.store || "未填店名");
-                      if (!storeMap[storeName]) storeMap[storeName] = [];
-                      storeMap[storeName].push({ empId, ...item });
-                    });
-
-                    return (
-                      <div key={dateKey} style={styles.historyBlock}>
-                        <div style={styles.historyDate}>{dateKey}</div>
-                        {Object.keys(storeMap).length === 0 ? (
-                          <div style={styles.historyItem}>無排班資料</div>
-                        ) : (
-                          Object.entries(storeMap).map(([storeName, list]) => (
-                            <div key={storeName} style={{ marginTop: 8 }}>
-                              <div style={styles.storeLabel}>{storeName}</div>
-                              {list
-                                .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")))
-                                .map((item) => (
-                                  <div key={`${dateKey}-${storeName}-${item.empId}`} style={styles.historyItem}>
-                                    {item.name}｜{item.startTime || "未填"} - {item.endTime || "未填"}{item.isSupport && item.supportStore ? `｜支援${item.supportStore}` : ""}
-                                  </div>
-                                ))}
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            ) : null}
-          </div>
-
-        </div>
-
-        <div className="admin-right-col" style={styles.rightCol}>
-          <div className="admin-employees-panel" style={styles.panelCard}>
-            <div style={styles.listHeader}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={styles.panelTitle}>排班設定＋員工名單</div>
-                <div style={styles.badge}>{employees.length}</div>
-              </div>
-            </div>
-
-            <button style={styles.addEmployeeFullBtn} onClick={() => setShowAddModal(true)}>
-              ＋ 新增員工
-            </button>
-
-            <div style={styles.storeSwitchWrap}>
-              {["全部", "西螺文昌店", "斗南站前店"].map((storeName) => (
-                <button
-                  key={storeName}
-                  style={{
-                    ...styles.storeSwitchBtn,
-                    ...(adminStoreTab === storeName ? styles.storeSwitchBtnActive : {}),
-                  }}
-                  onClick={() => setAdminStoreTab(storeName)}
-                >
-                  {storeName}
-                </button>
-              ))}
-            </div>
-
-            {employees.length === 0 ? (
-              <div style={styles.emptyText}>目前沒有員工資料</div>
-            ) : (
-              employees
-                .filter((emp) => adminStoreTab === "全部" || emp.store === adminStoreTab)
-                .map((emp) => {
-                  const statusStyle = getStatusStyle(emp.status || "未打卡");
-                  const key = emp.empId || emp.id;
-                  const item = scheduleItems[key] || {
-                    working: false,
-                    startTime: getDefaultScheduleStartTime(emp.store, scheduleDate),
-                    endTime: "14:00",
-                    isSupport: false,
-                  };
-
-                  return (
-                    <div key={emp.id} style={styles.integratedEmployeeCard}>
-                      <div style={styles.integratedTopRow}>
-                        <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-                          <label style={styles.scheduleCheckWrap}>
-                            <input
-                              type="checkbox"
-                              checked={!!item.working}
-                              onChange={() => toggleScheduleWorking(key)}
-                              style={{ width: 18, height: 18, cursor: "pointer" }}
-                            />
-                          </label>
-
-                          <div>
-                            <div style={styles.employeeTopRow}>
-                              <div style={styles.employeeName}>{emp.name}</div>
-                              <span
-                                style={{
-                                  ...styles.statusBadge,
-                                  background: statusStyle.background,
-                                  color: statusStyle.color,
-                                }}
-                              >
-                                {emp.status || "未打卡"}
-                              </span>
-                            </div>
-                            <div style={styles.employeeId}>
-                              工號：{emp.empId || emp.id} ・ 所屬 {emp.store || "未填店名"} ・ {emp.role || "未設定"}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div style={styles.actionBtns}>
-                          <button style={styles.editBtn} onClick={() => openEdit(emp)}>
-                            編輯
-                          </button>
-                          <button style={styles.deleteBtn} onClick={() => deleteEmployee(emp)}>
-                            停用
-                          </button>
-                        </div>
-                      </div>
-
-                      <div style={styles.integratedSchedulePanel}>
-                        <div style={styles.integratedScheduleLabel}>
-                          {item.working ? "今日已排班" : "未排班"}
-                        </div>
-
-                        <label style={{
-                          marginBottom: 8,
-                          padding: "8px 10px",
-                          borderRadius: 12,
-                          background: item.isSupport ? "#dbeafe" : "#f8fafc",
-                          color: item.isSupport ? "#1d4ed8" : "#475569",
-                          fontWeight: 900,
-                          opacity: item.working ? 1 : 0.45,
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                          cursor: item.working ? "pointer" : "not-allowed",
-                          border: item.isSupport ? "1px solid #93c5fd" : "1px solid #e2e8f0",
-                        }}>
-                          <input
-                            type="checkbox"
-                            checked={!!item.isSupport}
-                            onChange={() => toggleScheduleSupport(key, emp.store)}
-                            disabled={!item.working}
-                            style={{ width: 17, height: 17, cursor: item.working ? "pointer" : "not-allowed" }}
-                          />
-                          <span>
-                            支援{getOtherStoreName(emp.store)}
-                          </span>
-                        </label>
-
-                        <div style={styles.integratedTimeRow}>
-                          <div style={{ ...styles.integratedTimeBox, opacity: item.working ? 1 : 0.45 }}>
-                            <div style={styles.integratedTimeTitle}>上班</div>
-                            <input
-                              type="time"
-                              value={item.startTime || getDefaultScheduleStartTime(emp.store, scheduleDate)}
-                              onChange={(e) => setScheduleTime(key, e.target.value)}
-                              disabled={!item.working}
-                              style={styles.integratedTimeInput}
-                            />
-                          </div>
-
-                          <div style={{ ...styles.integratedTimeBox, opacity: item.working ? 1 : 0.45 }}>
-                            <div style={styles.integratedTimeTitle}>下班</div>
-                            <input
-                              type="time"
-                              value={item.endTime || "14:00"}
-                              onChange={(e) => setScheduleEndTime(key, e.target.value)}
-                              disabled={!item.working}
-                              style={styles.integratedTimeInput}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })
-            )}
-          </div>
-
-          <div className="admin-system-anomalies-panel" style={{
+<div className="admin-system-anomalies-panel" style={{
             ...styles.panelCard,
             ...((statusMismatchAnomalies.length + openSystemAnomalies.length) > 0 ? { border: "2px solid #f97316" } : {}),
           }}>
@@ -5758,7 +5500,7 @@ ${url}`);
             ) : null}
           </div>
 
-          <div className="admin-exceptions-panel" style={styles.panelCard}>
+<div className="admin-exceptions-panel" style={styles.panelCard}>
             <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("exceptionRecords")}>
               異常／忘打卡紀錄 {adminPanels.exceptionRecords ? "－" : "＋"}
             </button>
@@ -6005,10 +5747,173 @@ ${url}`);
               </div>
             ) : null}
           </div>
-
-          <div className="admin-record-panel" style={styles.panelCard}>
+        </AdminSection>
+        <AdminSection id="communications">
+<div className="admin-announcement-panel" style={styles.panelCard}>
             <div style={styles.listHeader}>
-              <div style={styles.panelTitle}>打卡紀錄</div>
+              <div className="admin-panel-title" style={styles.panelTitle}>每日員工公告</div>
+              <div style={styles.badge}>📢</div>
+            </div>
+
+            <AdminHelp>員工下班打卡並完成員工餐登記後，系統會自動顯示當天公告。</AdminHelp>
+
+            <div style={styles.deviceLabel}>公告日期</div>
+            <input
+              type="date"
+              value={announcementDate}
+              onChange={(e) => setAnnouncementDate(e.target.value)}
+              style={styles.monthInput}
+            />
+
+            <div style={{ ...styles.deviceLabel, marginTop: 12 }}>公告內容</div>
+            <textarea
+              value={announcementContent}
+              onChange={(e) => setAnnouncementContent(e.target.value)}
+              placeholder="輸入今天要給員工看的公告，例如：明天新品上市，請大家先確認製作流程。"
+              rows={7}
+              style={styles.announcementTextarea}
+            />
+
+            <button className="admin-primary-action"
+              style={{ ...styles.fullMainBtn, marginTop: 12, opacity: announcementSaving ? 0.7 : 1 }}
+              onClick={saveDailyAnnouncement}
+              disabled={announcementSaving}
+            >
+              {announcementSaving ? "儲存中…" : "儲存當日公告"}
+            </button>
+            <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>
+              將內容全部清空後再按儲存，可刪除該日公告。
+            </div>
+          </div>
+
+<div className="admin-remote-voice-panel" style={{ ...styles.panelCard, marginBottom: 20 }}>
+            <div style={styles.listHeader}>
+              <div className="admin-panel-title" style={styles.panelTitle}>遠端平板語音播報</div>
+              <div style={styles.badge}>🔊</div>
+            </div>
+            <AdminHelp>只有管理員後台能輸入訊息；公司平板保持打卡頁開啟且已啟用聲音時會立即朗讀。</AdminHelp>
+            <textarea
+              value={remoteVoiceText}
+              onChange={(event) => setRemoteVoiceText(event.target.value)}
+              placeholder="輸入要讓公司平板說出的內容"
+              rows={4}
+              maxLength={200}
+              style={styles.announcementTextarea}
+              aria-label="遠端語音內容"
+            />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
+              <select
+                value={remoteVoiceTarget}
+                onChange={(event) => setRemoteVoiceTarget(event.target.value)}
+                style={styles.monthInput}
+                aria-label="播報店別"
+              >
+                <option value="全部">兩間店</option>
+                <option value="西螺">西螺平板</option>
+                <option value="斗南">斗南平板</option>
+              </select>
+              <select
+                value={remoteVoiceRepeats}
+                onChange={(event) => setRemoteVoiceRepeats(Number(event.target.value))}
+                style={styles.monthInput}
+                aria-label="播放次數"
+              >
+                <option value={1}>播放 1 次</option>
+                <option value={2}>播放 2 次</option>
+                <option value={3}>播放 3 次</option>
+              </select>
+            </div>
+            <button className="admin-primary-action"
+              style={{ ...styles.fullMainBtn, marginTop: 12, opacity: remoteVoiceSaving ? 0.7 : 1 }}
+              onClick={sendRemoteVoice}
+              disabled={remoteVoiceSaving}
+            >
+              {remoteVoiceSaving ? "傳送中…" : "立即語音播報"}
+            </button>
+            {latestRemoteVoice ? (
+              <div style={{ marginTop: 10, fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>
+                最近送出：{latestRemoteVoice.targetStore === "全部" ? "兩間店" : latestRemoteVoice.targetStore}｜
+                已收到 {Object.keys(remoteVoiceReceipts).length} 台｜{latestRemoteVoice.text}
+              </div>
+            ) : null}
+
+      </div>
+        </AdminSection>
+        <AdminSection id="reports">
+<div className="admin-export-panel" style={styles.panelCard}>
+            <div className="admin-panel-title" style={styles.panelTitle}>資料匯出</div>
+            <button className="admin-primary-action" style={styles.fullGreenBtn} onClick={exportAllCSV}>
+              匯出全部打卡 CSV
+            </button>
+
+            <div style={styles.exportDivider} />
+
+            <div style={styles.deviceLabel}>月報表月份</div>
+            <input
+              type="month"
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(e.target.value)}
+              style={styles.monthInput}
+            />
+
+            <button className="admin-secondary-action" style={styles.fullOrangeBtn} onClick={exportMonthlyCSV}>
+              匯出薪資核對版 Excel
+            </button>
+
+            <button className="admin-primary-action" style={{ ...styles.fullGreenBtn, marginTop: 10 }} onClick={exportMonthlyFormulaXLSX}>
+              薪資核定版（公式版）
+            </button>
+          </div>
+
+<div className="admin-history-panel" style={styles.panelCard}>
+            <button style={styles.collapseBtn} onClick={() => toggleAdminPanel("scheduleHistory")}>
+              歷史班表 {adminPanels.scheduleHistory ? "－" : "＋"}
+            </button>
+            {adminPanels.scheduleHistory ? (
+              <div style={styles.collapseContent}>
+                {historyScheduleDates.length === 0 ? (
+                  <div style={styles.emptyText}>目前沒有歷史班表</div>
+                ) : (
+                  historyScheduleDates.slice(0, 14).map((dateKey) => {
+                    const dayData = scheduleHistory[dateKey] || {};
+                    const storeMap = {};
+                    Object.entries(dayData).forEach(([empId, item]) => {
+                      if (!item?.working) return;
+                      const storeName = (item.isSupport && item.supportStore) ? item.supportStore : (item.store || "未填店名");
+                      if (!storeMap[storeName]) storeMap[storeName] = [];
+                      storeMap[storeName].push({ empId, ...item });
+                    });
+
+                    return (
+                      <div key={dateKey} style={styles.historyBlock}>
+                        <div style={styles.historyDate}>{dateKey}</div>
+                        {Object.keys(storeMap).length === 0 ? (
+                          <div style={styles.historyItem}>無排班資料</div>
+                        ) : (
+                          Object.entries(storeMap).map(([storeName, list]) => (
+                            <div key={storeName} style={{ marginTop: 8 }}>
+                              <div style={styles.storeLabel}>{storeName}</div>
+                              {list
+                                .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")))
+                                .map((item) => (
+                                  <div key={`${dateKey}-${storeName}-${item.empId}`} style={styles.historyItem}>
+                                    {item.name}｜{item.startTime || "未填"} - {item.endTime || "未填"}{item.isSupport && item.supportStore ? `｜支援${item.supportStore}` : ""}
+                                  </div>
+                                ))}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            ) : null}
+          </div>
+
+<div className="admin-record-panel" style={styles.panelCard}>
+            <div style={styles.listHeader}>
+              <div className="admin-panel-title" style={styles.panelTitle}>打卡紀錄</div>
               <div style={styles.badge}>最新 {records.length} 筆</div>
             </div>
 
@@ -6075,8 +5980,110 @@ ${url}`);
               })
             )}
           </div>
-        </div>
-      </div>
+        </AdminSection>
+        <AdminSection id="devices">
+<div className="admin-device-panel" style={styles.panelCard}>
+            <div className="admin-panel-title" style={styles.panelTitle}>設備設定</div>
+            <div style={styles.deviceBox}>
+              <div style={styles.deviceLabel}>目前設備 ID</div>
+              <div style={styles.deviceId}>{myDevice}</div>
+              <div style={{ marginTop: 6, fontSize: 12, color: isAuthorizedDevice ? "#16a34a" : "#dc2626", fontWeight: 800 }}>
+                {isAuthorizedDevice ? `此設備已授權：${currentDeviceStoreName}` : "此設備尚未授權"}
+              </div>
+            </div>
+
+            <div style={styles.deviceBox}>
+              <div style={styles.deviceLabel}>選擇要綁定的店別</div>
+              <select
+                value={bindStore}
+                onChange={(e) => setBindStore(e.target.value)}
+                style={{
+                  width: "100%",
+                  borderRadius: 12,
+                  border: "1px solid #cbd5e1",
+                  padding: "10px 12px",
+                  fontSize: 14,
+                  outline: "none",
+                  marginTop: 8,
+                  background: "#fff",
+                }}
+              >
+                {DEVICE_BIND_OPTIONS.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </div>
+
+            <button className="admin-primary-action" style={styles.fullDarkBtn} onClick={bindDevice}>
+              綁定這台設備到 {bindStore}
+            </button>
+
+            <div style={{ marginTop: 14 }}>
+              <div style={styles.deviceLabel}>已授權設備列表</div>
+              {Object.keys(authorizedDevices || {}).length === 0 ? (
+                <div style={styles.emptyText}>尚未綁定任何設備</div>
+              ) : (
+                Object.entries(authorizedDevices || {}).map(([storeName, item]) => (
+                  <div key={storeName} style={{ ...styles.deviceBox, marginTop: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={styles.deviceLabel}>{storeName}</div>
+                        <div style={styles.deviceId}>{item?.id || "未設定"}</div>
+                      </div>
+                      <button
+                        style={{
+                          border: "none",
+                          borderRadius: 10,
+                          padding: "8px 10px",
+                          background: "#fee2e2",
+                          color: "#b91c1c",
+                          fontWeight: 900,
+                          cursor: "pointer",
+                          whiteSpace: "nowrap",
+                        }}
+                        onClick={() => unbindDevice(storeName)}
+                      >
+                        解除
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+<div className="admin-refresh-panel" style={styles.panelCard}>
+<div style={{ borderTop: "1px solid #e2e8f0", marginTop: 16, paddingTop: 16 }}>
+              <div style={{ ...styles.deviceLabel, marginBottom: 8 }}>遠端重新整理打卡頁面</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10 }}>
+                <select
+                  value={remoteRefreshTarget}
+                  onChange={(event) => setRemoteRefreshTarget(event.target.value)}
+                  style={styles.monthInput}
+                  aria-label="重新整理店別"
+                >
+                  <option value="全部">兩間店</option>
+                  <option value="西螺">西螺平板</option>
+                  <option value="斗南">斗南平板</option>
+                </select>
+                <button className="admin-primary-action"
+                  style={{ ...styles.fullMainBtn, width: "auto", background: "linear-gradient(135deg, #f97316, #ea580c)", opacity: remoteRefreshSaving ? 0.7 : 1 }}
+                  onClick={sendRemoteRefresh}
+                  disabled={remoteRefreshSaving}
+                >
+                  {remoteRefreshSaving ? "傳送中…" : "遠端重新整理"}
+                </button>
+              </div>
+              {latestRemoteRefresh ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: "#64748b" }}>
+                  最近指令：{latestRemoteRefresh.targetStore === "全部" ? "兩間店" : latestRemoteRefresh.targetStore}｜
+                  已回報 {Object.keys(remoteRefreshReceipts).length} 台
+                </div>
+              ) : null}
+            </div>
+</div>
+        </AdminSection>
+      </AdminWorkspace>
     </div>
   );
 }

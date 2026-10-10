@@ -8,9 +8,13 @@ const root = ReactDOM.createRoot(document.getElementById('root'));
 const DutyPreview = process.env.NODE_ENV === 'development'
   && new URLSearchParams(window.location.search).get('demo') === 'daily-duty'
   ? React.lazy(() => import('./DailyDutyPreview')) : null;
+const AdminPreview = process.env.NODE_ENV === 'development'
+  && new URLSearchParams(window.location.search).get('demo') === 'admin-layout'
+  ? React.lazy(() => import('./AdminLayoutPreview')) : null;
 root.render(
   <React.StrictMode>
-    {DutyPreview ? <React.Suspense fallback={<p>讀取預覽中…</p>}><DutyPreview /></React.Suspense> : <App />}
+    {AdminPreview ? <React.Suspense fallback={<p>讀取預覽中…</p>}><AdminPreview /></React.Suspense>
+      : DutyPreview ? <React.Suspense fallback={<p>讀取預覽中…</p>}><DutyPreview /></React.Suspense> : <App />}
   </React.StrictMode>
 );
 
