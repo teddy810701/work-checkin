@@ -1,4 +1,4 @@
-import { completeDailyDutyAssignment, getDailyDutyCandidates, getDailyDutyMembers, getDailyDutyAssignmentCounts } from "./dailyDuty";
+import { completeDailyDutyAssignment, createManualDailyDutyAssignment, getDailyDutyFingerprint, getDailyDutyCandidates, getDailyDutyMembers, getDailyDutyAssignmentCounts } from "./dailyDuty";
 
 const store = "斗南站前店";
 const candidate = (empId, name = empId) => ({ empId, name, store, role: "正職" });
@@ -13,14 +13,17 @@ test("fills the missing slot without changing the first person or creation time"
   expect(original.members).toHaveLength(1);
 });
 
-test("refreshes and later schedule changes never reshuffle a full list", () => {
-  const filled = complete({ existing: original, candidates: [candidate("0321")] });
-  expect(complete({ existing: filled, candidates: [candidate("0213"), candidate("0802")], now: 9999 })).toBe(filled);
+test("refreshes do not reshuffle eligible members, but changed schedules replace invalid people", () => {
+  const filled = complete({ existing: original, candidates: [candidate("0819"), candidate("0321")] });
+  expect(complete({ existing: filled, candidates: [candidate("0819"), candidate("0321"), candidate("0213")], now: 9999 })).toBe(filled);
+  const revised = complete({ existing: filled, candidates: [candidate("0321"), candidate("0213")], now: 9999 });
+  expect(revised.members.map((member) => member.empId)).toEqual(["0321", "0213"]);
+  expect(revised.revisions.rev_2.previousMembers.map((member) => member.empId)).toEqual(["0819", "0321"]);
 });
 
 test("a transaction retry preserves a concurrently filled list", () => {
   const concurrent = { ...original, members: [original.members[0], candidate("0802")], memberCount: 2, updatedAt: 1500 };
-  expect(complete({ existing: concurrent, candidates: [candidate("0321")] })).toBe(concurrent);
+  expect(complete({ existing: concurrent, candidates: [candidate("0819"), candidate("0802"), candidate("0321")] })).toBe(concurrent);
 });
 
 test("a one-person schedule stays valid and fills when another worker is added", () => {
@@ -31,25 +34,78 @@ test("a one-person schedule stays valid and fills when another worker is added",
   expect(later.members.map((member) => member.empId)).toEqual(["0819", "0321"]);
 });
 
-test("no workers never produces a placeholder duty or erases an existing member", () => {
+test("no workers never produces a placeholder; moved people are cleared with an audit record", () => {
   expect(complete()).toBeNull();
-  expect(complete({ existing: original })).toBe(original);
+  const cleared = complete({ existing: original });
+  expect(cleared.members).toEqual([]);
+  expect(cleared.empId).toBe("");
+  expect(getDailyDutyMembers(cleared)).toEqual([]);
+  expect(cleared.revisions.rev_1.previousMembers).toEqual(original.members);
+  expect(complete({ existing: cleared })).toBe(cleared);
 });
 
 test("legacy single-person records and object-shaped members are preserved when filled", () => {
   const legacy = { empId: "0819", name: "原值日生", createdAt: 1000 };
-  const result = complete({ existing: legacy, candidates: [candidate("0321")] });
+  const result = complete({ existing: legacy, candidates: [candidate("0819"), candidate("0321")] });
   expect(result.members[0]).toEqual(legacy);
   expect(result.memberCount).toBe(2);
   const objectMembers = { ...original, members: { first: original.members[0] } };
-  expect(complete({ existing: objectMembers, candidates: [candidate("0321")] }).members).toHaveLength(2);
+  expect(complete({ existing: objectMembers, candidates: [candidate("0819"), candidate("0321")] }).members).toHaveLength(2);
 });
 
 test("monthly balancing and avoiding yesterday's duty still apply to the new slot", () => {
-  const result = complete({ existing: original, candidates: [candidate("0321"), candidate("0322")], counts: { "0321": 0, "0322": 2 }, yesterdayMembers: [candidate("0321")] });
+  const result = complete({ existing: original, candidates: [candidate("0819"), candidate("0321"), candidate("0322")], counts: { "0321": 0, "0322": 2 }, yesterdayMembers: [candidate("0321")] });
   expect(result.members[1].empId).toBe("0322");
-  const fallback = complete({ existing: original, candidates: [candidate("0321")], yesterdayMembers: [candidate("0321")] });
+  const fallback = complete({ existing: original, candidates: [candidate("0819"), candidate("0321")], yesterdayMembers: [candidate("0321")] });
   expect(fallback.members[1].empId).toBe("0321");
+});
+
+test("a support-store change removes the worker from home-store duty without replacing the other member", () => {
+  const employees = [candidate("A0315", "宗富"), candidate("0819", "嫻亭"), candidate("0826", "奕婷")];
+  const schedule = { A0315: { working: true, isSupport: true, supportStore: "西螺文昌店" }, "0819": { working: true }, "0826": { working: true } };
+  const before = { members: employees.slice(0, 2), createdAt: 1000 };
+  const result = complete({ existing: before, candidates: getDailyDutyCandidates(employees, schedule, store) });
+  expect(result.members.map((member) => member.empId)).toEqual(["0819", "0826"]);
+  expect(result.createdAt).toBe(1000);
+  expect(result.revisions.rev_1.previousMembers.map((member) => member.empId)).toEqual(["A0315", "0819"]);
+});
+
+const manual = (overrides = {}) => createManualDailyDutyAssignment({
+  ...options, existing: original, selectedEmpIds: ["0321", "0322"],
+  candidates: [candidate("0321"), candidate("0322"), candidate("0819")], reason: "提早離班替補", actor: "admin:test", ...overrides,
+});
+
+test("manual replacements retain old records and are counted instead of the original duty", () => {
+  const changed = manual();
+  expect(changed.source).toBe("manual");
+  expect(changed.createdAt).toBe(1000);
+  expect(changed.revisions.rev_1.previousMembers).toEqual(original.members);
+  expect(changed.revisions.rev_1.nextMembers).toEqual(changed.members);
+  expect(getDailyDutyAssignmentCounts({ "2026-10-07": { [store]: changed } }, "2026-10", store)).toEqual({ "0321": 1, "0322": 1 });
+  expect(complete({ existing: changed, candidates: [candidate("0321"), candidate("0322"), candidate("0819")] })).toBe(changed);
+});
+
+test("manual one-person choice is not automatically filled on refresh, but relocation still removes it", () => {
+  const changed = manual({ selectedEmpIds: ["0321"] });
+  expect(complete({ existing: changed, candidates: [candidate("0321"), candidate("0322")] })).toBe(changed);
+  const relocated = complete({ existing: changed, candidates: [candidate("0322")] });
+  expect(relocated.members.map((member) => member.empId)).toEqual(["0322"]);
+});
+
+test("manual changes validate required fields, duplicate workers and actual-store eligibility", () => {
+  expect(() => manual({ reason: " " })).toThrow("更換原因");
+  expect(() => manual({ actor: "" })).toThrow();
+  expect(() => manual({ selectedEmpIds: [] })).toThrow();
+  expect(() => manual({ selectedEmpIds: ["0321", "0321"] })).toThrow();
+  expect(() => manual({ selectedEmpIds: ["A0315"] })).toThrow("當天未在這間門市");
+});
+
+test("past-date corrections require an explicit manual action and revision history stays complete", () => {
+  const first = manual({ dateKey: "2026-10-09" });
+  const second = manual({ existing: first, selectedEmpIds: ["0819"], reason: "再次核對", now: 3000 });
+  expect(Object.keys(second.revisions)).toEqual(["rev_1", "rev_2"]);
+  expect(second.revisions.rev_2.previousMembers).toEqual(first.members);
+  expect(getDailyDutyFingerprint(second)).not.toBe(getDailyDutyFingerprint(first));
 });
 
 test("duplicate and differently cased employee IDs cannot fill both slots", () => {

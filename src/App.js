@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { db, auth } from "./firebase";
 import { ref, set, onValue, update, remove, get, query, orderByChild, limitToLast, runTransaction } from "firebase/database";
 import { initializeApp, getApp, getApps } from "firebase/app";
@@ -7,7 +7,8 @@ import { getFirestore, collection as fsCollection, doc as fsDoc, getDocs, server
 import { exportFormulaWorkbook } from "./exportFormulaWorkbook";
 import { buildMonthlyArchive } from "./monthlyArchive";
 import { applySubsidyMultiplier, calculateMealAccount, getMealAccountMonths, normalizeSubsidyMultiplier } from "./mealAccount";
-import { completeDailyDutyAssignment, getDailyDutyMembers, getDailyDutyCandidates, getDailyDutyAssignmentCounts } from "./dailyDuty";
+import { completeDailyDutyAssignment, createManualDailyDutyAssignment, getDailyDutyFingerprint, getDailyDutyMembers, getDailyDutyCandidates, getDailyDutyAssignmentCounts } from "./dailyDuty";
+import DailyDutyEditor from "./DailyDutyEditor";
 
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
@@ -1112,6 +1113,42 @@ ${message}
     return groups;
   }, [employees]);
 
+  const loadDutyEditorDay = useCallback(async (dateKey) => {
+    const [scheduleSnapshot, assignmentSnapshot] = await Promise.all([
+      get(ref(db, `schedules/${dateKey}`)), get(ref(db, `daily_duty_assignments/${dateKey}`)),
+    ]);
+    const assignments = assignmentSnapshot.val() || {};
+    return {
+      schedule: scheduleSnapshot.val() || {},
+      assignments: Object.fromEntries(DAILY_DUTY_STORES.map((name) => [name, assignments[getDailyDutyStoreKey(name)] || null])),
+    };
+  }, []);
+
+  const saveDutyEditorAssignment = useCallback(async ({ dateKey, store: targetStore, selectedEmpIds, reason, existing }) => {
+    // Use the existing administrator session; permission migration remains out of scope.
+    if (!isAdmin || !auth.currentUser) throw new Error("請先登入管理員");
+    if (!DAILY_DUTY_STORES.includes(targetStore)) throw new Error("請選擇正確門市");
+    const storeKey = getDailyDutyStoreKey(targetStore);
+    const assignmentRef = ref(db, `daily_duty_assignments/${dateKey}/${storeKey}`);
+    const [scheduleSnapshot, employeeSnapshot, historySnapshot] = await Promise.all([
+      get(ref(db, `schedules/${dateKey}`)), get(ref(db, "employees")), get(ref(db, "daily_duty_assignments")),
+    ]);
+    const liveEmployees = Object.entries(employeeSnapshot.val() || {}).map(([id, item]) => ({ ...item, id }));
+    const candidates = getDailyDutyCandidates(liveEmployees, scheduleSnapshot.val() || {}, targetStore);
+    const counts = getDailyDutyAssignmentCounts(historySnapshot.val() || {}, getMonthKeyFromDateKey(dateKey), storeKey, dateKey);
+    const expectedFingerprint = getDailyDutyFingerprint(existing);
+    const options = { candidates, counts, selectedEmpIds, dateKey, store: targetStore,
+      storeId: DAILY_DUTY_STORE_IDS[targetStore], reason, actor: `admin:${auth.currentUser.uid}`, now: Date.now() };
+    // Validate before the transaction so errors are clear and no partial data is written.
+    createManualDailyDutyAssignment({ ...options, existing });
+    const result = await runTransaction(assignmentRef, (current) => {
+      if (getDailyDutyFingerprint(current) !== expectedFingerprint) return undefined;
+      return createManualDailyDutyAssignment({ ...options, existing: current });
+    }, { applyLocally: false });
+    if (!result.committed) throw new Error("名單已被其他裝置更新，請按重新讀取後再更換。");
+    return result.snapshot.val();
+  }, [isAdmin]);
+
   const ensureDailyDutyAssignments = async (dateKey, scheduleData, { fillExistingOnly = false } = {}) => {
     if (!dateKey || !employees.length) return {};
 
@@ -1126,8 +1163,8 @@ ${message}
       const existing = history?.[dateKey]?.[storeKey] || null;
 
       // 過去日期已結束，不回頭補人或改寫歷史輪值。
-      if (existing && dateKey < formatTaipeiDateKey()) {
-        resolved[storeKey] = existing;
+      if (dateKey < formatTaipeiDateKey()) {
+        if (existing) resolved[storeKey] = existing;
         return;
       }
       // 明日畫面只補已建立的名單，不搶在班表發布前建立新輪值。
@@ -5081,6 +5118,8 @@ ${url}`);
           離開管理模式
         </button>
       </div>
+
+      <DailyDutyEditor employees={employees} initialDate={todayKey} loadDay={loadDutyEditorDay} saveAssignment={saveDutyEditorAssignment} />
 
       <div className="admin-remote-voice-panel" style={{ ...styles.panelCard, marginBottom: 20 }}>
             <div style={styles.listHeader}>

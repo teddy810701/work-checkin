@@ -58,11 +58,26 @@ test("full lists do not start any transaction on refresh", async () => {
   expect(flow.runTransaction).not.toHaveBeenCalled();
 });
 
-test("a concurrently added member wins over a stale one-person read", async () => {
-  const latest = assignment(storeB, ["B1", "B3"]);
+test("a concurrently added eligible member wins over a stale one-person read", async () => {
+  const latest = assignment(storeB, ["B1", "B2"]);
   const flow = createFlow({ "2026-10-07": { [storeA]: assignment(storeA, ["A1", "A2"]), [storeB]: assignment(storeB, ["B1"]) } }, { [storeB]: latest });
   const result = await flow.ensure("2026-10-07", schedule);
   expect(result[storeB]).toBe(latest);
+});
+
+test("a full list is reconciled after moving one worker to the other store", async () => {
+  const before = assignment(storeA, ["A1", "A2"]);
+  const flow = createFlow({ "2026-10-07": { [storeA]: before, [storeB]: assignment(storeB, ["B1", "B2"]) } });
+  const result = await flow.ensure("2026-10-07", { ...schedule, A1: { working: true, store: storeA, isSupport: true, supportStore: storeB } });
+  expect(flow.runTransaction).toHaveBeenCalledTimes(1);
+  expect(result[storeA].members.map((member) => member.empId)).toEqual(["A2"]);
+  expect(result[storeA].revisions.rev_1.previousMembers.map((member) => member.empId)).toEqual(["A1", "A2"]);
+});
+
+test("automatic loading never creates a previously missing historical record", async () => {
+  const flow = createFlow({});
+  expect(await flow.ensure("2026-10-05", schedule)).toEqual({});
+  expect(flow.runTransaction).not.toHaveBeenCalled();
 });
 
 test("loading tomorrow does not create a new list before publication", async () => {

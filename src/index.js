@@ -5,9 +5,12 @@ import App from './App';
 import reportWebVitals from './reportWebVitals';
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
+const DutyPreview = process.env.NODE_ENV === 'development'
+  && new URLSearchParams(window.location.search).get('demo') === 'daily-duty'
+  ? React.lazy(() => import('./DailyDutyPreview')) : null;
 root.render(
   <React.StrictMode>
-    <App />
+    {DutyPreview ? <React.Suspense fallback={<p>讀取預覽中…</p>}><DutyPreview /></React.Suspense> : <App />}
   </React.StrictMode>
 );
 
