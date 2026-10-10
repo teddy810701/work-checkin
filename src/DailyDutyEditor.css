@@ -1,7 +1,16 @@
-.duty-editor { background: #fff; border: 1px solid #dbe6e0; border-radius: 22px; padding: 24px; margin-bottom: 20px; color: #234639; }
+.duty-editor { background: #fff; border: 1px solid #dbe6e0; border-radius: 22px; margin-bottom: 20px; color: #234639; }
+.duty-editor-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 24px; cursor: pointer; list-style: none; border-radius: 22px; }
+.duty-editor-toggle::-webkit-details-marker { display: none; }
+.duty-editor-toggle:focus-visible { outline: 2px solid #78ad94; outline-offset: 2px; }
+.duty-editor .duty-editor-toggle h2 { margin: 0; font-size: 21px; }
+.duty-editor-toggle-state { display: flex; align-items: center; gap: 10px; color: #66766e; font-size: 14px; white-space: nowrap; }
+.duty-editor-collapse-label { display: none; }
+.duty-editor-chevron { display: inline-block; font-size: 22px; line-height: 1; }
+.duty-editor[open] > .duty-editor-toggle .duty-editor-expand-label { display: none; }
+.duty-editor[open] > .duty-editor-toggle .duty-editor-collapse-label { display: inline; }
+.duty-editor[open] > .duty-editor-toggle .duty-editor-chevron { transform: rotate(180deg); }
+.duty-editor-body { padding: 0 24px 24px; }
 .duty-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.duty-editor-eyebrow { font-size: 11px; color: #b96629; letter-spacing: 1.8px; font-weight: 800; }
-.duty-editor h2 { margin: 6px 0; font-size: 23px; }
 .duty-editor p { color: #66766e; font-size: 14px; line-height: 1.7; margin: 10px 0 16px; }
 .duty-editor-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .duty-editor label { display: flex; flex-direction: column; gap: 8px; min-width: 0; margin-bottom: 16px; font-size: 14px; font-weight: 700; }
@@ -19,4 +28,4 @@
 .duty-editor-revision { border-bottom: 1px solid #e2eae4; padding: 14px 0; line-height: 1.8; }
 .duty-editor-revision strong { font-size: 12px; color: #748277; }
 .duty-editor-revision p { margin: 4px 0; }
-@media (max-width: 540px) { .duty-editor { padding: 18px; } .duty-editor-fields { grid-template-columns: 1fr; gap: 0; } .duty-editor h2 { font-size: 20px; } }
+@media (max-width: 540px) { .duty-editor-toggle { padding: 18px; } .duty-editor-body { padding: 0 18px 18px; } .duty-editor-fields { grid-template-columns: 1fr; gap: 0; } .duty-editor .duty-editor-toggle h2 { font-size: 20px; } .duty-editor-heading { align-items: flex-start; } }

@@ -21,3 +21,14 @@ test('duty editor starts in a read-only loading state and does not call the data
   expect(loadDay).not.toHaveBeenCalled();
   expect(saveAssignment).not.toHaveBeenCalled();
 });
+
+test('duty management is collapsed by default with one native expandable heading', () => {
+  const html = renderToStaticMarkup(<DailyDutyEditor employees={[]} initialDate="2026-10-09" loadDay={jest.fn()} saveAssignment={jest.fn()} />);
+  const container = document.createElement('div');
+  container.innerHTML = html;
+  const panel = container.querySelector('details.duty-editor');
+  expect(panel.open).toBe(false);
+  expect(panel.querySelector(':scope > summary').textContent).toContain('值日生管理');
+  expect(panel.querySelector(':scope > .duty-editor-body form')).not.toBeNull();
+  expect(panel.querySelector('.duty-editor-history')).not.toBeNull();
+});

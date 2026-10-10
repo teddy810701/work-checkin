@@ -63,12 +63,20 @@ export default function DailyDutyEditor({ employees, initialDate, loadDay, saveA
   };
 
   return (
-    <section className="duty-editor" aria-labelledby="duty-editor-title">
+    <details className="duty-editor" aria-labelledby="duty-editor-title">
+      <summary className="duty-editor-toggle">
+        <h2 id="duty-editor-title">🧹 值日生管理</h2>
+        <span className="duty-editor-toggle-state" aria-hidden="true">
+          <span className="duty-editor-expand-label">點開管理</span>
+          <span className="duty-editor-collapse-label">收合</span>
+          <span className="duty-editor-chevron">⌄</span>
+        </span>
+      </summary>
+      <div className="duty-editor-body">
       <div className="duty-editor-heading">
-        <div><span className="duty-editor-eyebrow">DAILY DUTY</span><h2 id="duty-editor-title">🧹 值日生管理</h2></div>
+        <p>調店後會自動檢查名單；提前離班或臨時替補，可在這裡更換並保留紀錄。</p>
         <button type="button" className="duty-editor-secondary" disabled={busy || loading} onClick={() => setReload((value) => value + 1)}>重新讀取</button>
       </div>
-      <p>調店後會自動檢查名單；提前離班或臨時替補，可在這裡更換並保留紀錄。</p>
       <form onSubmit={save}>
         <div className="duty-editor-fields">
           <label>值日日期<input aria-label="值日日期" type="date" value={dateKey} disabled={busy} onChange={(event) => setDateKey(event.target.value)} required /></label>
@@ -102,6 +110,7 @@ export default function DailyDutyEditor({ employees, initialDate, loadDay, saveA
           </div>
         ))}
       </details>
-    </section>
+      </div>
+    </details>
   );
 }
