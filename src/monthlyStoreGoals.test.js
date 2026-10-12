@@ -46,3 +46,9 @@ test("same operation recovers its original receipt but never accepts changed inp
   expect(() => buildMonthlyGoalUpdate(first, { ...input, total: "1" }, context)).toThrow();
   expect(() => buildMonthlyGoalUpdate(first, input, { ...context, actor: { uid: "another" } })).toThrow();
 });
+test("daily revenue start date belongs to the selected month and survives target edits", () => {
+  const first = buildMonthlyGoalUpdate(null, { ...input, revenueStartDate: "2026-10-12" }, context);
+  expect(readMonthlyGoalRecord(first, "storeA", "2026-10").revenueStartDate).toBe("2026-10-12");
+  expect(() => buildMonthlyGoalUpdate(null, { ...input, revenueStartDate: "2026-09-30" }, context)).toThrow("起算日期");
+  expect(() => buildMonthlyGoalUpdate(null, { ...input, revenueStartDate: "2026-10-32" }, context)).toThrow("起算日期");
+});

@@ -15,6 +15,9 @@ import { sendDirectMissedPunchRequest } from "./directMissedPunch";
 import { MonthlyStoreGoalBoard, MonthlyStoreGoalEditor } from "./MonthlyGoalPanels";
 import useMonthlyStoreGoals from "./useMonthlyStoreGoals";
 import { monthlyGoalAdapter } from "./monthlyStoreGoalsFirebase";
+import { createDailyRevenueAdapter } from "./dailyStoreRevenueFirebase";
+import useDailyStoreRevenue from "./useDailyStoreRevenue";
+import { CheckoutRevenueStage } from "./CheckoutRevenuePrompt";
 
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
@@ -179,6 +182,10 @@ const ensurePointsFirebaseAuth = async () => {
   await signInAnonymously(pointsAuth);
   return true;
 };
+const dailyRevenueAdapter = createDailyRevenueAdapter({ getPointsToken: async () => {
+  await ensurePointsFirebaseAuth();
+  return pointsAuth.currentUser.getIdToken();
+} });
 
 const fetchMonthlyPointsFromPerformanceSystem = async (empId) => {
   const targetId = normalizeEmpId(empId);
@@ -927,6 +934,10 @@ ${message}
   const monthlyGoalState = useMonthlyStoreGoals({
     enabled: authReady && !isAdmin && publicViewMode === "checkin" && isAuthorizedDevice,
     storeValue: currentDeviceStoreName, month: monthlyGoalMonthKey, adapter: monthlyGoalAdapter,
+  });
+  const dailyRevenueState = useDailyStoreRevenue({
+    enabled: authReady && !isAdmin && publicViewMode === "checkin" && isAuthorizedDevice,
+    storeValue: currentDeviceStoreName, month: monthlyGoalMonthKey, adapter: dailyRevenueAdapter,
   });
   const dutyDisplayDateKey = useMemo(
     () => {
@@ -2721,14 +2732,19 @@ ${url}`);
       setEmployeeId("");
 
       if (type === "下班") {
-        setMealModalData({
+        const checkout = {
+          checkoutRecordId: recordId,
           empId: emp.empId || emp.id,
           name: emp.name,
           store: emp.store || "",
           role: emp.role || "",
           dateKey: formatTaipeiDateKey(createdAt),
           checkoutAt: createdAt,
-        });
+          revenueStore: currentDeviceStoreName,
+          deviceId: myDevice,
+          isAuthorizedDevice,
+        };
+        setMealModalData(checkout);
         loadMealModalAccount(emp, formatTaipeiDateKey(createdAt));
         setMealAmount("");
       }
@@ -4545,6 +4561,7 @@ ${url}`);
         )}
 
         {mealModalData && (
+          <CheckoutRevenueStage key={`${mealModalData.empId}/${mealModalData.checkoutAt}`} checkout={mealModalData} adapter={dailyRevenueAdapter} revenueState={dailyRevenueState}>
           <div style={styles.modalOverlay}>
             <div style={styles.mealModalCard}>
               <div style={styles.mealModalIcon}>🍽️</div>
@@ -4609,6 +4626,7 @@ ${url}`);
               </button>
             </div>
           </div>
+          </CheckoutRevenueStage>
         )}
 
         {announcementModalData && (
@@ -4766,7 +4784,7 @@ ${url}`);
             </div>
           )}
 
-          <MonthlyStoreGoalBoard storeValue={isAuthorizedDevice ? currentDeviceStoreName : ""} month={monthlyGoalMonthKey} state={monthlyGoalState} />
+          <MonthlyStoreGoalBoard storeValue={isAuthorizedDevice ? currentDeviceStoreName : ""} month={monthlyGoalMonthKey} state={monthlyGoalState} revenueState={dailyRevenueState} />
 
           <section className="checkin-duty" style={styles.dailyDutyPanel}>
             <div className="checkin-duty-header" style={styles.dailyDutyHeader}>
@@ -5167,7 +5185,7 @@ ${url}`);
         anomalyCount={statusMismatchAnomalies.length + openSystemAnomalies.length}
       >
         <AdminSection id="daily">
-          <MonthlyStoreGoalEditor canEdit={authReady && isAdmin} deviceId={myDevice} adapter={monthlyGoalAdapter} initialMonth={monthlyGoalMonthKey} />
+          <MonthlyStoreGoalEditor canEdit={authReady && isAdmin} deviceId={myDevice} adapter={monthlyGoalAdapter} revenueAdapter={dailyRevenueAdapter} initialMonth={monthlyGoalMonthKey} />
 <div className="admin-schedule-panel" style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div className="admin-panel-title" style={styles.panelTitle}>班表發布</div>

@@ -2,6 +2,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { MONTHLY_GOAL_STORES, monthlyGoalMonth, monthlyGoalProgress, resolveMonthlyGoalStore, validateMonthlyGoalInput } from "./monthlyStoreGoals";
 import useMonthlyStoreGoals from "./useMonthlyStoreGoals";
+import { combineMonthlyRevenue } from "./dailyStoreRevenue";
+import DailyRevenueAdmin from "./DailyRevenueAdmin";
 import "./MonthlyStoreGoals.css";
 
 const money = new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 0 });
@@ -40,12 +42,20 @@ export function ToastGoalProgress({ progress, scope }) {
   </div>;
 }
 
-export function MonthlyStoreGoalBoard({ storeValue, month, state }) {
+export function MonthlyStoreGoalBoard({ storeValue, month, state: goalState, revenueState }) {
   const store = resolveMonthlyGoalStore(storeValue);
   const [expanded, setExpanded] = useState(false);
   useEffect(() => setExpanded(false), [store?.id, month]);
+  let state = goalState, needsOpeningDate = false;
+  if (goalState.status === "ready" && goalState.data && revenueState) {
+    if (revenueState.status !== "ready") state = { ...revenueState, data: null };
+    else try {
+      const combined = combineMonthlyRevenue(goalState.data, revenueState.data);
+      state = { ...goalState, data: combined.goal }; needsOpeningDate = combined.needsOpeningDate;
+    } catch (_) { state = { status: "error", data: null, error: "營收累計暫時無法確認，請管理員查看每日紀錄。", retry: revenueState.retry }; }
+  }
   const record = state.status === "ready" && state.data?.storeId === store?.id && state.data?.month === month ? state.data : null;
-  const progress = monthlyGoalProgress(record);
+  const progress = needsOpeningDate ? null : monthlyGoalProgress(record);
   const noteId = `monthly-goal-notes-${store?.id || "unbound"}-${month}`;
   const pendingText = state.status === "loading" ? "正在讀取本月內容…" : state.status === "error" ? "本月資料暫時無法顯示" : state.status === "unbound" ? "請在已綁定門市的平板查看本店目標" : "本月尚未設定，請管理員在後台填寫";
   return <section className="monthly-goal-board" aria-label="本月營運重點">
@@ -53,9 +63,9 @@ export function MonthlyStoreGoalBoard({ storeValue, month, state }) {
     {state.status === "error" && <div className="monthly-goal-error" role="alert">{state.error}<button type="button" onClick={state.retry}>重新讀取</button></div>}
     <div className="monthly-goal-grid">
       <section className="monthly-goal-card" aria-label="營業額目標"><header><h3>營業額目標</h3><span className="monthly-goal-ratio">達成率 <strong>{progress ? `${progress.percent}%` : "—"}</strong></span></header>
-        {record ? <><div className="monthly-goal-sales"><div><span>本月目標</span><strong>{money.format(record.target)}<small>元</small></strong></div><div><span>目前累計</span><strong>{money.format(record.total)}<small>元</small></strong></div></div>
-          <ToastGoalProgress progress={progress} scope={`${store.id}/${month}`} />
-          <div className="monthly-goal-meta"><span>{progress.achieved ? "本月目標已達成！" : `距離目標還差 ${money.format(progress.remaining)} 元`}</span><span>更新：{updateLabel(record.updatedAt)}</span></div></>
+        {record ? <><div className="monthly-goal-sales"><div><span>本月目標</span><strong>{money.format(record.target)}<small>元</small></strong></div><div><span>{needsOpeningDate ? "原先累計" : "目前累計"}</span><strong>{money.format(record.total)}<small>元</small></strong></div></div>
+          {progress ? <><ToastGoalProgress progress={progress} scope={`${store.id}/${month}`} />
+          <div className="monthly-goal-meta"><span>{progress.achieved ? "本月目標已達成！" : `距離目標還差 ${money.format(progress.remaining)} 元`}</span><span>更新：{updateLabel(record.updatedAt)}</span></div></> : <p className="daily-revenue-note">每日營收已留存；請管理員設定每日營收起算日期，再合併累計，避免重複計入原金額。</p>}</>
           : <p className="monthly-goal-empty" role={state.status === "loading" ? "status" : undefined}>{pendingText}</p>}
       </section>
       <section className="monthly-goal-card" aria-label="本月需注意事項"><header><h3>本月需注意事項 <small>{record ? `${record.notes.length} 項` : ""}</small></h3></header>
@@ -73,19 +83,20 @@ function createOperationId() {
   return Array.from(window.crypto.getRandomValues(new Uint8Array(16))).map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
-export function MonthlyStoreGoalEditor({ canEdit, deviceId = "", adapter, initialMonth = monthlyGoalMonth() }) {
+export function MonthlyStoreGoalEditor({ canEdit, deviceId = "", adapter, revenueAdapter, initialMonth = monthlyGoalMonth() }) {
   const [open, setOpen] = useState(false), [storeId, setStoreId] = useState("storeA"), [month, setMonth] = useState(initialMonth);
   const state = useMonthlyStoreGoals({ enabled: open && canEdit, storeValue: storeId, month, adapter });
   const key = `${storeId}/${month}`;
-  const [draft, setDraft] = useState({ key: "", target: "", total: "", notesText: "", expectedRevision: 0 });
+  const [draft, setDraft] = useState({ key: "", target: "", total: "", notesText: "", revenueStartDate: "", expectedRevision: 0 });
   const [dirty, setDirty] = useState(false), [saving, setSaving] = useState(false), [unknown, setUnknown] = useState(false);
   const [error, setError] = useState(""), [message, setMessage] = useState("");
   const lock = useRef(false);
-  useEffect(() => { setDirty(false); setUnknown(false); setError(""); setMessage(""); setDraft({ key: "", target: "", total: "", notesText: "", expectedRevision: 0 }); }, [key]);
+  useEffect(() => { setDirty(false); setUnknown(false); setError(""); setMessage(""); setDraft({ key: "", target: "", total: "", notesText: "", revenueStartDate: "", expectedRevision: 0 }); }, [key]);
   useEffect(() => {
     if (state.status !== "ready" || dirty || saving || unknown) return;
     setDraft({ key, target: state.data ? String(state.data.target) : "", total: state.data ? String(state.data.total) : "0",
-      notesText: (state.data?.notes || []).map((note) => `${note.important ? "！" : ""}${note.text}`).join("\n"), expectedRevision: state.data?.revision || 0 });
+      notesText: (state.data?.notes || []).map((note) => `${note.important ? "！" : ""}${note.text}`).join("\n"),
+      revenueStartDate: state.data?.revenueStartDate || (state.data?.total ? "" : `${month}-01`), expectedRevision: state.data?.revision || 0 });
   }, [state.status, state.data, key, dirty, saving, unknown]);
   if (!canEdit) return null;
   const ready = state.status === "ready" && draft.key === key;
@@ -110,19 +121,21 @@ export function MonthlyStoreGoalEditor({ canEdit, deviceId = "", adapter, initia
   return <details className="monthly-goal-editor" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
     <summary><strong>每月營運目標</strong><span>營業額目標・本月注意事項</span></summary>
     <div className="monthly-goal-editor-body">
-      <p>門市平板只顯示綁定門市的內容。累計營業額由你手動更新，不會自動匯入收銀機。</p>
+      <p>只有本店店長／代理店長，下午 1:30 後下班時可登記每日營收，本月會自動加總；不會自動匯入收銀機。門市平板只顯示本店。</p>
       <fieldset disabled={saving} className="monthly-goal-selectors"><label>目標門市<select aria-label="目標門市" value={storeId} onChange={(event) => setStoreId(event.target.value)}>{MONTHLY_GOAL_STORES.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select></label><label>目標月份<input aria-label="目標月份" type="month" value={month} onInput={(event) => setMonth(event.currentTarget.value)} onChange={(event) => setMonth(event.target.value)} /></label></fieldset>
       {state.status === "loading" && <p role="status">讀取中…</p>}
       {state.status === "error" && <p role="alert" className="monthly-goal-error">{state.error}</p>}
       {dirty && ready && (state.data?.revision || 0) !== draft.expectedRevision && <p role="alert" className="monthly-goal-error">內容有新的更新，請重新讀取後再修改。</p>}
       <form onSubmit={save} noValidate>
-        <fieldset disabled={!ready || saving || unknown} className="monthly-goal-form-fields"><div className="monthly-goal-selectors"><label>營業額目標（元）<input aria-label="營業額目標" type="number" min="1" max="999999999" step="1" inputMode="numeric" value={draft.key === key ? draft.target : ""} onChange={(event) => change("target", event.target.value)} /></label><label>目前累計營業額（元）<input aria-label="目前累計營業額" type="number" min="0" max="999999999" step="1" inputMode="numeric" value={draft.key === key ? draft.total : ""} onChange={(event) => change("total", event.target.value)} /></label></div>
+        <fieldset disabled={!ready || saving || unknown} className="monthly-goal-form-fields"><div className="monthly-goal-selectors"><label>營業額目標（元）<input aria-label="營業額目標" type="number" min="1" max="999999999" step="1" inputMode="numeric" value={draft.key === key ? draft.target : ""} onChange={(event) => change("target", event.target.value)} /></label><label>期初累計營業額（元）<input aria-label="目前累計營業額" type="number" min="0" max="999999999" step="1" inputMode="numeric" value={draft.key === key ? draft.total : ""} onChange={(event) => change("total", event.target.value)} /></label></div>
+          <label>每日營收起算日期<input aria-label="每日營收起算日期" type="date" value={draft.key === key ? draft.revenueStartDate : ""} onInput={(event) => change("revenueStartDate", event.currentTarget.value)} onChange={(event) => change("revenueStartDate", event.target.value)} /></label><p className="daily-revenue-info">期初累計填起算日期之前的金額，勿再把下方每日營收加進來。例如期初已含 10/12 營收，就選 10/13 起算；從零開始則選月初、期初填 0。</p>
           <label>本月需注意事項<textarea aria-label="本月需注意事項" rows={4} maxLength={800} value={draft.key === key ? draft.notesText : ""} onChange={(event) => change("notesText", event.target.value)} placeholder="每行一項，開頭加！可標示重要" /></label>
           <button type="submit" className="admin-primary-action">{saving ? "儲存中…" : "儲存本月目標"}</button>
         </fieldset>
       </form>
       {error && <p role="alert" className="monthly-goal-error">{error}</p>}{message && <p role="status" className="monthly-goal-success">{message}</p>}
       <button type="button" onClick={reload} disabled={saving} className="admin-secondary-action">重新讀取</button>
+      {revenueAdapter && <DailyRevenueAdmin canEdit={canEdit} enabled={open} storeId={storeId} month={month} deviceId={deviceId} adapter={revenueAdapter} />}
     </div>
   </details>;
 }
