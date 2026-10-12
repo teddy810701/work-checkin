@@ -12,6 +12,9 @@ import DailyDutyEditor from "./DailyDutyEditor";
 import AdminWorkspace, { AdminSection, EmployeeScheduleCard, AdminHelp } from "./AdminWorkspace";
 import DirectMissedPunchEntry from "./DirectMissedPunchEntry";
 import { sendDirectMissedPunchRequest } from "./directMissedPunch";
+import { MonthlyStoreGoalBoard, MonthlyStoreGoalEditor } from "./MonthlyGoalPanels";
+import useMonthlyStoreGoals from "./useMonthlyStoreGoals";
+import { monthlyGoalAdapter } from "./monthlyStoreGoalsFirebase";
 
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
@@ -920,6 +923,11 @@ ${message}
   }, []);
 
   const todayKey = useMemo(() => formatTaipeiDateKey(), [nowTime]);
+  const monthlyGoalMonthKey = todayKey.slice(0, 7);
+  const monthlyGoalState = useMonthlyStoreGoals({
+    enabled: authReady && !isAdmin && publicViewMode === "checkin" && isAuthorizedDevice,
+    storeValue: currentDeviceStoreName, month: monthlyGoalMonthKey, adapter: monthlyGoalAdapter,
+  });
   const dutyDisplayDateKey = useMemo(
     () => {
       const currentHour = Number(String(nowTime || "").split(" ")[1]?.split(":")[0]);
@@ -4232,7 +4240,7 @@ ${url}`);
   }
             if (!isAdmin) {
     return (
-      <div className="checkin-page" style={styles.tabletPage}>
+      <div className="checkin-page checkin-monthly-layout" style={styles.tabletPage}>
         {scoreToast && (
           <div style={styles.scoreToastOverlay}>
             <div style={styles.scoreToastCard}>
@@ -4732,14 +4740,14 @@ ${url}`);
 
         <main className="checkin-main" style={styles.tabletMain}>
           <section className="checkin-header" style={styles.dashboardHeader}>
-            <div>
+            <div className="checkin-greeting">
               <div style={styles.dashboardHello}>早安，店長 👋</div>
               <div style={styles.dashboardSub}>今天也一起加油！</div>
             </div>
 
             <div className="checkin-clock" style={styles.clockBox}>
               <div style={styles.clockTime}>{nowTime ? nowTime.split(" ")[1] : "--:--:--"}</div>
-              <div style={styles.clockDate}>{todayKey.replace(/-/g, "/")}</div>
+              <div style={styles.clockDate}>{todayKey.replace(/-/g, "/")}（{getTaipeiWeekdayLabel(todayKey)}）</div>
             </div>
 
             <div className="checkin-header-actions" style={styles.headerActions}>
@@ -4758,8 +4766,10 @@ ${url}`);
             </div>
           )}
 
-          <section style={styles.dailyDutyPanel}>
-            <div style={styles.dailyDutyHeader}>
+          <MonthlyStoreGoalBoard storeValue={isAuthorizedDevice ? currentDeviceStoreName : ""} month={monthlyGoalMonthKey} state={monthlyGoalState} />
+
+          <section className="checkin-duty" style={styles.dailyDutyPanel}>
+            <div className="checkin-duty-header" style={styles.dailyDutyHeader}>
               <div>
                 <div style={styles.dailyDutyEyebrow}>TODAY'S DUTY</div>
                 <div style={styles.dailyDutyTitle}>🧹 {dutyDisplayIsTomorrow ? "明日值日生" : "今日值日生"}</div>
@@ -4768,7 +4778,7 @@ ${url}`);
                 {dutyDisplayDateKey.replace(/-/g, "/")}（{getTaipeiWeekdayLabel(dutyDisplayDateKey)}）
               </div>
             </div>
-            <div style={styles.dailyDutyGrid}>
+            <div className="checkin-duty-grid" style={styles.dailyDutyGrid}>
               {dutyDisplayStoreList.map(({ storeName, members }) => (
                 <div key={storeName} style={styles.dailyDutyStoreCard}>
                   <div style={styles.dailyDutyStoreName}>{storeName}</div>
@@ -4782,51 +4792,6 @@ ${url}`);
             </div>
           </section>
 
-          <section className="checkin-top-grid" style={styles.dashboardTopGrid}>
-            <div style={styles.latePanel}>
-              <div style={styles.cardTitleRed}>⚠ 今日遲到看板</div>
-              {lateDashboardList.length === 0 ? (
-                <div style={styles.noLateBox}>🎉 今日目前沒有遲到紀錄</div>
-              ) : (
-                <>
-                  <div style={styles.lateCountText}>遲到 {lateDashboardList.length} 人</div>
-                  {lateDashboardList.slice(0, 3).map((item) => (
-                    <div key={`${item.empId}-${item.startTime}`} style={styles.latePersonRow}>
-                      <div style={styles.staffMiniInfo}>
-                        <div style={styles.latePersonName}>{item.name}</div>
-                        <div style={styles.latePersonMeta}>
-                          {item.isSupport && item.supportStore ? `支援${item.supportStore}` : item.store}｜排班 {item.startTime}｜{item.actualTime === "尚未打卡" ? "尚未打卡" : `打卡 ${item.actualTime}`}
-                        </div>
-                      </div>
-                      <div style={styles.lateMinutes}>遲到 {item.lateMinutes} 分</div>
-                    </div>
-                  ))}
-                </>
-              )}
-            </div>
-
-            <div style={styles.statsPanel}>
-              <div style={styles.cardTitleGreen}>今日出勤狀況</div>
-              <div className="checkin-stats-grid" style={styles.statsGrid}>
-                <div style={styles.statBox}>
-                  <div style={styles.statValue}>{dashboardStats.checkedInCount}</div>
-                  <div style={styles.statLabel}>已打卡</div>
-                </div>
-                <div style={styles.statBox}>
-                  <div style={styles.statValue}>{dashboardStats.scheduledCount}</div>
-                  <div style={styles.statLabel}>排班</div>
-                </div>
-                <div style={styles.statBox}>
-                  <div style={{ ...styles.statValue, color: "#dc2626" }}>{dashboardStats.lateCount}</div>
-                  <div style={styles.statLabel}>遲到</div>
-                </div>
-                <div style={styles.statBox}>
-                  <div style={{ ...styles.statValue, color: "#f97316" }}>{dashboardStats.notCheckedCount}</div>
-                  <div style={styles.statLabel}>未打卡</div>
-                </div>
-              </div>
-            </div>
-          </section>
 
           <section className="checkin-panel" style={styles.checkinPanel}>
             <input
@@ -4904,6 +4869,52 @@ ${url}`);
                 {checkInSaving ? "處理中…" : "⬇ 下班打卡"}
                 <span>下班時登記員工餐</span>
               </button>
+            </div>
+          </section>
+
+          <section className="checkin-top-grid" style={styles.dashboardTopGrid}>
+            <div style={styles.latePanel}>
+              <div style={styles.cardTitleRed}>⚠ 今日遲到看板</div>
+              {lateDashboardList.length === 0 ? (
+                <div style={styles.noLateBox}>🎉 今日目前沒有遲到紀錄</div>
+              ) : (
+                <>
+                  <div style={styles.lateCountText}>遲到 {lateDashboardList.length} 人</div>
+                  {lateDashboardList.slice(0, 3).map((item) => (
+                    <div key={`${item.empId}-${item.startTime}`} style={styles.latePersonRow}>
+                      <div style={styles.staffMiniInfo}>
+                        <div style={styles.latePersonName}>{item.name}</div>
+                        <div style={styles.latePersonMeta}>
+                          {item.isSupport && item.supportStore ? `支援${item.supportStore}` : item.store}｜排班 {item.startTime}｜{item.actualTime === "尚未打卡" ? "尚未打卡" : `打卡 ${item.actualTime}`}
+                        </div>
+                      </div>
+                      <div style={styles.lateMinutes}>遲到 {item.lateMinutes} 分</div>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+
+            <div style={styles.statsPanel}>
+              <div style={styles.cardTitleGreen}>今日出勤狀況</div>
+              <div className="checkin-stats-grid" style={styles.statsGrid}>
+                <div style={styles.statBox}>
+                  <div style={styles.statValue}>{dashboardStats.checkedInCount}</div>
+                  <div style={styles.statLabel}>已打卡</div>
+                </div>
+                <div style={styles.statBox}>
+                  <div style={styles.statValue}>{dashboardStats.scheduledCount}</div>
+                  <div style={styles.statLabel}>排班</div>
+                </div>
+                <div style={styles.statBox}>
+                  <div style={{ ...styles.statValue, color: "#dc2626" }}>{dashboardStats.lateCount}</div>
+                  <div style={styles.statLabel}>遲到</div>
+                </div>
+                <div style={styles.statBox}>
+                  <div style={{ ...styles.statValue, color: "#f97316" }}>{dashboardStats.notCheckedCount}</div>
+                  <div style={styles.statLabel}>未打卡</div>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -5156,6 +5167,7 @@ ${url}`);
         anomalyCount={statusMismatchAnomalies.length + openSystemAnomalies.length}
       >
         <AdminSection id="daily">
+          <MonthlyStoreGoalEditor canEdit={authReady && isAdmin} deviceId={myDevice} adapter={monthlyGoalAdapter} initialMonth={monthlyGoalMonthKey} />
 <div className="admin-schedule-panel" style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div className="admin-panel-title" style={styles.panelTitle}>班表發布</div>
@@ -6295,7 +6307,7 @@ function LeaveAdjustmentRequestPage({ employees, todayKey, close }) {
   );
 }
 
-const styles = {
+export const styles = {
 
   tabletPage: {
     minHeight: "100vh",
