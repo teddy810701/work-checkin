@@ -68,9 +68,9 @@ export function MonthlyStoreGoalBoard({ storeValue, month, state }) {
 }
 
 function createOperationId() {
-  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
-  if (!globalThis.crypto?.getRandomValues) throw new Error("無法準備安全的儲存識別，請更新瀏覽器後再試。");
-  return Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16))).map((value) => value.toString(16).padStart(2, "0")).join("");
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  if (!window.crypto?.getRandomValues) throw new Error("無法準備安全的儲存識別，請更新瀏覽器後再試。");
+  return Array.from(window.crypto.getRandomValues(new Uint8Array(16))).map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
 export function MonthlyStoreGoalEditor({ canEdit, deviceId = "", adapter, initialMonth = monthlyGoalMonth() }) {
