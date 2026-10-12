@@ -10,6 +10,8 @@ import { applySubsidyMultiplier, calculateMealAccount, getMealAccountMonths, nor
 import { completeDailyDutyAssignment, createManualDailyDutyAssignment, getDailyDutyFingerprint, getDailyDutyMembers, getDailyDutyCandidates, getDailyDutyAssignmentCounts } from "./dailyDuty";
 import DailyDutyEditor from "./DailyDutyEditor";
 import AdminWorkspace, { AdminSection, EmployeeScheduleCard, AdminHelp } from "./AdminWorkspace";
+import DirectMissedPunchEntry from "./DirectMissedPunchEntry";
+import { sendDirectMissedPunchRequest } from "./directMissedPunch";
 
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
@@ -518,6 +520,7 @@ export default function App() {
   const [latestRemoteRefresh, setLatestRemoteRefresh] = useState(null);
   const [remoteRefreshReceipts, setRemoteRefreshReceipts] = useState({});
   const [missedPunchModal, setMissedPunchModal] = useState(null);
+  const [directMissedPunchOpen, setDirectMissedPunchOpen] = useState(false);
   const [missedPunchTime, setMissedPunchTime] = useState("");
   const [missedPunchReason, setMissedPunchReason] = useState("");
   const [missedPunchSaving, setMissedPunchSaving] = useState(false);
@@ -2050,7 +2053,7 @@ ${url}`);
   }, [authReady, isAdmin, publicViewMode, isAuthorizedDevice, currentDeviceStoreName, latestRemoteVoice, myDevice]);
 
   useEffect(() => {
-    if (!authReady || isAdmin || breakReminderModal || missedPunchModal || lateCheckInModal || lateDrinkModal || lateDrinkReminderModal || longBreakModal) return;
+    if (!authReady || isAdmin || breakReminderModal || missedPunchModal || directMissedPunchOpen || lateCheckInModal || lateDrinkModal || lateDrinkReminderModal || longBreakModal) return;
 
     const restingEmployees = employees.filter((emp) => emp.status === "休息中");
     for (const emp of restingEmployees) {
@@ -2083,7 +2086,7 @@ ${url}`);
         : `${emp.name}休息時間已到，請打休息結束卡`);
       break;
     }
-  }, [authReady, isAdmin, nowTime, employees, todayRecords, todayKey, breakReminderModal, missedPunchModal, lateCheckInModal, lateDrinkModal, lateDrinkReminderModal, longBreakModal]);
+  }, [authReady, isAdmin, nowTime, employees, todayRecords, todayKey, breakReminderModal, missedPunchModal, directMissedPunchOpen, lateCheckInModal, lateDrinkModal, lateDrinkReminderModal, longBreakModal]);
 
   useEffect(() => {
     if (!breakReminderModal) return;
@@ -2392,6 +2395,30 @@ ${url}`);
     setMissedPunchModal({ emp, missingType, targetType });
     setMissedPunchTime(defaultTime);
     setMissedPunchReason("");
+  };
+
+  const submitDirectMissedPunch = async (input) => {
+    if (!authReady || !isAuthorizedDevice) throw new Error("這台設備尚未授權，請使用店內已授權的平板申請。");
+    if (!navigator.onLine) throw new Error("目前沒有網路，請連線後再送出。填寫內容已保留。");
+    try {
+      return await sendDirectMissedPunchRequest(input, employees, {
+        createIfAbsent: async (request) => {
+          const employeeSnap = await get(ref(db, `employees/${request.employeeKey}`));
+          const employee = employeeSnap.val();
+          if (!employee || employee.archived || (employee.empId || request.employeeKey) !== request.empId) {
+            throw new Error("這個工號已停用或變更，請重新整理後再申請。");
+          }
+          const transaction = await runTransaction(ref(db, `missed_punch_requests/${request.id}`),
+            (current) => current === null ? request : undefined, { applyLocally: false });
+          return { created: transaction.committed, request: transaction.snapshot.val() };
+        },
+      }, { now: Date.now(), device: myDevice, deviceLabel: currentDeviceStoreName || "未識別設備" });
+    } catch (error) {
+      if (["PERMISSION_DENIED", "permission-denied"].includes(error?.code)) {
+        throw new Error("申請未送出：沒有寫入權限，請通知管理員檢查。填寫內容已保留。");
+      }
+      throw error;
+    }
   };
 
   const getEmployeeTodayLateMinutes = (emp) => {
@@ -4470,7 +4497,7 @@ ${url}`);
             <div style={styles.modalCard}>
               <div style={styles.modalTitle}>申請忘打卡</div>
               <div style={{ color: "#475569", lineHeight: 1.7, marginBottom: 14 }}>
-                {missedPunchModal.emp.name} 要執行「{missedPunchModal.targetType}」，但缺少「{missedPunchModal.missingType}」紀錄。送出後即可繼續打卡，申請會送到積分系統由管理員審核。
+                {missedPunchModal.emp.name} 要執行「{missedPunchModal.targetType}」，但缺少「{missedPunchModal.missingType}」紀錄。送出後即可繼續打卡，申請會送到打卡系統後台「待辦與異常」由管理員審核。
               </div>
 
               <div style={styles.deviceLabel}>忘打卡時間</div>
@@ -4647,6 +4674,10 @@ ${url}`);
           >
             📝 請假／調假
           </button>
+
+          <DirectMissedPunchEntry employees={employees} open={directMissedPunchOpen}
+            onOpenChange={setDirectMissedPunchOpen} onSubmit={submitDirectMissedPunch}
+            canSubmit={isAuthorizedDevice} initialEmpId={employeeId} buttonStyle={styles.sidebarNav} />
 
           <button
             className="checkin-sidebar-nav"

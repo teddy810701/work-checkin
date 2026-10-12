@@ -1,0 +1,25 @@
+.direct-missed-overlay { position: fixed; inset: 0; z-index: 1400; background: rgba(15, 35, 28, .4); display: flex; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box; color: #263d32; font-weight: 400; }
+.direct-missed-dialog { width: min(100%, 480px); max-height: calc(100dvh - 40px); overflow-y: auto; background: #fff; border-radius: 22px; padding: 24px; box-sizing: border-box; box-shadow: 0 20px 70px rgba(14, 38, 28, .2); }
+.direct-missed-dialog * { box-sizing: border-box; }
+.direct-missed-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.direct-missed-dialog header p { font-size: 10px; letter-spacing: 1.5px; color: #b47a39; margin: 0 0 8px; }
+.direct-missed-dialog h2 { font-size: 23px; margin: 0; color: #26533e; }
+.direct-missed-dialog header button { border: 0; background: #f3f7f4; color: #60756a; padding: 10px 13px; border-radius: 12px; cursor: pointer; }
+.direct-missed-hint, .direct-missed-note { font-size: 13px; line-height: 1.7; color: #78877e; }
+.direct-missed-dialog fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.direct-missed-dialog label { display: flex; flex-direction: column; gap: 7px; font-size: 13px; color: #526e5c; font-weight: 700; margin: 14px 0; }
+.direct-missed-dialog input, .direct-missed-dialog select, .direct-missed-dialog textarea { min-width: 0; max-width: 100%; width: 100%; border: 1px solid #dce7de; background: #fafcf9; border-radius: 11px; padding: 12px; color: #294636; font: inherit; font-size: 15px; min-height: 45px; }
+.direct-missed-dialog textarea { resize: vertical; }
+.direct-missed-dialog :focus-visible { outline: 2px solid #79ad90; outline-offset: 2px; }
+.direct-missed-datetime { display: grid; grid-template-columns: 1.15fr 1fr; gap: 12px; }
+.direct-missed-employee { color: #297450; background: #eef7ef; padding: 9px 11px; border-radius: 9px; font-size: 13px; margin: 0; line-height: 1.6; }
+.direct-missed-error { color: #a34f2f; background: #fff3e6; border-radius: 10px; padding: 10px 12px; font-size: 13px; line-height: 1.6; }
+.direct-missed-actions { display: flex; gap: 10px; margin-top: 18px; }
+.direct-missed-actions button, .direct-missed-success > button { border: 1px solid #dce5dd; border-radius: 12px; padding: 13px 16px; background: #fff; color: #64776a; font-size: 14px; font-weight: 700; cursor: pointer; }
+.direct-missed-dialog .direct-missed-primary { color: #fff; background: #276e4e; border-color: #276e4e; flex: 1; }
+.direct-missed-dialog button:disabled { opacity: .55; cursor: not-allowed; }
+.direct-missed-success { margin-top: 24px; background: #f2f8f1; border-radius: 14px; padding: 20px; line-height: 1.7; }
+.direct-missed-success strong { color: #29724f; font-size: 19px; }
+.direct-missed-success p { font-size: 13px; color: #758478; }
+.direct-missed-success button { width: 100%; }
+@media (max-width: 560px) { .direct-missed-overlay { padding: 12px; } .direct-missed-dialog { padding: 19px; max-height: calc(100dvh - 24px); } }

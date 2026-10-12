@@ -11,9 +11,13 @@ const DutyPreview = process.env.NODE_ENV === 'development'
 const AdminPreview = process.env.NODE_ENV === 'development'
   && new URLSearchParams(window.location.search).get('demo') === 'admin-layout'
   ? React.lazy(() => import('./AdminLayoutPreview')) : null;
+const MissedPunchPreview = process.env.NODE_ENV === 'development'
+  && new URLSearchParams(window.location.search).get('demo') === 'missed-punch'
+  ? React.lazy(() => import('./DirectMissedPunchPreview')) : null;
 root.render(
   <React.StrictMode>
-    {AdminPreview ? <React.Suspense fallback={<p>讀取預覽中…</p>}><AdminPreview /></React.Suspense>
+    {MissedPunchPreview ? <React.Suspense fallback={<p>讀取預覽中…</p>}><MissedPunchPreview /></React.Suspense>
+      : AdminPreview ? <React.Suspense fallback={<p>讀取預覽中…</p>}><AdminPreview /></React.Suspense>
       : DutyPreview ? <React.Suspense fallback={<p>讀取預覽中…</p>}><DutyPreview /></React.Suspense> : <App />}
   </React.StrictMode>
 );
