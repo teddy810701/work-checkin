@@ -18,18 +18,13 @@ import { monthlyGoalAdapter } from "./monthlyStoreGoalsFirebase";
 import { createDailyRevenueAdapter } from "./dailyStoreRevenueFirebase";
 import useDailyStoreRevenue from "./useDailyStoreRevenue";
 import { CheckoutRevenueStage } from "./CheckoutRevenuePrompt";
+import ManagementGoalViewer from "./ManagementGoalViewer";
+import { DEVICE_BIND_OPTIONS, MANAGEMENT_DEVICE_LABELS, getManagementGoalDevice, prepareDeviceBinding, readManagementGoalStore, rememberManagementGoalStore } from "./managementGoalDevice";
 
 const ADMIN_PASSWORD = "8888";
 const CHECKIN_COOLDOWN = 30000;
 const LATE_CONFIRM_MINUTES = 60;
 const LONG_BREAK_MINUTES = 30;
-const DEVICE_BIND_OPTIONS = [
-  "西螺文昌店",
-  "斗南站前店",
-  "老闆手機",
-  "老闆娘手機",
-  "老闆電腦",
-];
 const CHECKIN_AUDIO_ENABLED_KEY = "checkin_audio_enabled";
 
 // ===== 積分系統 Firebase（Firestore） =====
@@ -586,6 +581,8 @@ export default function App() {
 
   const [authorizedDevices, setAuthorizedDevices] = useState({});
   const [bindStore, setBindStore] = useState("西螺文昌店");
+  const [deviceBindingSaving, setDeviceBindingSaving] = useState(false);
+  const [managementGoalStore, setManagementGoalStore] = useState(() => readManagementGoalStore(window.localStorage));
   const [nowTime, setNowTime] = useState("");
   const [selectedMonth, setSelectedMonth] = useState(getMonthValue());
   const [recordSearch, setRecordSearch] = useState("");
@@ -600,6 +597,13 @@ export default function App() {
     const matched = Object.entries(authorizedDevices || {}).find(([, item]) => item?.id === myDevice);
     return matched?.[0] || "";
   }, [authorizedDevices, myDevice]);
+  const managementDeviceLabel = useMemo(() => getManagementGoalDevice(authorizedDevices, myDevice), [authorizedDevices, myDevice]);
+  const changeManagementGoalStore = (storeId) => {
+    if (!isAdmin && !managementDeviceLabel) return;
+    if (!["storeA", "storeB"].includes(storeId)) return;
+    setManagementGoalStore(storeId);
+    rememberManagementGoalStore(window.localStorage, storeId);
+  };
 
   const [scheduleItems, setScheduleItems] = useState({});
   const [scheduleSaving, setScheduleSaving] = useState(false);
@@ -3257,27 +3261,19 @@ ${url}`);
 
 
   const bindDevice = async () => {
-    const storeName = bindStore || "西螺文昌店";
-    const currentDeviceNames = Object.keys(authorizedDevices || {});
-    const isUpdatingExistingSlot = Boolean(authorizedDevices?.[storeName]);
-
-    if (currentDeviceNames.length >= DEVICE_BIND_OPTIONS.length && !isUpdatingExistingSlot) {
-      alert(`最多只能綁定 ${DEVICE_BIND_OPTIONS.length} 台設備：${DEVICE_BIND_OPTIONS.join("、")}`);
-      return;
-    }
-
-    await update(ref(db, "config/device"), {
-      [`devices/${storeName}`]: {
-        id: myDevice,
-        store: storeName,
-        boundAt: Date.now(),
-      },
-      updatedAt: Date.now(),
-    });
-    alert(`${storeName} 設備已綁定成功`);
+    if (deviceBindingSaving) return;
+    try {
+      const plan = prepareDeviceBinding({ isAdmin, authReady, deviceId: myDevice, label: bindStore, devices: authorizedDevices, now: Date.now() });
+      if (plan.replacing && !window.confirm(`${bindStore} 已綁定另一台設備，改綁後原設備將失去這個授權。確定改綁到目前設備嗎？`)) return;
+      setDeviceBindingSaving(true);
+      await update(ref(db, "config/device"), plan.updates);
+      alert(`${bindStore} 設備已綁定成功${MANAGEMENT_DEVICE_LABELS.includes(bindStore) ? "，離開管理模式後即可切換兩店業績。" : ""}`);
+    } catch (error) { alert(`綁定失敗：${error?.message || "請稍後再試"}`); }
+    finally { setDeviceBindingSaving(false); }
   };
 
   const unbindDevice = async (storeName) => {
+    if (!isAdmin || !authReady || deviceBindingSaving) return;
     if (!window.confirm(`確定解除 ${storeName} 的設備綁定嗎？`)) return;
     await remove(ref(db, `config/device/devices/${storeName}`));
     alert(`${storeName} 設備已解除綁定`);
@@ -4780,11 +4776,14 @@ ${url}`);
 
           {!isAuthorizedDevice && (
             <div style={styles.dashboardWarning}>
-              此設備尚未授權，請先由管理員進入後台綁定西螺或斗南設備。
+              此設備尚未授權。店裡平板請綁定所屬門市；個人手機或電腦請由管理員綁定「老闆手機／老闆電腦」。
             </div>
           )}
 
-          <MonthlyStoreGoalBoard storeValue={isAuthorizedDevice ? currentDeviceStoreName : ""} month={monthlyGoalMonthKey} state={monthlyGoalState} revenueState={dailyRevenueState} />
+          {managementDeviceLabel ? <ManagementGoalViewer canView={authReady} deviceLabel={managementDeviceLabel}
+            storeId={managementGoalStore} onStoreChange={changeManagementGoalStore} month={monthlyGoalMonthKey}
+            adapter={monthlyGoalAdapter} revenueAdapter={dailyRevenueAdapter} />
+            : <MonthlyStoreGoalBoard storeValue={isAuthorizedDevice ? currentDeviceStoreName : ""} month={monthlyGoalMonthKey} state={monthlyGoalState} revenueState={dailyRevenueState} />}
 
           <section className="checkin-duty" style={styles.dailyDutyPanel}>
             <div className="checkin-duty-header" style={styles.dailyDutyHeader}>
@@ -5185,7 +5184,11 @@ ${url}`);
         anomalyCount={statusMismatchAnomalies.length + openSystemAnomalies.length}
       >
         <AdminSection id="daily">
-          <MonthlyStoreGoalEditor canEdit={authReady && isAdmin} deviceId={myDevice} adapter={monthlyGoalAdapter} revenueAdapter={dailyRevenueAdapter} initialMonth={monthlyGoalMonthKey} />
+          <div className="admin-monthly-panel">
+            <ManagementGoalViewer canView={authReady && isAdmin} storeId={managementGoalStore} onStoreChange={changeManagementGoalStore}
+              month={monthlyGoalMonthKey} adapter={monthlyGoalAdapter} revenueAdapter={dailyRevenueAdapter} />
+            <MonthlyStoreGoalEditor canEdit={authReady && isAdmin} deviceId={myDevice} adapter={monthlyGoalAdapter} revenueAdapter={dailyRevenueAdapter} initialMonth={monthlyGoalMonthKey} />
+          </div>
 <div className="admin-schedule-panel" style={styles.panelCard}>
             <div style={styles.listHeader}>
               <div className="admin-panel-title" style={styles.panelTitle}>班表發布</div>
@@ -6054,7 +6057,7 @@ ${url}`);
             </div>
 
             <div style={styles.deviceBox}>
-              <div style={styles.deviceLabel}>選擇要綁定的店別</div>
+              <div style={styles.deviceLabel}>選擇設備用途</div>
               <select
                 value={bindStore}
                 onChange={(e) => setBindStore(e.target.value)}
@@ -6070,13 +6073,13 @@ ${url}`);
                 }}
               >
                 {DEVICE_BIND_OPTIONS.map((option) => (
-                  <option key={option} value={option}>{option}</option>
+                  <option key={option} value={option}>{option}{MANAGEMENT_DEVICE_LABELS.includes(option) ? "（可查看兩店）" : "（本店平板）"}</option>
                 ))}
               </select>
             </div>
-
-            <button className="admin-primary-action" style={styles.fullDarkBtn} onClick={bindDevice}>
-              綁定這台設備到 {bindStore}
+            <p className="management-goal-hint">你的手機選「老闆手機」，電腦選「老闆電腦」；綁定後可在首頁切換兩店業績。門市平板仍各自只看本店，請勿用個人設備取代門市平板的綁定。</p>
+            <button className="admin-primary-action" style={styles.fullDarkBtn} onClick={bindDevice} disabled={deviceBindingSaving}>
+              {deviceBindingSaving ? "綁定中…" : `綁定這台設備為 ${bindStore}`}
             </button>
 
             <div style={{ marginTop: 14 }}>

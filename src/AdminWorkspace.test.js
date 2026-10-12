@@ -79,6 +79,7 @@ test("real panels appear exactly once in their intended category", () => {
     found[c.value.value] = id;
   } });
   expect(found).toEqual({
+    'admin-monthly-panel':'daily',
     'admin-schedule-panel':'daily', 'admin-employees-panel':'daily', 'admin-duty-panel':'daily',
     'admin-leave-panel':'pending', 'admin-system-anomalies-panel':'pending', 'admin-exceptions-panel':'pending',
     'admin-announcement-panel':'communications', 'admin-remote-voice-panel':'communications',

@@ -54,6 +54,15 @@ test("legacy device binding works without changing its existing settings", async
   const f = mockRead({ config: { id: body.deviceId, store: "西螺文昌店" } });
   try { assert.equal((await handler.lookupPermission(body)).allowed, true); } finally { f.close(); }
 });
+test("cross-store management viewer binding does not grant a shop checkout revenue write", async () => {
+  for (const label of ["老闆手機", "老闆娘手機", "老闆電腦"]) {
+    const f = mockRead({ config: { devices: { [label]: { id: body.deviceId } } } });
+    try {
+      assert.deepEqual(await handler.lookupPermission(body), { allowed: false });
+      assert.ok(!f.calls.some((call) => call.url.includes("firestore")));
+    } finally { f.close(); }
+  }
+});
 test("invalid payload or upstream error never fails open", async () => {
   const f = mockRead({ fail: true });
   try {
