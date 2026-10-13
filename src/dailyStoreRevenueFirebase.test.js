@@ -25,7 +25,7 @@ test("unauthenticated or denied writes do not report success", async () => {
   auth.currentUser = { uid: "test", getIdToken: async () => "checkin-session" }; runTransaction.mockRejectedValue(new Error("permission denied")); await expect(dailyRevenueAdapter.save({ amount: "1" }, context)).rejects.toThrow("permission denied");
 });
 test("before-cutoff requests abort before creating any daily record", async () => {
-  await expect(dailyRevenueAdapter.save({ amount: "1" }, { ...context, checkoutAt: Date.parse("2026-10-12T13:29:59+08:00") })).rejects.toThrow("店長"); expect(runTransaction).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled();
+  await expect(dailyRevenueAdapter.save({ amount: "1" }, { ...context, checkoutAt: Date.parse("2026-10-12T13:29:59+08:00") })).rejects.toThrow("權限"); expect(runTransaction).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled();
 });
 test("every employee save refreshes the App permission; a revoked or cross-store permission never starts a transaction", async () => {
   for (const result of [{ allowed: false }, { ...permission, storeId: "storeB" }, { ...permission, empId: "OTHER" }]) {

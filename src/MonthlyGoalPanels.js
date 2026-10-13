@@ -121,7 +121,7 @@ export function MonthlyStoreGoalEditor({ canEdit, deviceId = "", adapter, revenu
   return <details className="monthly-goal-editor" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
     <summary><strong>每月營運目標</strong><span>營業額目標・本月注意事項</span></summary>
     <div className="monthly-goal-editor-body">
-      <p>只有本店店長／代理店長，下午 1:30 後下班時可登記每日營收，本月會自動加總；不會自動匯入收銀機。門市平板只顯示本店。</p>
+      <p>已開放營收輸入權限的人員，下午 1:30 後下班時可登記每日營收；當天漏填時，管理員可在下方補登。門市平板只顯示本店。</p>
       <fieldset disabled={saving} className="monthly-goal-selectors"><label>目標門市<select aria-label="目標門市" value={storeId} onChange={(event) => setStoreId(event.target.value)}>{MONTHLY_GOAL_STORES.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select></label><label>目標月份<input aria-label="目標月份" type="month" value={month} onInput={(event) => setMonth(event.currentTarget.value)} onChange={(event) => setMonth(event.target.value)} /></label></fieldset>
       {state.status === "loading" && <p role="status">讀取中…</p>}
       {state.status === "error" && <p role="alert" className="monthly-goal-error">{state.error}</p>}
