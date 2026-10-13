@@ -22,7 +22,7 @@ test("canonical manager and acting manager remain allowed; only minimal projecte
     try {
       assert.deepEqual(await handler.lookupPermission(body), { allowed: true, empId: "0326", storeId: "storeA", managerTitle: title });
       const query = JSON.parse(f.calls.find((call) => call.url.includes("firestore")).options.body).structuredQuery;
-      assert.deepEqual(query.select.fields.map((field) => field.fieldPath), ["empId", "active", "role", "storeId", "isManager", "managerTitle", "canEnterRevenue"]);
+      assert.deepEqual(query.select.fields.map((field) => field.fieldPath), ["empId", "active", "role", "storeId", "isManager", "managerTitle", "canEnterRevenue", "revenueStoreIds"]);
       assert.equal(query.limit, 2); assert.equal(query.where.fieldFilter.value.stringValue, "0326");
     } finally { f.close(); }
   }
@@ -41,6 +41,19 @@ test("explicit revenue permission can authorize an ordinary employee and explici
   try { assert.deepEqual(await handler.lookupPermission(body), { allowed: true, empId: "0326", storeId: "storeA", managerTitle: "" }); } finally { f.close(); }
   const managerExplicitlyDisabled = profile({ canEnterRevenue: { booleanValue: false } });
   f = mockRead({ profiles: [managerExplicitlyDisabled] });
+  try { assert.deepEqual(await handler.lookupPermission(body), { allowed: false }); } finally { f.close(); }
+});
+test("explicit shop list grants cross-store checkout without changing home shop; unselected and malformed lists fail closed", async () => {
+  const list = (...ids) => ({ arrayValue: { values: ids.map((id) => ({ stringValue: id })) } });
+  for (const ids of [["storeA"], ["storeA", "storeB"]]) {
+    const f = mockRead({ profiles: [profile({ storeId: { stringValue: "storeB" }, canEnterRevenue: { booleanValue: true }, revenueStoreIds: list(...ids) })] });
+    try { assert.equal((await handler.lookupPermission(body)).allowed, true); } finally { f.close(); }
+  }
+  for (const value of [list("storeB"), list(), list("storeA", "storeA"), list("all"), { stringValue: "storeA" }, { arrayValue: { values: [{ integerValue: "1" }] } }]) {
+    const f = mockRead({ profiles: [profile({ canEnterRevenue: { booleanValue: true }, revenueStoreIds: value })] });
+    try { assert.deepEqual(await handler.lookupPermission(body), { allowed: false }); } finally { f.close(); }
+  }
+  const f = mockRead({ profiles: [profile({ canEnterRevenue: { booleanValue: false }, revenueStoreIds: list("storeA", "storeB") })] });
   try { assert.deepEqual(await handler.lookupPermission(body), { allowed: false }); } finally { f.close(); }
 });
 test("ordinary, former, cross-store, ambiguous and missing accounts are denied despite claimed titles", async () => {

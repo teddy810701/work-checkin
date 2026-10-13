@@ -3,7 +3,7 @@
 const CHECKIN_DB = "https://work-checkin-77acf-default-rtdb.asia-southeast1.firebasedatabase.app";
 const PROFILE_QUERY = "https://firestore.googleapis.com/v1/projects/my-warm-day-pro/databases/(default)/documents:runQuery";
 const STORES = { "西螺文昌店": "storeA", "斗南站前店": "storeB" };
-const fields = ["empId", "active", "role", "storeId", "isManager", "managerTitle", "canEnterRevenue"];
+const fields = ["empId", "active", "role", "storeId", "isManager", "managerTitle", "canEnterRevenue", "revenueStoreIds"];
 const denied = () => ({ allowed: false });
 
 async function readJson(url, options) {
@@ -57,9 +57,17 @@ async function lookupPermission(body) {
   const legacyManagerTitle = profile.managerTitle?.stringValue || "店長";
   const legacyManager = profile.isManager?.booleanValue === true && ["店長", "代理店長"].includes(legacyManagerTitle);
   const canEnterRevenue = hasRevenueOverride ? profile.canEnterRevenue.booleanValue : legacyManager;
+  // Missing field retains home-shop permission. An explicit list authorizes
+  // only the selected shops; invalid/empty lists must never fall back to both.
+  let revenueStores = [profile.storeId?.stringValue];
+  if (Object.prototype.hasOwnProperty.call(profile, "revenueStoreIds")) {
+    const values = profile.revenueStoreIds?.arrayValue?.values ?? (profile.revenueStoreIds?.arrayValue ? [] : null);
+    if (!Array.isArray(values) || values.length > 2 || values.some((item) => !["storeA", "storeB"].includes(item?.stringValue)) || new Set(values.map((item) => item.stringValue)).size !== values.length) return denied();
+    revenueStores = values.map((item) => item.stringValue);
+  }
   const managerTitle = profile.managerTitle?.stringValue || (legacyManager ? "店長" : "");
   if (profile.empId?.stringValue !== empId || profile.active?.booleanValue !== true
-    || profile.role?.stringValue === "admin" || profile.storeId?.stringValue !== storeId || !canEnterRevenue) return denied();
+    || profile.role?.stringValue === "admin" || !revenueStores.includes(storeId) || !canEnterRevenue) return denied();
   return { allowed: true, empId, storeId, managerTitle };
 }
 
