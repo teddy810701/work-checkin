@@ -4,12 +4,13 @@ const checkout = { empId: "A0315", name: "示範員工", dateKey: "2026-10-12", 
 const permission = { allowed: true, empId: "A0315", storeId: "storeB", managerTitle: "店長" };
 const context = { ...checkout, permission, storeId: "storeB", month: "2026-10", deviceStore: checkout.revenueStore, mode: "employee", actor: { uid: "device-a", name: "示範員工" }, now: at("13:31:00"), operationId: "daily-operation-00001" };
 const goal = { storeId: "storeB", month: "2026-10", target: 500000, total: 0, updatedAt: at("05:00:00") };
-test("manager permission requires the canonical employee and this store; a title or employment type alone never grants access", () => {
+test("revenue permission requires an allowed canonical employee profile and the same store", () => {
   expect(hasRevenueManagerPermission(permission, checkout)).toBe(true);
   expect(hasRevenueManagerPermission({ ...permission, managerTitle: "代理店長" }, checkout)).toBe(true);
-  [null, { ...permission, allowed: false }, { ...permission, storeId: "storeA" }, { ...permission, empId: "OTHER" }, { ...permission, managerTitle: "正職" }].forEach((value) => {
+  expect(hasRevenueManagerPermission({ ...permission, managerTitle: "" }, checkout)).toBe(true);
+  [null, { ...permission, allowed: false }, { ...permission, storeId: "storeA" }, { ...permission, empId: "OTHER" }].forEach((value) => {
     expect(hasRevenueManagerPermission(value, checkout)).toBe(false);
-    expect(() => buildDailyRevenueUpdate(null, { amount: "1" }, { ...context, permission: value })).toThrow("店長");
+    expect(() => buildDailyRevenueUpdate(null, { amount: "1" }, { ...context, permission: value })).toThrow("權限");
   });
 });
 test("only a successful bound-store checkout at or after 13:30 Taipei is eligible", () => {

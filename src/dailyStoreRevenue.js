@@ -27,8 +27,7 @@ export function isCheckoutRevenueEligible(checkout) {
 export function hasRevenueManagerPermission(permission, checkout) {
   return permission?.allowed === true
     && permission.empId === String(checkout?.empId || "").trim().toUpperCase()
-    && permission.storeId === resolveMonthlyGoalStore(checkout?.revenueStore)?.id
-    && ["店長", "代理店長"].includes(permission.managerTitle);
+    && permission.storeId === resolveMonthlyGoalStore(checkout?.revenueStore)?.id;
 }
 export function validateDailyRevenueAmount(value) {
   const text = String(value ?? "").trim(), amount = Number(text);
@@ -60,7 +59,7 @@ export function buildDailyRevenueUpdate(current, input, context) {
   if (!isRevenueDate(dateKey, month) || !actor?.uid || !Number.isFinite(now) || now <= 0 || !/^[a-zA-Z0-9_-]{16,80}$/.test(operationId || "")) throw new Error("營收儲存資訊不完整。");
   if (mode === "employee") {
     if (!isCheckoutRevenueEligible({ ...context, revenueStore: context.deviceStore }) || resolveMonthlyGoalStore(context.deviceStore)?.id !== storeId) throw new Error("只有已授權門市下午 1:30 後的下班打卡可以登記營收。");
-    if (!hasRevenueManagerPermission(context.permission, { ...context, revenueStore: context.deviceStore })) throw new Error("只有本店店長或代理店長可以登記營收。");
+    if (!hasRevenueManagerPermission(context.permission, { ...context, revenueStore: context.deviceStore })) throw new Error("只有已開放營收輸入權限的本店人員可以登記營收。");
   } else if (mode !== "admin" || !context.canEdit) throw new Error("請由管理員修正已登記的營收。");
   const existing = ledger.days[dateKey];
   if (existing?.lastOperationId === operationId) {

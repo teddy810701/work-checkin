@@ -28,7 +28,7 @@ export function CheckoutRevenueStage({ checkout, adapter, children, revenueState
   if (permission) return <CheckoutRevenuePrompt checkout={checkout} permission={permission} adapter={adapter} onDone={() => setPending(false)} />;
   return <div className="checkout-revenue-overlay"><section className="checkout-revenue-dialog">
     <span className="checkout-revenue-eyebrow">下班打卡已成功</span>
-    <p role={permissionError ? "alert" : "status"}>{permissionError || "確認店長／代理店長營收填寫權限…"}</p>
+    <p role={permissionError ? "alert" : "status"}>{permissionError || "確認本店人員營收輸入權限…"}</p>
     {permissionError && <button type="button" onClick={() => { setPermissionError(""); setAttempt((value) => value + 1); }}>重試權限確認</button>}
     <button className="daily-revenue-secondary" type="button" onClick={() => setPending(false)}>繼續登記員工餐</button>
   </section></div>;
@@ -71,7 +71,7 @@ export default function CheckoutRevenuePrompt({ checkout, permission, adapter, o
   const ready = state.status === "ready" && !state.data.days[checkout.dateKey];
   return <div className="checkout-revenue-overlay"><section role="dialog" aria-modal="true" aria-labelledby="checkout-revenue-title" className="checkout-revenue-dialog" onKeyDown={(event) => { if (event.key === "Escape" && !saving) done("later"); }}>
     <span className="checkout-revenue-eyebrow">下班打卡已成功</span><h2 id="checkout-revenue-title">登記今日營收</h2>
-    <p>{store.name} · {checkout.dateKey}<br />{checkout.name}（{permission.managerTitle}），結帳後再填；本店店長或代理店長只需一人登記。</p>
+    <p>{store.name} · {checkout.dateKey}<br />{checkout.name}（{permission.managerTitle || "營收輸入授權人員"}），結帳後再填；已授權的人員中只需一人登記。</p>
     {state.status === "loading" && <p role="status">確認今天是否已登記…</p>}
     {state.status === "error" && <p role="alert" className="daily-revenue-error">{state.error}</p>}
     <form onSubmit={save} noValidate><fieldset disabled={!ready || saving || unknown || revoked}><label>今日營收（元）<input ref={input} aria-label="今日營收" type="number" inputMode="numeric" min="0" max="999999999" step="1" placeholder="例如 12500" value={amount} onChange={(event) => { setAmount(event.target.value); setError(""); }} /></label><button type="submit">{saving ? "儲存中…" : "確認營收，繼續登記員工餐"}</button></fieldset></form>

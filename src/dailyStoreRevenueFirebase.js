@@ -31,7 +31,7 @@ export function createDailyRevenueAdapter({ getPointsToken } = {}) { return {
     if (!auth.currentUser) throw new Error("系統尚未連線，請重新讀取。");
     // Re-read the canonical App permission on every save, not a cached UI role.
     const permission = context.mode === "employee" ? await this.checkPermission({ ...context, revenueStore: context.deviceStore }) : null;
-    if (context.mode === "employee" && !permission?.allowed) throw Object.assign(new Error("權限已變更，只有本店店長或代理店長可以登記營收。"), { code: "revenue-permission-denied" });
+    if (context.mode === "employee" && !permission?.allowed) throw Object.assign(new Error("權限已變更，只有已開放營收輸入權限的本店人員可以登記營收。"), { code: "revenue-permission-denied" });
     const actor = { uid: auth.currentUser.uid, device: String(context.deviceId || "").slice(0, 100),
       empId: String(context.empId || "").slice(0, 40), name: String(context.name || "管理員").slice(0, 80), source: context.mode,
       ...(permission ? { managerTitle: permission.managerTitle } : {}) };

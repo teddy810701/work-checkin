@@ -16,13 +16,13 @@ function mockRead({ profiles = [profile()], record = {}, config = { devices: { "
   };
   return { calls, close: () => { global.fetch = previous; } };
 }
-test("canonical manager and acting manager allowed; only minimal projected fields returned", async () => {
+test("canonical manager and acting manager remain allowed; only minimal projected fields returned", async () => {
   for (const title of ["店長", "代理店長"]) {
     const f = mockRead({ profiles: [profile({ managerTitle: { stringValue: title } })] });
     try {
       assert.deepEqual(await handler.lookupPermission(body), { allowed: true, empId: "0326", storeId: "storeA", managerTitle: title });
       const query = JSON.parse(f.calls.find((call) => call.url.includes("firestore")).options.body).structuredQuery;
-      assert.deepEqual(query.select.fields.map((field) => field.fieldPath), ["empId", "active", "role", "storeId", "isManager", "managerTitle"]);
+      assert.deepEqual(query.select.fields.map((field) => field.fieldPath), ["empId", "active", "role", "storeId", "isManager", "managerTitle", "canEnterRevenue"]);
       assert.equal(query.limit, 2); assert.equal(query.where.fieldFilter.value.stringValue, "0326");
     } finally { f.close(); }
   }
@@ -33,6 +33,14 @@ test("legacy manager without title retains existing App manager permission; ordi
   try { assert.deepEqual(await handler.lookupPermission(body), { allowed: true, empId: "0326", storeId: "storeA", managerTitle: "店長" }); } finally { f.close(); }
   legacy.document.fields.isManager.booleanValue = false;
   f = mockRead({ profiles: [legacy] });
+  try { assert.deepEqual(await handler.lookupPermission(body), { allowed: false }); } finally { f.close(); }
+});
+test("explicit revenue permission can authorize an ordinary employee and explicit off overrides manager role", async () => {
+  const authorizedStaff = profile({ isManager: { booleanValue: false }, managerTitle: { stringValue: "" }, canEnterRevenue: { booleanValue: true } });
+  let f = mockRead({ profiles: [authorizedStaff] });
+  try { assert.deepEqual(await handler.lookupPermission(body), { allowed: true, empId: "0326", storeId: "storeA", managerTitle: "" }); } finally { f.close(); }
+  const managerExplicitlyDisabled = profile({ canEnterRevenue: { booleanValue: false } });
+  f = mockRead({ profiles: [managerExplicitlyDisabled] });
   try { assert.deepEqual(await handler.lookupPermission(body), { allowed: false }); } finally { f.close(); }
 });
 test("ordinary, former, cross-store, ambiguous and missing accounts are denied despite claimed titles", async () => {

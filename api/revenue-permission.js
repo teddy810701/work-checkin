@@ -3,7 +3,7 @@
 const CHECKIN_DB = "https://work-checkin-77acf-default-rtdb.asia-southeast1.firebasedatabase.app";
 const PROFILE_QUERY = "https://firestore.googleapis.com/v1/projects/my-warm-day-pro/databases/(default)/documents:runQuery";
 const STORES = { "西螺文昌店": "storeA", "斗南站前店": "storeB" };
-const fields = ["empId", "active", "role", "storeId", "isManager", "managerTitle"];
+const fields = ["empId", "active", "role", "storeId", "isManager", "managerTitle", "canEnterRevenue"];
 const denied = () => ({ allowed: false });
 
 async function readJson(url, options) {
@@ -51,13 +51,15 @@ async function lookupPermission(body) {
   // Ambiguous identities fail closed, including an inactive duplicate account.
   if (profiles.length !== 1) return denied();
   const profile = profiles[0];
-  // The App permission editor treats an existing isManager=true account with
-  // no title as manager (legacy accounts), while deputy_manager has an explicit
-  // title. This is label compatibility, not a new grant of permission.
-  const managerTitle = profile.managerTitle?.stringValue || "店長";
+  // Explicit revenue permission overrides the legacy manager/deputy-manager
+  // inheritance. Profiles without the new field retain their old behavior.
+  const hasRevenueOverride = typeof profile.canEnterRevenue?.booleanValue === "boolean";
+  const legacyManagerTitle = profile.managerTitle?.stringValue || "店長";
+  const legacyManager = profile.isManager?.booleanValue === true && ["店長", "代理店長"].includes(legacyManagerTitle);
+  const canEnterRevenue = hasRevenueOverride ? profile.canEnterRevenue.booleanValue : legacyManager;
+  const managerTitle = profile.managerTitle?.stringValue || (legacyManager ? "店長" : "");
   if (profile.empId?.stringValue !== empId || profile.active?.booleanValue !== true
-    || profile.role?.stringValue === "admin" || profile.storeId?.stringValue !== storeId
-    || profile.isManager?.booleanValue !== true || !["店長", "代理店長"].includes(managerTitle)) return denied();
+    || profile.role?.stringValue === "admin" || profile.storeId?.stringValue !== storeId || !canEnterRevenue) return denied();
   return { allowed: true, empId, storeId, managerTitle };
 }
 
