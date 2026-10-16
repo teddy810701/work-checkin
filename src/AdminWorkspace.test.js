@@ -12,9 +12,9 @@ afterEach(() => { act(() => root.unmount()); host.remove(); global.IS_REACT_ACT_
 const click = (element) => act(() => element.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 const sections = (extra) => ADMIN_TABS.map((tab) => <AdminSection key={tab.id} id={tab.id}><input aria-label={`${tab.id}草稿`} defaultValue="" />{extra}</AdminSection>);
 
-test("defaults to daily management with five tabs and hidden inactive panels", () => {
+test("defaults to daily management with six tabs and hidden inactive panels", () => {
   act(() => root.render(<AdminWorkspace>{sections()}</AdminWorkspace>));
-  expect(host.querySelectorAll('[role="tab"]')).toHaveLength(5);
+  expect(host.querySelectorAll('[role="tab"]')).toHaveLength(6);
   expect(host.querySelector('#admin-tab-daily').getAttribute('aria-selected')).toBe('true');
   expect(host.querySelector('#admin-section-daily').hidden).toBe(false);
   expect(host.querySelector('#admin-section-devices').hidden).toBe(true);
@@ -26,19 +26,19 @@ test("tab changes keep forms and mounted children intact", () => {
   act(() => root.render(<AdminWorkspace>{sections(<Marker />)}</AdminWorkspace>));
   const draft = host.querySelector('[aria-label="daily草稿"]');
   draft.value = "尚未儲存的班表";
-  click(host.querySelector('#admin-tab-communications'));
+  click(host.querySelector('#admin-tab-revenue'));
   expect(host.querySelector('#admin-section-daily').hidden).toBe(true);
-  expect(host.querySelector('#admin-section-communications').hidden).toBe(false);
+  expect(host.querySelector('#admin-section-revenue').hidden).toBe(false);
   click(host.querySelector('#admin-tab-daily'));
   expect(host.querySelector('[aria-label="daily草稿"]')).toBe(draft);
   expect(draft.value).toBe("尚未儲存的班表");
-  expect(mount).toHaveBeenCalledTimes(5);
+  expect(mount).toHaveBeenCalledTimes(6);
 });
 
 test("keyboard arrows and Home/End select and focus tabs", () => {
   act(() => root.render(<AdminWorkspace>{sections()}</AdminWorkspace>));
   act(() => host.querySelector('#admin-tab-daily').dispatchEvent(new KeyboardEvent('keydown', { key:'ArrowRight', bubbles:true })));
-  expect(document.activeElement.id).toBe('admin-tab-pending');
+  expect(document.activeElement.id).toBe('admin-tab-revenue');
   act(() => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key:'End', bubbles:true })));
   expect(document.activeElement.id).toBe('admin-tab-devices');
   act(() => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key:'Home', bubbles:true })));
@@ -86,6 +86,12 @@ test("real panels appear exactly once in their intended category", () => {
     'admin-export-panel':'reports', 'admin-history-panel':'reports', 'admin-record-panel':'reports',
     'admin-device-panel':'devices', 'admin-refresh-panel':'devices',
   });
+});
+
+test("daily revenue is a distinct management category and is not nested in monthly goals", () => {
+  const source = readFileSync(`${__dirname}/App.js`, 'utf8');
+  expect(source).toMatch(/<AdminSection id="revenue">\s*<AdminDailyRevenuePanel\b/);
+  expect(source).not.toMatch(/<MonthlyStoreGoalEditor[^>]*revenueAdapter=/);
 });
 
 test("preview renders with sample data and has no live-service adapter", () => {

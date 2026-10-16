@@ -1,6 +1,6 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
-import { MonthlyStoreGoalBoard, MonthlyStoreGoalEditor, ToastGoalProgress } from "./MonthlyGoalPanels";
+import { AdminDailyRevenuePanel, MonthlyStoreGoalBoard, MonthlyStoreGoalEditor, ToastGoalProgress } from "./MonthlyGoalPanels";
 import useMonthlyStoreGoals from "./useMonthlyStoreGoals";
 import { buildMonthlyGoalUpdate, readMonthlyGoalRecord } from "./monthlyStoreGoals";
 const raw = (storeId = "storeA", total = "320000", month = "2026-10") => buildMonthlyGoalUpdate(null, { target: "500000", total, notesText: "！事項一\n事項二\n事項三\n事項四" }, { storeId, month, expectedRevision: 0, operationId: "test-operation-00001", actor: { uid: "test-admin" }, now: 1791806400000 });
@@ -47,6 +47,14 @@ test("long notes expand and collapse while progress shows the true value", () =>
 test("editor is admin-only, collapsed by default, and reads nothing until opened", () => {
   const f = fixtureAdapter(); act(() => root.render(<MonthlyStoreGoalEditor canEdit={false} adapter={f.adapter} />)); expect(host.textContent).toBe("");
   act(() => root.render(<MonthlyStoreGoalEditor canEdit adapter={f.adapter} />)); expect(host.querySelector("details").open).toBe(false); expect(f.adapter.subscribe).not.toHaveBeenCalled();
+});
+test("daily revenue has its own admin area with a store and month selector", () => {
+  const f = fixtureAdapter();
+  act(() => root.render(<AdminDailyRevenuePanel canEdit={false} adapter={f.adapter} initialMonth="2026-10" />));
+  expect(host.textContent).toBe(""); expect(f.adapter.subscribe).not.toHaveBeenCalled();
+  act(() => root.render(<AdminDailyRevenuePanel canEdit adapter={f.adapter} initialMonth="2026-10" />));
+  expect(host.textContent).toContain("每日營收"); expect(host.textContent).toContain("補登每日營收");
+  expect(f.subscriptions[0]).toMatchObject({ store: "storeA", month: "2026-10" });
 });
 function openEditor(f) {
   act(() => root.render(<MonthlyStoreGoalEditor canEdit adapter={f.adapter} initialMonth="2026-10" />));

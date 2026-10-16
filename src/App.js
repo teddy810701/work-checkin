@@ -12,7 +12,7 @@ import DailyDutyEditor from "./DailyDutyEditor";
 import AdminWorkspace, { AdminSection, EmployeeScheduleCard, AdminHelp } from "./AdminWorkspace";
 import DirectMissedPunchEntry from "./DirectMissedPunchEntry";
 import { sendDirectMissedPunchRequest } from "./directMissedPunch";
-import { MonthlyStoreGoalBoard, MonthlyStoreGoalEditor } from "./MonthlyGoalPanels";
+import { AdminDailyRevenuePanel, MonthlyStoreGoalBoard, MonthlyStoreGoalEditor } from "./MonthlyGoalPanels";
 import useMonthlyStoreGoals from "./useMonthlyStoreGoals";
 import { monthlyGoalAdapter } from "./monthlyStoreGoalsFirebase";
 import { createDailyRevenueAdapter } from "./dailyStoreRevenueFirebase";
@@ -5187,7 +5187,7 @@ ${url}`);
           <div className="admin-monthly-panel">
             <ManagementGoalViewer canView={authReady && isAdmin} storeId={managementGoalStore} onStoreChange={changeManagementGoalStore}
               month={monthlyGoalMonthKey} adapter={monthlyGoalAdapter} revenueAdapter={dailyRevenueAdapter} />
-            <MonthlyStoreGoalEditor canEdit={authReady && isAdmin} deviceId={myDevice} adapter={monthlyGoalAdapter} revenueAdapter={dailyRevenueAdapter} initialMonth={monthlyGoalMonthKey} />
+            <MonthlyStoreGoalEditor canEdit={authReady && isAdmin} deviceId={myDevice} adapter={monthlyGoalAdapter} initialMonth={monthlyGoalMonthKey} />
           </div>
 <div className="admin-schedule-panel" style={styles.panelCard}>
             <div style={styles.listHeader}>
@@ -5428,6 +5428,9 @@ ${url}`);
           </div>
 
 <div className="admin-duty-panel"><DailyDutyEditor employees={employees} initialDate={todayKey} loadDay={loadDutyEditorDay} saveAssignment={saveDutyEditorAssignment} /></div>
+        </AdminSection>
+        <AdminSection id="revenue">
+          <AdminDailyRevenuePanel canEdit={authReady && isAdmin} deviceId={myDevice} adapter={dailyRevenueAdapter} initialMonth={monthlyGoalMonthKey} />
         </AdminSection>
         <AdminSection id="pending">
 <div className="admin-leave-panel" style={styles.panelCard}>

@@ -1,8 +1,12 @@
-import React, { Children, useRef, useState } from "react";
+import React, { Children, createContext, useContext, useRef, useState } from "react";
 import "./AdminWorkspace.css";
+
+const AdminSectionActiveContext = createContext(true);
+export const useAdminSectionActive = () => useContext(AdminSectionActiveContext);
 
 export const ADMIN_TABS = [
   { id: "daily", label: "日常管理", icon: "▦", title: "排班與員工", description: "先選日期與門市，再調整員工班表、發布班表。" },
+  { id: "revenue", label: "每日營收", icon: "＄", title: "每日營收", description: "查看兩店每日紀錄；漏填時可由管理員補登。" },
   { id: "pending", label: "待辦與異常", icon: "✓", title: "待辦與異常", description: "審核申請與處理異常，集中在這裡。" },
   { id: "communications", label: "公告與播報", icon: "◉", title: "公告與播報", description: "發布每日公告，或讓門市平板播報訊息。" },
   { id: "reports", label: "紀錄與報表", icon: "▤", title: "紀錄與報表", description: "查詢打卡紀錄、歷史班表與匯出月報表。" },
@@ -45,10 +49,11 @@ export default function AdminWorkspace({ children, pendingCount = 0, anomalyCoun
       {active === "pending" && <div className="admin-status-legend"><span>待審 {pendingCount}</span><span>異常 {anomalyCount}</span></div>}
     </div>
     {/* Keep inactive panels mounted so drafts, disclosure state and forms survive tab changes. */}
-    {panels.map((panel) => <section key={panel.props.id} id={`admin-section-${panel.props.id}`} role="tabpanel"
-      aria-labelledby={`admin-tab-${panel.props.id}`} hidden={active !== panel.props.id} tabIndex={0}>
-      <div className={`admin-tab-grid admin-${panel.props.id}-grid`}>{panel.props.children}</div>
-    </section>)}
+    {panels.map((panel) => <AdminSectionActiveContext.Provider key={panel.props.id} value={active === panel.props.id}>
+      <section id={`admin-section-${panel.props.id}`} role="tabpanel" aria-labelledby={`admin-tab-${panel.props.id}`} hidden={active !== panel.props.id} tabIndex={0}>
+        <div className={`admin-tab-grid admin-${panel.props.id}-grid`}>{panel.props.children}</div>
+      </section>
+    </AdminSectionActiveContext.Provider>)}
   </div>;
 }
 

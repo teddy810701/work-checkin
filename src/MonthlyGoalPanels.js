@@ -4,6 +4,7 @@ import { MONTHLY_GOAL_STORES, monthlyGoalMonth, monthlyGoalProgress, resolveMont
 import useMonthlyStoreGoals from "./useMonthlyStoreGoals";
 import { combineMonthlyRevenue } from "./dailyStoreRevenue";
 import DailyRevenueAdmin from "./DailyRevenueAdmin";
+import { useAdminSectionActive } from "./AdminWorkspace";
 import "./MonthlyStoreGoals.css";
 
 const money = new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 0 });
@@ -83,7 +84,7 @@ function createOperationId() {
   return Array.from(window.crypto.getRandomValues(new Uint8Array(16))).map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
-export function MonthlyStoreGoalEditor({ canEdit, deviceId = "", adapter, revenueAdapter, initialMonth = monthlyGoalMonth() }) {
+export function MonthlyStoreGoalEditor({ canEdit, deviceId = "", adapter, initialMonth = monthlyGoalMonth() }) {
   const [open, setOpen] = useState(false), [storeId, setStoreId] = useState("storeA"), [month, setMonth] = useState(initialMonth);
   const state = useMonthlyStoreGoals({ enabled: open && canEdit, storeValue: storeId, month, adapter });
   const key = `${storeId}/${month}`;
@@ -121,7 +122,7 @@ export function MonthlyStoreGoalEditor({ canEdit, deviceId = "", adapter, revenu
   return <details className="monthly-goal-editor" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
     <summary><strong>每月營運目標</strong><span>營業額目標・本月注意事項</span></summary>
     <div className="monthly-goal-editor-body">
-      <p>已開放營收輸入權限的人員，下午 1:30 後下班時可登記每日營收；當天漏填時，管理員可在下方補登。門市平板只顯示本店。</p>
+      <p>已開放營收輸入權限的人員，下午 1:30 後下班時可登記每日營收；當天漏填時，管理員可到「每日營收」分類補登。門市平板只顯示本店。</p>
       <fieldset disabled={saving} className="monthly-goal-selectors"><label>目標門市<select aria-label="目標門市" value={storeId} onChange={(event) => setStoreId(event.target.value)}>{MONTHLY_GOAL_STORES.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select></label><label>目標月份<input aria-label="目標月份" type="month" value={month} onInput={(event) => setMonth(event.currentTarget.value)} onChange={(event) => setMonth(event.target.value)} /></label></fieldset>
       {state.status === "loading" && <p role="status">讀取中…</p>}
       {state.status === "error" && <p role="alert" className="monthly-goal-error">{state.error}</p>}
@@ -135,7 +136,18 @@ export function MonthlyStoreGoalEditor({ canEdit, deviceId = "", adapter, revenu
       </form>
       {error && <p role="alert" className="monthly-goal-error">{error}</p>}{message && <p role="status" className="monthly-goal-success">{message}</p>}
       <button type="button" onClick={reload} disabled={saving} className="admin-secondary-action">重新讀取</button>
-      {revenueAdapter && <DailyRevenueAdmin canEdit={canEdit} enabled={open} storeId={storeId} month={month} deviceId={deviceId} adapter={revenueAdapter} />}
     </div>
   </details>;
+}
+
+export function AdminDailyRevenuePanel({ canEdit, deviceId = "", adapter, initialMonth = monthlyGoalMonth() }) {
+  const [storeId, setStoreId] = useState("storeA");
+  const [month, setMonth] = useState(initialMonth);
+  const enabled = useAdminSectionActive();
+  if (!canEdit) return null;
+  return <section className="admin-revenue-panel" aria-label="管理員每日營收補登">
+    <div className="page-heading"><small>DAILY REVENUE</small><h3>每日營收</h3><p>每日漏填可在這裡補登；每間店分開記錄，修改會保留歷史版本。</p></div>
+    <fieldset className="admin-revenue-filters"><label>門市<select aria-label="每日營收門市" value={storeId} onChange={(event) => setStoreId(event.target.value)}>{MONTHLY_GOAL_STORES.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select></label><label>月份<input aria-label="每日營收月份" type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label></fieldset>
+    <DailyRevenueAdmin canEdit={canEdit} enabled={enabled} storeId={storeId} month={month} deviceId={deviceId} adapter={adapter} />
+  </section>;
 }
