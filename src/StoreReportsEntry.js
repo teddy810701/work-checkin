@@ -1,13 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useState } from "react";
 import { getApp, getApps, initializeApp } from "firebase/app";
-import {
-  getAuth,
-  inMemoryPersistence,
-  onAuthStateChanged,
-  setPersistence,
-  signInWithEmailAndPassword,
-  signOut,
-} from "firebase/auth";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import "./StoreReportsEntry.css";
 
@@ -23,7 +15,6 @@ const REPORTS_APP_NAME = "workCheckinStoreReports";
 const reportsApp = getApps().some((app) => app.name === REPORTS_APP_NAME)
   ? getApp(REPORTS_APP_NAME)
   : initializeApp(APP_FIREBASE_CONFIG, REPORTS_APP_NAME);
-const reportsAuth = getAuth(reportsApp);
 const reportsFunctions = getFunctions(reportsApp, "asia-east1");
 const call = (name, options) => httpsCallable(reportsFunctions, name)(options);
 
@@ -45,77 +36,41 @@ const blankDraft = () => ({
 
 export default function StoreReportsEntry({ initialEmpId = "", onClose }) {
   const [employeeId, setEmployeeId] = useState(String(initialEmpId || "").trim().toUpperCase());
-  const [password, setPassword] = useState("");
-  const [user, setUser] = useState(reportsAuth.currentUser);
+  const [employee, setEmployee] = useState(null);
   const [storeId, setStoreId] = useState("");
-  const [stores, setStores] = useState([]);
   const [rows, setRows] = useState([]);
   const [draft, setDraft] = useState(blankDraft);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
-  const loadMine = useCallback(async () => {
-    const response = await call("getStoreReports", { view: "mine" });
-    const allowedStores = Array.isArray(response.data?.stores) ? response.data.stores : [];
-    setStores(allowedStores);
-    setStoreId(allowedStores.length === 1 ? allowedStores[0] : "");
-    setRows(Array.isArray(response.data?.items) ? response.data.items : []);
+  const loadMine = useCallback(async (id) => {
+    const response = await call("getStoreReportsByEmployeeId", { employeeId: id });
+    const data = response.data || {};
+    if (!data.employee?.storeId) throw new Error("工號未對應到有效的門市員工，請確認後再試。");
+    setEmployee(data.employee);
+    setStoreId(data.employee.storeId);
+    setRows(Array.isArray(data.items) ? data.items : []);
+    return data.employee;
   }, []);
 
-  useEffect(() => {
-    return onAuthStateChanged(reportsAuth, (nextUser) => {
-      setUser(nextUser);
-      if (!nextUser) {
-        setStores([]); setStoreId(""); setRows([]);
-      }
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!user) return;
-    let active = true;
-    setBusy(true); setError("");
-    call("getStoreReports", { view: "mine" })
-      .then((response) => {
-        if (!active) return;
-        const allowedStores = Array.isArray(response.data?.stores) ? response.data.stores : [];
-        setStores(allowedStores);
-        setStoreId(allowedStores.length === 1 ? allowedStores[0] : "");
-        setRows(Array.isArray(response.data?.items) ? response.data.items : []);
-      })
-      .catch((reason) => { if (active) setError(reason?.message || "無法讀取回報資料，請確認 App 帳號權限。 "); })
-      .finally(() => { if (active) setBusy(false); });
-    return () => { active = false; };
-  }, [user]);
-
-  const isAdminProfile = stores.length > 1;
-  const ownLabel = useMemo(() => user?.email?.split("@")[0] || "", [user]);
   const setField = (field, value) => {
     setDraft((current) => ({ ...current, [field]: value }));
     setError(""); setMessage("");
   };
 
-  const login = async (event) => {
+  const verifyEmployee = async (event) => {
     event.preventDefault(); setBusy(true); setError(""); setMessage("");
     try {
-      const normalizedId = employeeId.trim().toLowerCase();
-      if (!normalizedId || !password) throw new Error("請輸入員工編號與 App 密碼。");
-      // This is a shared tablet. Keep this secondary App session in memory only;
-      // closing the page or signing out will not leave an employee logged in.
-      await setPersistence(reportsAuth, inMemoryPersistence);
-      await signInWithEmailAndPassword(reportsAuth, `${normalizedId}@employee.mywarmday.app`, password);
-      setPassword("");
-      await loadMine();
+      const normalizedId = employeeId.trim().toUpperCase();
+      if (!normalizedId) throw new Error("請輸入員工工號。");
+      await loadMine(normalizedId);
+      setMessage("工號已確認；回報會記錄在此員工名下。");
     } catch (reason) {
       const code = String(reason?.code || "");
-      setError(code.startsWith("auth/")
-        ? "員工編號或 App 密碼錯誤。"
-        : code.includes("permission-denied")
-        ? "這個 App 帳號尚未開通回報功能，請聯絡管理員。"
-        : reason?.message?.includes("請輸入員工編號")
-          ? reason.message
-          : reason?.message || "登入或資料確認失敗，請檢查網路後再試。");
+      setError(code.includes("permission-denied")
+        ? "工號錯誤、帳號未啟用或無法唯一對應，請聯絡管理員。"
+        : reason?.message || "工號確認失敗，請檢查網路後再試。");
     } finally { setBusy(false); }
   };
 
@@ -128,10 +83,11 @@ export default function StoreReportsEntry({ initialEmpId = "", onClose }) {
       setError(draft.kind === "scrap" ? "請填寫日期、品項、有效數量及報廢原因。" : "請填寫日期、物品、位置、損壞情況及營運影響。");
       return;
     }
-    if (!storeId) { setError("此頁供員工登記使用；請用所屬門市的員工 App 帳號登入。"); return; }
+    if (!employee?.empId || !storeId) { setError("請先輸入有效員工工號。"); return; }
     setBusy(true);
     try {
-      await call("createStoreReport", {
+      await call("createStoreReportByEmployeeId", {
+        employeeId: employee.empId,
         operationId: operationId(), storeId, kind: draft.kind, occurredDate: draft.occurredDate,
         item: draft.item.trim(), detail: draft.detail.trim(),
         ...(draft.kind === "scrap"
@@ -140,34 +96,33 @@ export default function StoreReportsEntry({ initialEmpId = "", onClose }) {
       });
       setMessage("已送出；這筆資料會同步出現在員工 App，店長與管理員都可查看。");
       setDraft(blankDraft());
-      await loadMine();
+      await loadMine(employee.empId);
     } catch (reason) {
       setError(reason?.message || "送出失敗；請重試，系統會避免同一筆重複新增。");
     } finally { setBusy(false); }
   };
 
-  const close = async () => {
-    if (reportsAuth.currentUser) await signOut(reportsAuth).catch(() => {});
-    onClose?.();
+  const resetEmployee = () => {
+    setEmployee(null); setStoreId(""); setRows([]); setMessage(""); setError("");
+    setEmployeeId(String(initialEmpId || "").trim().toUpperCase());
   };
 
   return <div className="sre-backdrop" role="presentation">
     <section className="sre-dialog" role="dialog" aria-modal="true" aria-labelledby="sre-title">
       <header className="sre-header">
         <div><small>STORE REPORTS</small><h2 id="sre-title">報廢品／物品損壞登記</h2><p>打卡系統內直接登記，案件與員工 App 共用同步。</p></div>
-        <button type="button" className="sre-close" onClick={() => void close()} aria-label="關閉回報登記">×</button>
+        <button type="button" className="sre-close" onClick={onClose} aria-label="關閉回報登記">×</button>
       </header>
       {error && <div className="sre-alert" role="alert">{error}</div>}
       {message && <div className="sre-success" role="status">{message}</div>}
-      {!user ? <form className="sre-login" onSubmit={login}>
-        <h3>請用員工 App 帳號確認身分</h3>
-        <p>打卡平板不會使用匿名身份代填員工資料；登入後才可將回報記到本人名下。</p>
-        <label>員工編號<input autoComplete="username" value={employeeId} onChange={(event) => setEmployeeId(event.target.value.toUpperCase())} /></label>
-        <label>App 密碼<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
-        <button className="sre-primary" disabled={busy}>{busy ? "確認中…" : "登入並開啟登記"}</button>
+      {!employee ? <form className="sre-login" onSubmit={verifyEmployee}>
+        <h3>輸入員工工號</h3>
+        <p>不需要 App 密碼。請確認工號正確；共用平板上輸入的工號會作為回報者。</p>
+        <label>員工工號<input autoComplete="off" value={employeeId} onChange={(event) => setEmployeeId(event.target.value.toUpperCase())} /></label>
+        <button className="sre-primary" disabled={busy}>{busy ? "確認中…" : "確認工號並開啟登記"}</button>
       </form> : <>
-        <div className="sre-account"><span>已驗證員工帳號 <b>{ownLabel}</b>{storeId && <>・{storeName(storeId)}</>}</span><button type="button" onClick={() => void signOut(reportsAuth)}>登出帳號</button></div>
-        {isAdminProfile ? <div className="sre-info">目前登入的是管理員帳號。請先登出，再由實際回報員工使用本人 App 帳號登入，確保紀錄歸屬正確。</div> : <>
+        <div className="sre-account"><span>回報者 <b>{employee.name}（{employee.empId}）</b>{storeId && <>・{storeName(storeId)}</>}</span><button type="button" onClick={resetEmployee}>更換工號</button></div>
+        <>
           <div className="sre-kind-switch" role="group" aria-label="回報類型">
             <button type="button" aria-pressed={draft.kind === "scrap"} onClick={() => setField("kind", "scrap")}>報廢品申請</button>
             <button type="button" aria-pressed={draft.kind === "damage"} onClick={() => setField("kind", "damage")}>物品損壞回報</button>
@@ -187,10 +142,10 @@ export default function StoreReportsEntry({ initialEmpId = "", onClose }) {
             <p className="sre-hint">送出後資料會同步至員工 App；店長或管理員任一人審核即可。損壞款核准後追蹤結清，報廢品可月結。</p>
             <button className="sre-primary" disabled={busy}>{busy ? "送出中…" : "送出回報 →"}</button>
           </form>
-          <section className="sre-history"><div className="sre-history-title"><h3>我的回報紀錄</h3><button type="button" onClick={() => { setBusy(true); setError(""); loadMine().catch((reason) => setError(reason?.message || "更新失敗")).finally(() => setBusy(false)); }} disabled={busy}>{busy ? "更新中…" : "重新整理"}</button></div>
+          <section className="sre-history"><div className="sre-history-title"><h3>我的回報紀錄</h3><button type="button" onClick={() => { setBusy(true); setError(""); loadMine(employee.empId).catch((reason) => setError(reason?.message || "更新失敗")).finally(() => setBusy(false)); }} disabled={busy}>{busy ? "更新中…" : "重新整理"}</button></div>
             {rows.length ? rows.slice(0, 12).map((row) => <article key={row.id}><span>{row.kind === "scrap" ? "報廢品" : "物品損壞"}・{row.occurredDate?.replaceAll("-", "/")}</span><strong>{row.item}</strong><small>{statusName(row.status)}</small></article>) : <p>尚無回報紀錄</p>}
           </section>
-        </>}
+        </>
       </>}
     </section>
   </div>;
