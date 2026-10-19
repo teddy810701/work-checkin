@@ -4,6 +4,7 @@ import { ref, set, onValue, update, remove, get, query, orderByChild, limitToLas
 import { initializeApp, getApp, getApps } from "firebase/app";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import { getFirestore, collection as fsCollection, doc as fsDoc, getDocs, serverTimestamp, setDoc as fsSetDoc } from "firebase/firestore";
+import StoreReportsEntry from "./StoreReportsEntry";
 import { exportFormulaWorkbook } from "./exportFormulaWorkbook";
 import { buildMonthlyArchive } from "./monthlyArchive";
 import { applySubsidyMultiplier, calculateMealAccount, getMealAccountMonths, normalizeSubsidyMultiplier } from "./mealAccount";
@@ -526,6 +527,7 @@ export default function App() {
   const [remoteRefreshReceipts, setRemoteRefreshReceipts] = useState({});
   const [missedPunchModal, setMissedPunchModal] = useState(null);
   const [directMissedPunchOpen, setDirectMissedPunchOpen] = useState(false);
+  const [storeReportsOpen, setStoreReportsOpen] = useState(false);
   const [missedPunchTime, setMissedPunchTime] = useState("");
   const [missedPunchReason, setMissedPunchReason] = useState("");
   const [missedPunchSaving, setMissedPunchSaving] = useState(false);
@@ -4704,6 +4706,17 @@ ${url}`);
           <button
             className="checkin-sidebar-nav"
             style={styles.sidebarNav}
+            onClick={() => setStoreReportsOpen(true)}
+            aria-label="在打卡系統登記報廢品與物品損壞"
+          >
+            📝 報廢／損壞回報
+          </button>
+
+          {storeReportsOpen && <StoreReportsEntry initialEmpId={employeeId} onClose={() => setStoreReportsOpen(false)} />}
+
+          <button
+            className="checkin-sidebar-nav"
+            style={styles.sidebarNav}
             onClick={() =>
               window.open(
                 "https://staff-meal-system.vercel.app/",
@@ -4999,6 +5012,7 @@ ${url}`);
 
   return (
     <div className="admin-page admin-layout-page" style={styles.adminPage}>
+      {storeReportsOpen && <StoreReportsEntry initialEmpId={employeeId} onClose={() => setStoreReportsOpen(false)} />}
       {scoreToast && (
         <div style={styles.scoreToastOverlay}>
           <div style={styles.scoreToastCard}>
@@ -5174,6 +5188,9 @@ ${url}`);
           <div style={styles.adminTitle}>管理後台</div>
           <div style={styles.adminSub}>排班、審核與紀錄，各就各位</div>
         </div>
+        <button style={styles.adminTopBtn} onClick={() => setStoreReportsOpen(true)}>
+          📝 報廢／損壞回報
+        </button>
         <button style={styles.logoutBtn} onClick={logout}>
           離開管理模式
         </button>
