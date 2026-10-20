@@ -4712,7 +4712,7 @@ ${url}`);
             📝 報廢／損壞回報
           </button>
 
-          {storeReportsOpen && <StoreReportsEntry initialEmpId={employeeId} onClose={() => setStoreReportsOpen(false)} />}
+          {storeReportsOpen && <StoreReportsEntry employees={employees} onClose={() => setStoreReportsOpen(false)} />}
 
           <button
             className="checkin-sidebar-nav"
@@ -5012,7 +5012,7 @@ ${url}`);
 
   return (
     <div className="admin-page admin-layout-page" style={styles.adminPage}>
-      {storeReportsOpen && <StoreReportsEntry initialEmpId={employeeId} onClose={() => setStoreReportsOpen(false)} />}
+      {storeReportsOpen && <StoreReportsEntry employees={employees} onClose={() => setStoreReportsOpen(false)} />}
       {scoreToast && (
         <div style={styles.scoreToastOverlay}>
           <div style={styles.scoreToastCard}>

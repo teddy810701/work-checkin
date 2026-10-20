@@ -54,6 +54,10 @@
 .sre-kind-switch button[aria-pressed="true"] { border-color: #23624a; background: #23624a; color: white; }
 .sre-account { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 16px; padding: 12px 14px; border-radius: 14px; background: #eef6ef; color: #587064; font-size: 13px; }
 .sre-account b { color: #174c38; }
+.sre-selector-row { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(220px, 1.2fr); gap: 12px; margin-top: 16px; }
+.sre-selector-row label { display: grid; gap: 7px; color: #526b5d; font-size: 14px; font-weight: 800; }
+.sre-selector-row select { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid #d4e3d8; border-radius: 13px; padding: 12px 14px; background: white; color: #174c38; font: inherit; outline-color: #6fa288; }
+.sre-selector-row select:disabled { background: #f3f5f1; color: #9aa59e; }
 .sre-account button { padding: 7px 10px; white-space: nowrap; }
 .sre-hint, .sre-info { margin: 0; border-radius: 13px; background: #fff4e4; color: #946034; padding: 12px 14px; font-size: 13px; line-height: 1.65; }
 .sre-info { margin-top: 20px; }
@@ -72,5 +76,6 @@
 @media (max-width: 520px) {
   .sre-backdrop { padding: 0; align-items: stretch; }
   .sre-dialog { max-height: none; min-height: 100dvh; border-radius: 0; padding: 18px 16px 30px; }
+  .sre-selector-row { grid-template-columns: 1fr; }
   .sre-row { grid-template-columns: 1fr; }
 }
